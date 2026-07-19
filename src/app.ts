@@ -26,6 +26,9 @@ app.get("/health", (c) =>
 app.post("/verdict", async (c) => {
   const paid = await verifyPayment(c.req.raw);
   if (!paid) {
+    if (!config.assetAddress || !config.payTo) {
+      return c.json({ error: "payment terms not configured on this deployment" }, 503);
+    }
     const { headerValue, body } = buildChallenge();
     c.header("PAYMENT-REQUIRED", headerValue);
     return c.json(body, 402);
