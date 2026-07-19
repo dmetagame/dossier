@@ -1,6 +1,6 @@
-import type { Verdict, VerdictRequest, CheckResult } from "./schema.js";
-import { fetchGoPlus, goplusSupports } from "./sources/goplus.js";
-import { fetchDexScreener } from "./sources/dexscreener.js";
+import type { Verdict, VerdictRequest, CheckResult } from "./schema";
+import { fetchGoPlus, goplusSupports } from "./sources/goplus";
+import { fetchDexScreener } from "./sources/dexscreener";
 
 // Thrown when no data source could be reached at all — the caller must
 // surface a 503 so the agent retries, never a charged verdict built on air.

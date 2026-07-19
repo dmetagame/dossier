@@ -1,8 +1,8 @@
 import { Hono } from "hono";
-import { config } from "./config.js";
-import { buildChallenge, verifyPayment } from "./x402.js";
-import { VerdictRequest } from "./verdict/schema.js";
-import { evaluate, SourcesUnavailableError } from "./verdict/engine.js";
+import { config } from "./config";
+import { buildChallenge, verifyPayment } from "./x402";
+import { VerdictRequest } from "./verdict/schema";
+import { evaluate, SourcesUnavailableError } from "./verdict/engine";
 
 export const app = new Hono();
 

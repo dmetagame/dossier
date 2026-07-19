@@ -1,4 +1,4 @@
-import { config, atomicPrice } from "./config.js";
+import { config, atomicPrice } from "./config";
 
 // x402 v2: the 402 response carries a base64-encoded JSON challenge in the
 // PAYMENT-REQUIRED header; the buyer replays with a signed payment header.

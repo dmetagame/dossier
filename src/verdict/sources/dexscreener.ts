@@ -1,7 +1,7 @@
 // DexScreener pairs API — free, no key, reachable from the dev box.
 // Gives liquidity depth, volume, price, and pair age across chains incl. X Layer.
 
-import type { SourceStatus } from "./goplus.js";
+import type { SourceStatus } from "./goplus";
 
 export interface MarketSnapshot {
   status: SourceStatus;
