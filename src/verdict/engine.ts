@@ -2,6 +2,15 @@ import type { Verdict, VerdictRequest, CheckResult } from "./schema.js";
 import { fetchGoPlus, goplusSupports } from "./sources/goplus.js";
 import { fetchDexScreener } from "./sources/dexscreener.js";
 
+// Thrown when no data source could be reached at all — the caller must
+// surface a 503 so the agent retries, never a charged verdict built on air.
+export class SourcesUnavailableError extends Error {
+  constructor() {
+    super("all data sources unavailable");
+    this.name = "SourcesUnavailableError";
+  }
+}
+
 // v0 engine: deterministic factor scoring over live GoPlus + DexScreener data.
 // Design rule: every response is a decision an agent can act on directly —
 // action, sized limit, confidence — never a raw flag dump. An LLM synthesis
@@ -13,17 +22,23 @@ export async function evaluate(req: VerdictRequest): Promise<Verdict> {
   const sources: string[] = [];
 
   const [sec, market] = await Promise.all([
-    goplusSupports(req.chain) ? fetchGoPlus(req.chain, req.tokenAddress) : Promise.resolve({ found: false } as const),
+    goplusSupports(req.chain) ? fetchGoPlus(req.chain, req.tokenAddress) : Promise.resolve({ status: "not_found" } as const),
     fetchDexScreener(req.chain, req.tokenAddress),
   ]);
-  if (sec.found) sources.push("goplus");
-  if (market.found) sources.push("dexscreener");
+  if (sec.status === "ok") sources.push("goplus");
+  if (market.status === "ok") sources.push("dexscreener");
+
+  // Outage and obscurity are different facts: if nothing answered, we know
+  // nothing about the token and must not pretend otherwise.
+  if (sec.status === "unavailable" && market.status === "unavailable") {
+    throw new SourcesUnavailableError();
+  }
 
   const checks = {
     honeypot: honeypotCheck(sec),
     contractControl: controlCheck(sec),
-    liquidity: liquidityCheck(market.found ? market : undefined, sec),
-    marketActivity: activityCheck(market.found ? market : undefined),
+    liquidity: liquidityCheck(market.status === "ok" ? market : undefined, sec),
+    marketActivity: activityCheck(market.status === "ok" ? market : undefined),
     holderConcentration: concentrationCheck(sec),
   };
 
@@ -34,23 +49,30 @@ export async function evaluate(req: VerdictRequest): Promise<Verdict> {
   // Confidence = data coverage, not conviction. All five known → 1.0.
   const confidence = Number(((5 - unknown.length) / 5).toFixed(2));
 
+  // Sources that *answered* "never heard of it" mean there is no market and
+  // no security record — for an agent about to spend, that is an abort.
+  const trulyUnknownToken = sec.status === "not_found" && market.status === "not_found";
+
   let verdict: Verdict["verdict"];
   if (failed.length > 0) verdict = "abort";
-  else if (warned.length >= 2 || unknown.length >= 3) verdict = "caution";
-  else if (warned.length === 1 || unknown.length > 0) verdict = "caution";
+  else if (trulyUnknownToken) verdict = "abort";
+  else if (warned.length >= 1 || unknown.length > 0) verdict = "caution";
   else verdict = "proceed";
   // A clean sheet with full coverage is the only "proceed".
 
   // Size cap: never more than 1% of pooled liquidity for a buy, halved when
   // cautioned; null when aborting or when liquidity is unknown.
   let maxSizeUsd: number | null = null;
-  if (verdict !== "abort" && market.found && market.liquidityUsd) {
+  if (verdict !== "abort" && market.status === "ok" && market.liquidityUsd) {
     maxSizeUsd = Math.floor(market.liquidityUsd * 0.01);
     if (verdict === "caution") maxSizeUsd = Math.floor(maxSizeUsd / 2);
     if (req.amountUsd && req.amountUsd < maxSizeUsd) maxSizeUsd = req.amountUsd;
   }
 
   const reasons: string[] = [
+    ...(trulyUnknownToken
+      ? ["No security record and no market found for this token on this chain — treat as untradeable."]
+      : []),
     ...failed.map((c) => c.detail),
     ...warned.map((c) => c.detail),
     ...(verdict === "proceed" ? ["All five checks passed on live data."] : []),
@@ -71,11 +93,11 @@ export async function evaluate(req: VerdictRequest): Promise<Verdict> {
     token: {
       chain: req.chain,
       address: req.tokenAddress,
-      symbol: market.found ? market.symbol : undefined,
-      priceUsd: market.found ? market.priceUsd : undefined,
-      liquidityUsd: market.found ? market.liquidityUsd : undefined,
-      volume24hUsd: market.found ? market.volume24hUsd : undefined,
-      ageDays: market.found && market.ageDays ? Number(market.ageDays.toFixed(1)) : undefined,
+      symbol: market.status === "ok" ? market.symbol : undefined,
+      priceUsd: market.status === "ok" ? market.priceUsd : undefined,
+      liquidityUsd: market.status === "ok" ? market.liquidityUsd : undefined,
+      volume24hUsd: market.status === "ok" ? market.volume24hUsd : undefined,
+      ageDays: market.status === "ok" && market.ageDays ? Number(market.ageDays.toFixed(1)) : undefined,
     },
     meta: { sources, generatedAt: new Date().toISOString(), latencyMs: Date.now() - started },
   };
@@ -85,7 +107,7 @@ type Sec = Awaited<ReturnType<typeof fetchGoPlus>>;
 type Market = Awaited<ReturnType<typeof fetchDexScreener>>;
 
 function honeypotCheck(sec: Sec): CheckResult {
-  if (!sec.found) return { status: "unknown", detail: "sellability (no security data)" };
+  if (sec.status !== "ok") return { status: "unknown", detail: "sellability (no security data)" };
   if (sec.isHoneypot) return { status: "fail", detail: "Flagged as a honeypot — buyers cannot sell." };
   if (sec.cannotSellAll) return { status: "fail", detail: "Contract restricts selling full balances." };
   if ((sec.sellTaxPct ?? 0) > 15)
@@ -96,7 +118,7 @@ function honeypotCheck(sec: Sec): CheckResult {
 }
 
 function controlCheck(sec: Sec): CheckResult {
-  if (!sec.found) return { status: "unknown", detail: "contract control (no security data)" };
+  if (sec.status !== "ok") return { status: "unknown", detail: "contract control (no security data)" };
   if (sec.ownerCanChangeBalance)
     return { status: "fail", detail: "Owner can modify holder balances." };
   const powers: string[] = [];
@@ -109,21 +131,23 @@ function controlCheck(sec: Sec): CheckResult {
 }
 
 function liquidityCheck(market: Market | undefined, sec: Sec): CheckResult {
-  if (!market?.found || market.liquidityUsd === undefined)
+  if (market?.status !== "ok" || market.liquidityUsd === undefined)
     return { status: "unknown", detail: "liquidity (no market data)" };
   const lockNote =
-    sec.found && sec.lpLockedPct !== undefined ? `, ${sec.lpLockedPct.toFixed(0)}% of LP locked` : "";
+    sec.status === "ok" && sec.lpLockedPct !== undefined ? `, ${sec.lpLockedPct.toFixed(0)}% of LP locked` : "";
   if (market.liquidityUsd < 10_000)
     return { status: "fail", detail: `Pooled liquidity $${Math.round(market.liquidityUsd)} — too thin to exit${lockNote}.` };
   if (market.liquidityUsd < 100_000)
     return { status: "warn", detail: `Pooled liquidity $${Math.round(market.liquidityUsd)} — shallow${lockNote}.` };
-  if (sec.found && sec.lpLockedPct !== undefined && sec.lpLockedPct < 20)
+  // LP locking matters when a single deployer could pull the pool; deep
+  // markets ($1M+) don't work that way and locking isn't practiced there.
+  if (market.liquidityUsd < 1_000_000 && sec.status === "ok" && sec.lpLockedPct !== undefined && sec.lpLockedPct < 20)
     return { status: "warn", detail: `Only ${sec.lpLockedPct.toFixed(0)}% of LP locked — liquidity can be pulled.` };
   return { status: "pass", detail: `Pooled liquidity $${Math.round(market.liquidityUsd)}${lockNote}.` };
 }
 
 function activityCheck(market: Market | undefined): CheckResult {
-  if (!market?.found) return { status: "unknown", detail: "market activity (no market data)" };
+  if (market?.status !== "ok") return { status: "unknown", detail: "market activity (no market data)" };
   if ((market.ageDays ?? Infinity) < 3)
     return { status: "warn", detail: `Pair is ${market.ageDays?.toFixed(1)} days old — no track record.` };
   if ((market.volume24hUsd ?? 0) < 1_000)
@@ -135,7 +159,7 @@ function activityCheck(market: Market | undefined): CheckResult {
 }
 
 function concentrationCheck(sec: Sec): CheckResult {
-  if (!sec.found || sec.topHolderPct === undefined)
+  if (sec.status !== "ok" || sec.topHolderPct === undefined)
     return { status: "unknown", detail: "holder concentration (no holder data)" };
   if (sec.topHolderPct > 60)
     return { status: "fail", detail: `Top 10 holders control ${sec.topHolderPct.toFixed(0)}% of supply.` };

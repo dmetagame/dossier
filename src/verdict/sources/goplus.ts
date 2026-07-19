@@ -10,8 +10,13 @@ const CHAIN_IDS: Record<string, string> = {
   xlayer: "196",
 };
 
+// "ok" = data returned; "not_found" = API answered but has no record of the
+// token; "unavailable" = API unreachable/throttled — the caller must not
+// treat this as knowledge about the token.
+export type SourceStatus = "ok" | "not_found" | "unavailable";
+
 export interface GoPlusTokenSecurity {
-  found: boolean;
+  status: SourceStatus;
   isHoneypot?: boolean;
   cannotSellAll?: boolean;
   buyTaxPct?: number;
@@ -32,19 +37,27 @@ export function goplusSupports(chain: string): boolean {
 
 export async function fetchGoPlus(chain: string, address: string): Promise<GoPlusTokenSecurity> {
   const chainId = CHAIN_IDS[chain.toLowerCase()];
-  if (!chainId) return { found: false };
+  if (!chainId) return { status: "not_found" };
   const url = `https://api.gopluslabs.io/api/v1/token_security/${chainId}?contract_addresses=${address}`;
-  // A source outage degrades confidence; it must never fail the paid call.
-  let json: { result?: Record<string, any> };
-  try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
-    if (!res.ok) return { found: false };
-    json = (await res.json()) as { result?: Record<string, any> };
-  } catch {
-    return { found: false };
+  // One respectful retry on 429; a still-failing source is "unavailable",
+  // never silently equated with "no data about this token".
+  let json: { result?: Record<string, any> } | null = null;
+  for (let attempt = 0; attempt < 2 && !json; attempt++) {
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+      if (res.status === 429 && attempt === 0) {
+        await new Promise((r) => setTimeout(r, 1500));
+        continue;
+      }
+      if (!res.ok) return { status: "unavailable" };
+      json = (await res.json()) as { result?: Record<string, any> };
+    } catch {
+      return { status: "unavailable" };
+    }
   }
+  if (!json) return { status: "unavailable" };
   const entry = json.result?.[address.toLowerCase()];
-  if (!entry) return { found: false };
+  if (!entry) return { status: "not_found" };
 
   const pct = (v: unknown): number | undefined => {
     const n = Number(v);
@@ -75,7 +88,7 @@ export async function fetchGoPlus(chain: string, address: string): Promise<GoPlu
     : undefined;
 
   return {
-    found: true,
+    status: "ok",
     isHoneypot: flag(entry.is_honeypot),
     cannotSellAll: flag(entry.cannot_sell_all),
     buyTaxPct: pct(entry.buy_tax),

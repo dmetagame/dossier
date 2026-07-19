@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { config } from "./config.js";
 import { buildChallenge, verifyPayment } from "./x402.js";
 import { VerdictRequest } from "./verdict/schema.js";
-import { evaluate } from "./verdict/engine.js";
+import { evaluate, SourcesUnavailableError } from "./verdict/engine.js";
 
 export const app = new Hono();
 
@@ -34,6 +34,16 @@ app.post("/verdict", async (c) => {
   if (!parsed.success) {
     return c.json({ error: "invalid request", issues: parsed.error.issues }, 400);
   }
-  const verdict = await evaluate(parsed.data);
-  return c.json(verdict);
+  try {
+    const verdict = await evaluate(parsed.data);
+    return c.json(verdict);
+  } catch (e) {
+    if (e instanceof SourcesUnavailableError) {
+      // TODO(facilitator): make the payment header redeemable on retry so a
+      // 503 never costs the buyer — needs nonce tracking at settlement time.
+      c.header("Retry-After", "30");
+      return c.json({ error: "data sources temporarily unavailable — retry shortly" }, 503);
+    }
+    throw e;
+  }
 });

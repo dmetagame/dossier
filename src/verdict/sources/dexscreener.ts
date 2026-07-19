@@ -1,8 +1,10 @@
 // DexScreener pairs API — free, no key, reachable from the dev box.
 // Gives liquidity depth, volume, price, and pair age across chains incl. X Layer.
 
+import type { SourceStatus } from "./goplus.js";
+
 export interface MarketSnapshot {
-  found: boolean;
+  status: SourceStatus;
   symbol?: string;
   priceUsd?: number;
   liquidityUsd?: number;
@@ -13,20 +15,28 @@ export interface MarketSnapshot {
 }
 
 export async function fetchDexScreener(chain: string, address: string): Promise<MarketSnapshot> {
-  // A source outage degrades confidence; it must never fail the paid call.
-  let json: { pairs?: any[] };
-  try {
-    const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${address}`, {
-      signal: AbortSignal.timeout(8000),
-    });
-    if (!res.ok) return { found: false };
-    json = (await res.json()) as { pairs?: any[] };
-  } catch {
-    return { found: false };
+  // One respectful retry on 429; a still-failing source is "unavailable",
+  // never silently equated with "no market for this token".
+  let json: { pairs?: any[] } | null = null;
+  for (let attempt = 0; attempt < 2 && !json; attempt++) {
+    try {
+      const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${address}`, {
+        signal: AbortSignal.timeout(8000),
+      });
+      if (res.status === 429 && attempt === 0) {
+        await new Promise((r) => setTimeout(r, 1500));
+        continue;
+      }
+      if (!res.ok) return { status: "unavailable" };
+      json = (await res.json()) as { pairs?: any[] };
+    } catch {
+      return { status: "unavailable" };
+    }
   }
+  if (!json) return { status: "unavailable" };
   const chainKey = chain.toLowerCase() === "ethereum" ? "ethereum" : chain.toLowerCase();
   const pairs = (json.pairs ?? []).filter((p) => (p.chainId ?? "").toLowerCase() === chainKey);
-  if (!pairs.length) return { found: false };
+  if (!pairs.length) return { status: "not_found" };
 
   // Aggregate across pairs; deepest pair drives price and age.
   const deepest = pairs.reduce((a, b) => ((a.liquidity?.usd ?? 0) >= (b.liquidity?.usd ?? 0) ? a : b));
@@ -35,7 +45,7 @@ export async function fetchDexScreener(chain: string, address: string): Promise<
   const txns24h = pairs.reduce((s, p) => s + (p.txns?.h24?.buys ?? 0) + (p.txns?.h24?.sells ?? 0), 0);
 
   return {
-    found: true,
+    status: "ok",
     symbol: deepest.baseToken?.symbol,
     priceUsd: Number(deepest.priceUsd) || undefined,
     liquidityUsd,
