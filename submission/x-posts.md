@@ -1,38 +1,47 @@
 # X post drafts (#OKXAI) — no punctuation dashes, per writing rules
 
-## Post 1 — today, build in public (user reviews, then posts)
+Primary submission = Dossier (Track #1, Professional Asset Creation).
+Verdict is a bonus listing. Review voice before posting.
 
-Your agent is about to ape $500 into a token because a scanner said "LP locked, not
-a honeypot." Scanners hand agents flags. Nobody answers the real question: should it
-proceed, and with how much?
+## Post 1 — build in public (today)
 
-I'm building Verdict for #OKXAI. One paid call before your agent trades. It returns
-proceed, caution, or abort, plus a safe position size and a confidence score, priced
-per call over x402 on X Layer. Live data, no dashboards, built for agents inside a
-decision loop.
+To vet a single token you're stitching together four dashboards: a safety scanner, a
+DEX chart, a holders page, an explorer. An agent can't do that.
 
-Shipping in public all week. First call free at launch.
+I'm building Dossier for #OKXAI. One call returns a finished, shareable due-diligence
+report on any token: risk verdict, safe position size, security flags, liquidity,
+holders, all from live data, rendered as a document you can read, share, or archive.
+Paid per call over x402 on X Layer.
 
-## Post 2 — after deploy (Jul 20), demo clip
+Shipping in public this week.
 
-[20 second screen capture: curl the endpoint, get the 402, pay, get the verdict]
+## Post 2 — the asset (after a clean render)
 
-Verdict is live. An agent asked to buy $500 of a meme token. The scanner view: LP
-locked, sellable, all clear. Verdict's answer: caution, cap it at $68, volume is $2
-a day and the market is dead. That is the difference between flags and a decision.
-#OKXAI
+[screenshot of the rendered Dossier report]
 
-## Post 3 — benchmark (Jul 21)
+This is what one paid call to Dossier returns. Not a JSON blob, a finished report:
+verdict up top, safe size, the security and holder breakdown underneath, printable to
+PDF. The kind of thing you'd otherwise spend an hour compiling. #OKXAI
 
-We ran Verdict against N established tokens and N fresh low-liquidity tokens.
-[accuracy table image] Blue chips pass, thin markets get sized down, honeypots get
-aborted. Reproducible, deterministic, live data. #OKXAI
+## Post 3 — the payment rail (short clip)
 
-## Post 4 — submission post (Jul 25, final)
+[20s clip: curl -> 402 -> pay -> report]
 
-[90 second demo video]
+Dossier is a real service, not a free endpoint. First call returns an x402 payment
+challenge priced in USD₮0 on X Layer. The agent pays, the report comes back. Autonomous
+asset creation with a settlement rail underneath. #OKXAI
 
-Verdict, my #OKXAI Genesis entry: the pre-trade risk decision layer for the agent
-economy, live on OKX.AI. Agents pay 0.2 USDT per call over x402 on X Layer and get
-back one thing they can act on: proceed, caution, or abort, with a safe position
-size. [listing link]
+## Post 4 — submission post (final, ≤90s demo attached)
+
+[90-second demo video]
+
+Dossier, my #OKXAI Genesis entry: one call turns into a polished, executive-ready
+due-diligence report on any token, paid per call over x402 on X Layer. Live on OKX.AI
+now. It turns an hour of dashboard-stitching into a single request. [listing link]
+
+---
+
+## Bonus listing — Verdict (if mentioned)
+
+Also live on OKX.AI: Verdict (#7008), the pre-trade risk decision behind Dossier as a
+standalone call, proceed / caution / abort with a safe position size, 0.2 USD₮0. #OKXAI
