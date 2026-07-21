@@ -13,6 +13,9 @@
   },
   "dependencies": {
     "@hono/node-server": "^1.13.7",
+    "@okxweb3/x402-core": "^0.1.0",
+    "@okxweb3/x402-evm": "^0.2.1",
+    "@okxweb3/x402-hono": "^0.1.1",
     "hono": "^4.6.14",
     "zod": "^3.24.1"
   },

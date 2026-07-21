@@ -1,28 +1,29 @@
-// All payment-critical values come from env so nothing chain-facing is hardcoded
-// before we confirm the official X Layer token/facilitator details from OKX docs.
+// Payment-critical values come from env. The x402 challenge shape, asset, and
+// on-chain verification are now handled by the official OKX SDK
+// (@okxweb3/x402-hono) — see src/app.ts. We only supply price, payout address,
+// and the facilitator API credentials.
 export const config = {
-  // X Layer mainnet
-  chainId: Number(process.env.CHAIN_ID ?? 196),
-  network: process.env.X402_NETWORK ?? "eip155:196",
-  // USDT contract on X Layer — MUST be confirmed against OKX docs before listing.
-  // Left empty by default so a misconfigured deploy fails loudly instead of
-  // emitting a challenge that points at the wrong asset.
-  assetAddress: process.env.ASSET_ADDRESS ?? "",
-  assetDecimals: Number(process.env.ASSET_DECIMALS ?? 6),
-  assetSymbol: process.env.ASSET_SYMBOL ?? "USDT",
-  // Merchant payout address (the ASP wallet registered with OKX).
-  payTo: process.env.PAY_TO ?? "",
-  // Price per verdict call, human units. Listing fee on OKX.AI must match this.
-  priceUsdt: process.env.PRICE_USDT ?? "0.2",
-  // DEV ONLY: skip payment verification so the engine can be exercised locally.
-  // The deployed service must never run with this set — /health reports it so
-  // a bad deploy is visible.
+  // CAIP-2 network id for X Layer mainnet.
+  network: (process.env.X402_NETWORK ?? "eip155:196") as `${string}:${string}`,
+  // Price per verdict call as a human USD string ("$0.20"). The SDK maps this
+  // to USD₮0 (the official settlement stablecoin on X Layer) automatically.
+  price: process.env.PRICE ?? "$0.20",
+  // ASP payout address (the OKX-registered wallet). Empty until we have it from
+  // `onchainos wallet` — the middleware is not mounted while this is empty, so a
+  // misconfigured deploy serves nothing rather than quoting a bad recipient.
+  payTo: (process.env.PAY_TO ?? "") as `0x${string}` | "",
+  // OKX facilitator credentials (dev portal). Used server-side to verify/settle
+  // payments; runs from Vercel, not the IP-blocked dev box.
+  okx: {
+    apiKey: process.env.OKX_API_KEY ?? "",
+    secretKey: process.env.OKX_SECRET_KEY ?? "",
+    passphrase: process.env.OKX_PASSPHRASE ?? "",
+  },
+  // DEV ONLY: skip the payment middleware so the engine can be exercised
+  // locally. The deployed service must never set this; /health reports it.
   devSkipPayment: process.env.DEV_SKIP_PAYMENT === "1",
-  publicUrl: process.env.PUBLIC_URL ?? "http://localhost:8787",
 } as const;
 
-export function atomicPrice(): string {
-  const [int, frac = ""] = config.priceUsdt.split(".");
-  const fracPadded = (frac + "0".repeat(config.assetDecimals)).slice(0, config.assetDecimals);
-  return String(BigInt(int || "0") * 10n ** BigInt(config.assetDecimals) + BigInt(fracPadded || "0"));
+export function paymentConfigured(): boolean {
+  return Boolean(config.payTo && config.okx.apiKey && config.okx.secretKey && config.okx.passphrase);
 }
