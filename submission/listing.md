@@ -26,4 +26,4 @@ names, no disclaimers, no example prompts. Fee is digits only, USDT implied.
   intended action and position size in USD
 - **Type:** API service (A2MCP)
 - **Fee:** 0.2
-- **Endpoint:** https://TODO-production-url/verdict
+- **Endpoint:** https://verdict-pi.vercel.app/verdict

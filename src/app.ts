@@ -5,6 +5,8 @@ import { OKXFacilitatorClient } from "@okxweb3/x402-core";
 import { config, paymentConfigured } from "./config";
 import { VerdictRequest } from "./verdict/schema";
 import { evaluate, SourcesUnavailableError } from "./verdict/engine";
+import { DossierRequest, buildDossier } from "./dossier/report";
+import { renderDossierHtml } from "./dossier/render";
 
 export const app = new Hono();
 
@@ -56,6 +58,17 @@ if (!config.devSkipPayment && paymentConfigured()) {
           description:
             "Pre-trade token risk verdict: proceed, caution, or abort, with a safe position size and confidence.",
         },
+        "POST /dossier": {
+          accepts: {
+            scheme: "exact",
+            price: config.dossierPrice,
+            network: config.network,
+            payTo: config.payTo,
+            maxTimeoutSeconds: 300,
+          },
+          description:
+            "Full due-diligence dossier on a token, returned as a shareable formatted report.",
+        },
       },
       resourceServer,
     ),
@@ -75,6 +88,25 @@ app.post("/verdict", async (c) => {
     if (e instanceof SourcesUnavailableError) {
       // Non-2xx: the middleware does not settle, so an outage never charges the
       // buyer even though their payment was already verified upstream.
+      c.header("Retry-After", "30");
+      return c.json({ error: "data sources temporarily unavailable — retry shortly" }, 503);
+    }
+    throw e;
+  }
+});
+
+app.post("/dossier", async (c) => {
+  // Reached only after the middleware has verified payment (or in dev-skip mode).
+  const parsed = DossierRequest.safeParse(await c.req.json().catch(() => ({})));
+  if (!parsed.success) {
+    return c.json({ error: "invalid request", issues: parsed.error.issues }, 400);
+  }
+  try {
+    const dossier = await buildDossier(parsed.data);
+    if (parsed.data.format === "json") return c.json(dossier);
+    return c.html(renderDossierHtml(dossier));
+  } catch (e) {
+    if (e instanceof SourcesUnavailableError) {
       c.header("Retry-After", "30");
       return c.json({ error: "data sources temporarily unavailable — retry shortly" }, 503);
     }
