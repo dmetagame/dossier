@@ -1,10 +1,27 @@
 import { z } from "zod";
 import { fetchGoPlus, goplusSupports } from "../verdict/sources/goplus";
-import { fetchDexScreener } from "../verdict/sources/dexscreener";
+import { fetchDexScreener, resolveChain } from "../verdict/sources/dexscreener";
 import { evaluate, SourcesUnavailableError } from "../verdict/engine";
-import { ChainName } from "../verdict/schema";
+import { ChainName, SUPPORTED_CHAINS } from "../verdict/schema";
 
 export { SourcesUnavailableError };
+
+// Chain omitted and the address trades on more than one supported chain:
+// the buyer must disambiguate — same address, different contracts.
+export class ChainAmbiguousError extends Error {
+  constructor(public candidates: string[]) {
+    super(`token trades on multiple chains: ${candidates.join(", ")} — specify "chain"`);
+    this.name = "ChainAmbiguousError";
+  }
+}
+
+// Chain omitted and no supported chain has a market for the address.
+export class ChainNotFoundError extends Error {
+  constructor() {
+    super(`no market found for this address on any supported chain (${SUPPORTED_CHAINS.join(", ")})`);
+    this.name = "ChainNotFoundError";
+  }
+}
 
 // Dossier: one request -> a polished, shareable due-diligence report on a token,
 // assembled deterministically from live on-chain data. The deliverable is a
@@ -12,7 +29,8 @@ export { SourcesUnavailableError };
 // behind it, so an agent gets both a human-ready asset and machine-readable fields.
 
 export const DossierRequest = z.object({
-  chain: ChainName,
+  // Optional: omitted means "auto-detect", resolved only when unambiguous.
+  chain: ChainName.optional(),
   tokenAddress: z.string().regex(/^0x[a-fA-F0-9]{40}$/, "must be an EVM address"),
   format: z.enum(["html", "json"]).default("html"),
 });
@@ -46,12 +64,21 @@ export interface Dossier {
 }
 
 export async function buildDossier(req: DossierRequest): Promise<Dossier> {
+  let chain = req.chain;
+  if (!chain) {
+    const resolved = await resolveChain(req.tokenAddress);
+    if (resolved.status === "ambiguous") throw new ChainAmbiguousError(resolved.candidates);
+    if (resolved.status === "not_found") throw new ChainNotFoundError();
+    if (resolved.status === "unavailable") throw new SourcesUnavailableError();
+    chain = resolved.chain;
+  }
+
   const [sec, market, verdict] = await Promise.all([
-    goplusSupports(req.chain)
-      ? fetchGoPlus(req.chain, req.tokenAddress)
+    goplusSupports(chain)
+      ? fetchGoPlus(chain, req.tokenAddress)
       : Promise.resolve({ status: "not_found" } as const),
-    fetchDexScreener(req.chain, req.tokenAddress),
-    evaluate({ chain: req.chain, tokenAddress: req.tokenAddress, action: "buy" }),
+    fetchDexScreener(chain, req.tokenAddress),
+    evaluate({ chain, tokenAddress: req.tokenAddress, action: "buy" }),
   ]);
 
   if (sec.status === "unavailable" && market.status === "unavailable") {
@@ -66,7 +93,7 @@ export async function buildDossier(req: DossierRequest): Promise<Dossier> {
     title: `Due-Diligence Dossier — ${market.status === "ok" && market.symbol ? market.symbol : req.tokenAddress.slice(0, 8)}`,
     generatedAt: new Date().toISOString(),
     token: {
-      chain: req.chain,
+      chain,
       address: req.tokenAddress,
       symbol: market.status === "ok" ? market.symbol : undefined,
       priceUsd: market.status === "ok" ? market.priceUsd : undefined,

@@ -2,6 +2,44 @@
 // Gives liquidity depth, volume, price, and pair age across chains incl. X Layer.
 
 import type { SourceStatus } from "./goplus";
+import { SUPPORTED_CHAINS } from "../schema";
+
+// Cross-chain resolution for "just an address" requests. The tokens endpoint
+// already returns pairs on every chain, so one call tells us where the token
+// actually trades. We only auto-resolve when the answer is unambiguous — the
+// same address on two chains is two different contracts (bridges, and scam
+// clones deployed at identical addresses), and a due-diligence report must
+// never silently guess which one the buyer meant.
+export type ChainResolution =
+  | { status: "ok"; chain: (typeof SUPPORTED_CHAINS)[number] }
+  | { status: "ambiguous"; candidates: string[] }
+  | { status: "not_found" }
+  | { status: "unavailable" };
+
+export async function resolveChain(address: string): Promise<ChainResolution> {
+  let json: { pairs?: any[] } | null = null;
+  try {
+    const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${address}`, {
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) return { status: "unavailable" };
+    json = (await res.json()) as { pairs?: any[] };
+  } catch {
+    return { status: "unavailable" };
+  }
+  const addr = address.toLowerCase();
+  const chains = new Set<string>();
+  for (const p of json.pairs ?? []) {
+    const chain = (p.chainId ?? "").toLowerCase();
+    if (!(SUPPORTED_CHAINS as readonly string[]).includes(chain)) continue;
+    if (p.baseToken?.address?.toLowerCase() === addr || p.quoteToken?.address?.toLowerCase() === addr) {
+      chains.add(chain);
+    }
+  }
+  if (chains.size === 0) return { status: "not_found" };
+  if (chains.size > 1) return { status: "ambiguous", candidates: [...chains].sort() };
+  return { status: "ok", chain: [...chains][0] as (typeof SUPPORTED_CHAINS)[number] };
+}
 
 export interface MarketSnapshot {
   status: SourceStatus;

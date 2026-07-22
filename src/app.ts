@@ -5,7 +5,12 @@ import { OKXFacilitatorClient } from "@okxweb3/x402-core";
 import { config, paymentConfigured } from "./config";
 import { VerdictRequest } from "./verdict/schema";
 import { evaluate, SourcesUnavailableError } from "./verdict/engine";
-import { DossierRequest, buildDossier } from "./dossier/report";
+import {
+  DossierRequest,
+  buildDossier,
+  ChainAmbiguousError,
+  ChainNotFoundError,
+} from "./dossier/report";
 import { renderDossierHtml } from "./dossier/render";
 
 export const app = new Hono();
@@ -21,7 +26,7 @@ app.get("/", (c) =>
         path: "/dossier",
         method: "POST",
         pricing: `${config.dossierPrice} per call (x402, USD₮0 on X Layer)`,
-        body: { chain: "bsc", tokenAddress: "0x…", format: "html | json" },
+        body: { tokenAddress: "0x…", chain: "(optional — auto-detected when unambiguous)", format: "html | json" },
       },
       {
         path: "/dossier/sample",
@@ -49,7 +54,7 @@ app.get("/dossier", (c) =>
     agentId: 7012,
     usage: {
       method: "POST",
-      body: { chain: "bsc", tokenAddress: "0x…", format: "html | json" },
+      body: { tokenAddress: "0x…", chain: "(optional — auto-detected when unambiguous)", format: "html | json" },
       pricing: `${config.dossierPrice} per call (x402, USD₮0 on X Layer, eip155:196)`,
     },
     sample: "/dossier/sample",
@@ -213,6 +218,13 @@ app.post("/dossier", async (c) => {
     if (parsed.data.format === "json") return c.json(dossier);
     return c.html(renderDossierHtml(dossier));
   } catch (e) {
+    // Non-2xx responses are never settled, so none of these charge the buyer.
+    if (e instanceof ChainAmbiguousError) {
+      return c.json({ error: e.message, candidates: e.candidates }, 400);
+    }
+    if (e instanceof ChainNotFoundError) {
+      return c.json({ error: e.message }, 404);
+    }
     if (e instanceof SourcesUnavailableError) {
       c.header("Retry-After", "30");
       return c.json({ error: "data sources temporarily unavailable — retry shortly" }, 503);

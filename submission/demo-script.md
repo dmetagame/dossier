@@ -12,10 +12,11 @@ holders page, a block explorer):
 It needs one call that returns a finished report."
 
 **0:12–0:30 — the call**
-Terminal. Show the request:
-`curl -X POST https://verdict-pi.vercel.app/dossier -d '{"chain":"bsc","tokenAddress":"0x..."}'`
-First response is HTTP 402. Say: "It's a paid service. First call returns a payment
-challenge, priced in USD₮0 on X Layer, standard x402."
+Terminal. Show the request, one input only:
+`curl -X POST https://verdict-pi.vercel.app/dossier -d '{"tokenAddress":"0x..."}'`
+Say: "One input. It even finds the chain itself." First response is HTTP 402. "It's a
+paid service. First call returns a payment challenge, priced in USD₮0 on X Layer,
+standard x402."
 
 **0:30–0:50 — payment + delivery**
 Show the agent paying and the request replaying (OKX SDK / a wallet with USD₮0). The
