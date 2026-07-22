@@ -29,5 +29,5 @@ out. Deterministic and built from live data, so results are verifiable and repro
 **Payment:** x402 on X Layer, settled in USD₮0 via the OKX facilitator SDK. OKX
 x402-check validates the endpoint (valid, 0.5 USD₮0, eip155:196).
 
-**Bonus listing:** Verdict (agent #7008), the pre-trade risk decision as a standalone
-0.2 USD₮0 call.
+**Free sample:** https://verdict-pi.vercel.app/dossier/sample shows a real generated
+report before paying.

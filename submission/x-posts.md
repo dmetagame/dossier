@@ -1,7 +1,6 @@
 # X post drafts (#OKXAI) — no punctuation dashes, per writing rules
 
-Primary submission = Dossier (Track #1, Professional Asset Creation).
-Verdict is a bonus listing. Review voice before posting.
+Submission = Dossier only. Review voice before posting.
 
 ## Post 1 — build in public (today)
 
@@ -39,9 +38,4 @@ Dossier, my #OKXAI Genesis entry: one call turns into a polished, executive-read
 due-diligence report on any token, paid per call over x402 on X Layer. Live on OKX.AI
 now. It turns an hour of dashboard-stitching into a single request. [listing link]
 
----
-
-## Bonus listing — Verdict (if mentioned)
-
-Also live on OKX.AI: Verdict (#7008), the pre-trade risk decision behind Dossier as a
-standalone call, proceed / caution / abort with a safe position size, 0.2 USD₮0. #OKXAI
+Try the free sample first: https://verdict-pi.vercel.app/dossier/sample

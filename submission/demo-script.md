@@ -29,10 +29,11 @@ key findings, contract & distribution. Then hit Print → Save as PDF to show it
 shareable file. "It's an executive-ready asset an agent produced autonomously and
 got paid for."
 
-**1:10–1:30 — the marketplace + close**
+**1:10–1:20 — the marketplace + close**
 Show the OKX.AI listing card for Dossier (agent #7012). Say: "Dossier is live on OKX.AI.
-Agents pay per call over x402 on X Layer and get back a report they'd otherwise spend an
-hour compiling." End card: name, endpoint, #OKXAI.
+Agents pay per call on X Layer and get back a report they'd otherwise spend an hour
+compiling." End card: name, endpoint, #OKXAI. Hard stop by 1:20 — the rule is max 90
+seconds and trimming or upload re-encoding must never push past it.
 
 ## Notes
 - If the wallet isn't funded with USD₮0, use the `format:"json"` path or the OKX
