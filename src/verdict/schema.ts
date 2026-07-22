@@ -1,7 +1,17 @@
 import { z } from "zod";
 
+// Chains both data sources actually cover. Anything else must 400 (unpaid)
+// up front — a paid "abort: no data" report for a typo'd chain name would
+// charge the buyer for our silence.
+export const SUPPORTED_CHAINS = ["ethereum", "bsc", "base", "arbitrum", "polygon", "xlayer"] as const;
+
+export const ChainName = z.preprocess(
+  (v) => (typeof v === "string" ? v.toLowerCase() : v),
+  z.enum(SUPPORTED_CHAINS),
+);
+
 export const VerdictRequest = z.object({
-  chain: z.string().min(1),
+  chain: ChainName,
   tokenAddress: z.string().regex(/^0x[a-fA-F0-9]{40}$/, "must be an EVM address"),
   action: z.enum(["buy", "sell", "hold", "lp"]).default("buy"),
   amountUsd: z.number().positive().max(10_000_000).optional(),

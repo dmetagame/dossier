@@ -10,6 +10,13 @@ const esc = (s: unknown): string =>
 const money = (n?: number): string =>
   n === undefined ? "—" : "$" + Math.round(n).toLocaleString("en-US");
 
+// Token prices span ~$100k to $0.000000001; plain concatenation would emit
+// scientific notation ("$1.2e-8") below 1e-6. Always render decimal form.
+const price = (n?: number): string =>
+  n === undefined || !Number.isFinite(n)
+    ? "—"
+    : "$" + n.toLocaleString("en-US", { maximumSignificantDigits: 4, maximumFractionDigits: 20 });
+
 const pct = (n?: number): string => (n === undefined ? "—" : `${n.toFixed(1)}%`);
 
 const yesno = (b?: boolean): string => (b === undefined ? "—" : b ? "Yes" : "No");
@@ -99,7 +106,7 @@ export function renderDossierHtml(d: Dossier, opts: RenderOpts = {}): string {
   <section>
     <h2>Snapshot</h2>
     <div class="grid">
-      <div class="cell"><div class="k">Price</div><div class="val">${d.token.priceUsd !== undefined ? "$" + d.token.priceUsd : "—"}</div></div>
+      <div class="cell"><div class="k">Price</div><div class="val">${price(d.token.priceUsd)}</div></div>
       <div class="cell"><div class="k">Liquidity</div><div class="val">${money(d.token.liquidityUsd)}</div></div>
       <div class="cell"><div class="k">24h Volume</div><div class="val">${money(d.token.volume24hUsd)}</div></div>
       <div class="cell"><div class="k">Pair age</div><div class="val">${d.token.ageDays !== undefined ? d.token.ageDays + "d" : "—"}</div></div>

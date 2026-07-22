@@ -2,6 +2,7 @@
 // must never "proceed"; GoPlus-flagged honeypots must "abort". Run:
 //   NODE_OPTIONS=--dns-result-order=ipv4first pnpm tsx scripts/benchmark.ts
 import { evaluate } from "../src/verdict/engine";
+import { fetchDexScreener } from "../src/verdict/sources/dexscreener";
 
 interface Case {
   label: string;
@@ -38,7 +39,18 @@ async function freshRisky(count: number): Promise<Case[]> {
       if (!["bsc", "ethereum", "base"].includes(chain)) continue;
       if (liq < 500 || liq > 60_000) continue;
       seen.add(addr);
-      cases.push({ label: `${p.baseToken.symbol} (${chain}, $${Math.round(liq)} liq)`, chain, address: addr, expect: "not-proceed" });
+      // One thin pair doesn't make the TOKEN thin — a copycat symbol can have
+      // deep main pools elsewhere. Only assert "not-proceed" when the token's
+      // aggregate liquidity is safely below the engine's $100k warn line.
+      const snap = await fetchDexScreener(chain, addr);
+      await new Promise((r) => setTimeout(r, 1000));
+      if (snap.status !== "ok" || (snap.liquidityUsd ?? 0) >= 80_000) continue;
+      cases.push({
+        label: `${p.baseToken.symbol} (${chain}, $${Math.round(snap.liquidityUsd ?? liq)} liq)`,
+        chain,
+        address: addr,
+        expect: "not-proceed",
+      });
     }
   }
   return cases;

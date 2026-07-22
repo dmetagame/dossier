@@ -70,7 +70,7 @@ app.get("/verdict", (c) =>
 
 // Free sample report on a well-known token, cached in-instance so repeat views
 // don't burn free-API quota. Lets buyers and reviewers see the asset up front.
-const SAMPLE = { chain: "bsc", tokenAddress: "0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82" }; // CAKE
+const SAMPLE = { chain: "bsc", tokenAddress: "0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82" } as const; // CAKE
 const SAMPLE_TTL_MS = 6 * 60 * 60 * 1000;
 let sampleCache: { html: string; at: number } | undefined;
 
@@ -110,6 +110,16 @@ app.get("/health", (c) =>
 // facilitator, verifies the buyer's signed payment and settles after a successful
 // response. We supply only price, payout address, and facilitator credentials.
 // Skipped entirely in local dev (no creds) so the engine stays testable.
+// Fail closed: if facilitator credentials are missing in production (e.g. an
+// env var wiped by a project re-link), the paid routes must go dark rather
+// than silently serve for free while the marketplace listing says paid.
+if (!config.devSkipPayment && !paymentConfigured()) {
+  const dark = (c: any) =>
+    c.json({ error: "payment layer not configured — service temporarily unavailable" }, 503);
+  app.post("/verdict", dark);
+  app.post("/dossier", dark);
+}
+
 if (!config.devSkipPayment && paymentConfigured()) {
   const facilitator = new OKXFacilitatorClient({
     apiKey: config.okx.apiKey,
@@ -152,13 +162,20 @@ if (!config.devSkipPayment && paymentConfigured()) {
   // Cold-start resilience: on a fresh serverless instance the SDK's first
   // facilitator sync can transiently fail and rethrow (→ 500). Retry once
   // after a short pause so a cold-start blip self-heals into a normal 402
-  // instead of a 500 an OKX reviewer might hit. The gated handlers are
-  // read-only, and the retry only runs when the middleware threw before
-  // producing a response, so no double-settlement.
+  // instead of a 500 an OKX reviewer might hit. The retry is allowed only
+  // when the failure happened before the route handler started — once next()
+  // has run, replaying the chain could re-execute the handler and re-enter
+  // settlement, so those errors propagate instead.
   app.use(async (c, next) => {
+    let handlerStarted = false;
+    const trackedNext = async () => {
+      handlerStarted = true;
+      await next();
+    };
     try {
-      return await pay(c, next);
-    } catch {
+      return await pay(c, trackedNext);
+    } catch (e) {
+      if (handlerStarted) throw e;
       await new Promise((r) => setTimeout(r, 500));
       return await pay(c, next);
     }

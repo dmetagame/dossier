@@ -2,6 +2,7 @@ import { z } from "zod";
 import { fetchGoPlus, goplusSupports } from "../verdict/sources/goplus";
 import { fetchDexScreener } from "../verdict/sources/dexscreener";
 import { evaluate, SourcesUnavailableError } from "../verdict/engine";
+import { ChainName } from "../verdict/schema";
 
 export { SourcesUnavailableError };
 
@@ -11,7 +12,7 @@ export { SourcesUnavailableError };
 // behind it, so an agent gets both a human-ready asset and machine-readable fields.
 
 export const DossierRequest = z.object({
-  chain: z.string().min(1),
+  chain: ChainName,
   tokenAddress: z.string().regex(/^0x[a-fA-F0-9]{40}$/, "must be an EVM address"),
   format: z.enum(["html", "json"]).default("html"),
 });
