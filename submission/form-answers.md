@@ -4,7 +4,8 @@ Primary: Dossier (agent #7012). Fill these into the submission form.
 
 - **ASP name:** Dossier
 - **Agent ID:** 7012 (on-chain, X Layer)
-- **Track:** Professional Asset Creation (#1)
+- **Prize categories to target:** Finance Copilot (primary), Best Product (secondary)
+- **Build direction:** Professional Asset Creation (OKX priority ASP direction #1)
 - **Service:** Token Due-Diligence Report (A2MCP, 0.5 USD₮0 per call)
 - **Endpoint:** https://verdict-pi.vercel.app/dossier
 - **X post link:** [fill in after posting the submission post]
@@ -28,5 +29,5 @@ out. Deterministic and built from live data, so results are verifiable and repro
 **Payment:** x402 on X Layer, settled in USD₮0 via the OKX facilitator SDK. OKX
 x402-check validates the endpoint (valid, 0.5 USD₮0, eip155:196).
 
-**Bonus listing:** Verdict (agent #7008) — the pre-trade risk decision as a standalone
+**Bonus listing:** Verdict (agent #7008), the pre-trade risk decision as a standalone
 0.2 USD₮0 call.
