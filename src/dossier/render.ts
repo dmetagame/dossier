@@ -26,7 +26,12 @@ function checkRow(label: string, status: string, detail: string): string {
     <td class="st">${esc(status)}</td><td>${esc(detail)}</td></tr>`;
 }
 
-export function renderDossierHtml(d: Dossier): string {
+export interface RenderOpts {
+  // Shown as a slim banner above the report (used by the free sample route).
+  banner?: string;
+}
+
+export function renderDossierHtml(d: Dossier, opts: RenderOpts = {}): string {
   const v = d.riskVerdict;
   const vc = VERDICT_COLOR[v.verdict] ?? "#8a94a6";
   const checks = v.checks;
@@ -75,8 +80,11 @@ export function renderDossierHtml(d: Dossier): string {
   footer { margin-top:36px; padding-top:14px; border-top:1px solid var(--line);
     color:var(--muted); font-size:12px; display:flex; justify-content:space-between; }
   .addr { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; word-break:break-all; }
-  @media print { body { background:#fff; } .wrap { padding:0; } }
+  .banner { background:#eef1f7; border:1px solid var(--line); border-radius:10px;
+    padding:10px 14px; font-size:13px; color:var(--muted); margin-bottom:24px; }
+  @media print { body { background:#fff; } .wrap { padding:0; } .banner { display:none; } }
 </style></head><body><div class="wrap">
+  ${opts.banner ? `<div class="banner">${esc(opts.banner)}</div>` : ""}
   <header>
     <div>
       <h1>${esc(d.title)}</h1>
@@ -125,7 +133,7 @@ export function renderDossierHtml(d: Dossier): string {
   </section>
 
   <footer>
-    <span>Sources: ${d.sources.length ? esc(d.sources.join(", ")) : "none available"}</span>
+    <span>Dossier · OKX.AI agent #7012 · sources: ${d.sources.length ? esc(d.sources.join(", ")) : "none available"}</span>
     <span>Generated ${esc(d.generatedAt)}</span>
   </footer>
 </div></body></html>`;

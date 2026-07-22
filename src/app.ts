@@ -12,12 +12,90 @@ export const app = new Hono();
 
 app.get("/", (c) =>
   c.json({
-    service: "Verdict",
+    service: "Dossier",
+    agentId: 7012,
     description:
-      "Pre-transaction verdict engine for AI agents: send a token, get a decision — proceed/caution/abort, a safe position size, and confidence — computed from live security and market data.",
-    endpoint: { path: "/verdict", method: "POST", pricing: `${config.price} per call (x402 on X Layer)` },
+      "One paid call returns a polished, executive-ready due-diligence report on any token: risk verdict, safe position size, security flags, liquidity, and holder distribution, compiled deterministically from live data and rendered as a self-contained document.",
+    endpoints: [
+      {
+        path: "/dossier",
+        method: "POST",
+        pricing: `${config.dossierPrice} per call (x402, USD₮0 on X Layer)`,
+        body: { chain: "bsc", tokenAddress: "0x…", format: "html | json" },
+      },
+      {
+        path: "/dossier/sample",
+        method: "GET",
+        pricing: "free",
+        description: "A real sample report, so you can see the deliverable before paying.",
+      },
+      {
+        path: "/verdict",
+        method: "POST",
+        pricing: `${config.price} per call (x402, USD₮0 on X Layer)`,
+        description:
+          "Companion service (agent #7008): the pre-trade risk decision alone — proceed/caution/abort, safe position size, confidence — as JSON.",
+      },
+    ],
   }),
 );
+
+// Browser-friendly GET handlers: the paid routes are POST-only, so someone
+// (e.g. an OKX reviewer) opening these URLs in a browser should see usage
+// instructions rather than a 404.
+app.get("/dossier", (c) =>
+  c.json({
+    service: "Dossier — Token Due-Diligence Report",
+    agentId: 7012,
+    usage: {
+      method: "POST",
+      body: { chain: "bsc", tokenAddress: "0x…", format: "html | json" },
+      pricing: `${config.dossierPrice} per call (x402, USD₮0 on X Layer, eip155:196)`,
+    },
+    sample: "/dossier/sample",
+  }),
+);
+
+app.get("/verdict", (c) =>
+  c.json({
+    service: "Verdict — Pre-trade token risk decision",
+    agentId: 7008,
+    usage: {
+      method: "POST",
+      body: { chain: "bsc", tokenAddress: "0x…" },
+      pricing: `${config.price} per call (x402, USD₮0 on X Layer, eip155:196)`,
+    },
+  }),
+);
+
+// Free sample report on a well-known token, cached in-instance so repeat views
+// don't burn free-API quota. Lets buyers and reviewers see the asset up front.
+const SAMPLE = { chain: "bsc", tokenAddress: "0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82" }; // CAKE
+const SAMPLE_TTL_MS = 6 * 60 * 60 * 1000;
+let sampleCache: { html: string; at: number } | undefined;
+
+app.get("/dossier/sample", async (c) => {
+  if (!sampleCache || Date.now() - sampleCache.at > SAMPLE_TTL_MS) {
+    try {
+      const dossier = await buildDossier({ ...SAMPLE, format: "html" });
+      sampleCache = {
+        html: renderDossierHtml(dossier, {
+          banner:
+            "Sample report (free). Every paid call to POST /dossier returns this document for the token you choose. 0.5 USD₮0 per call over x402 on X Layer · OKX.AI agent #7012.",
+        }),
+        at: Date.now(),
+      };
+    } catch (e) {
+      if (sampleCache) return c.html(sampleCache.html); // serve stale over failing
+      if (e instanceof SourcesUnavailableError) {
+        c.header("Retry-After", "30");
+        return c.json({ error: "data sources temporarily unavailable — retry shortly" }, 503);
+      }
+      throw e;
+    }
+  }
+  return c.html(sampleCache.html);
+});
 
 app.get("/health", (c) =>
   c.json({
