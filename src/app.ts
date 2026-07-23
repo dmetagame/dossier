@@ -172,6 +172,12 @@ if (!config.devSkipPayment && paymentConfigured()) {
   // has run, replaying the chain could re-execute the handler and re-enter
   // settlement, so those errors propagate instead.
   app.use(async (c, next) => {
+    // A2A fulfillment bypass: our own daemon delivers reports into the task
+    // channel after the buyer already paid at the task level, so its fetches
+    // must not hit the x402 gate again. Guarded by a non-empty shared secret.
+    if (config.internalKey && c.req.header("x-internal-key") === config.internalKey) {
+      return next();
+    }
     let handlerStarted = false;
     const trackedNext = async () => {
       handlerStarted = true;

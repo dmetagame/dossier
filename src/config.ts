@@ -24,6 +24,9 @@ export const config = {
   // DEV ONLY: skip the payment middleware so the engine can be exercised
   // locally. The deployed service must never set this; /health reports it.
   devSkipPayment: process.env.DEV_SKIP_PAYMENT === "1",
+  // Shared secret for the ASP-side A2A daemon: lets our own job-fulfillment
+  // sessions fetch reports without paying our own x402 gate. Never a buyer path.
+  internalKey: process.env.INTERNAL_KEY ?? "",
 } as const;
 
 export function paymentConfigured(): boolean {
