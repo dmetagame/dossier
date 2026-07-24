@@ -2,7 +2,7 @@
 
 One paid call turns a token address into a polished, executive-ready due-diligence
 report. Live on OKX.AI as an A2MCP service (agent #7012) at
-`https://verdict-pi.vercel.app/dossier`, paid per call over x402 on X Layer.
+`https://dossier.rouma.xyz/dossier`, paid per call over x402 on X Layer.
 
 An agent or analyst sends a token address; Dossier returns a **finished document**,
 not a data dump: risk verdict up top, safe position size, security flags, liquidity,
@@ -10,7 +10,7 @@ market activity, and holder distribution, compiled deterministically from live
 GoPlus + DexScreener data and rendered as a self-contained HTML report that reads,
 shares, and prints to PDF. `format: "json"` returns the same content as structured data.
 
-Free sample of a real generated report: https://verdict-pi.vercel.app/dossier/sample
+Free sample of a real generated report: https://dossier.rouma.xyz/dossier/sample
 
 ## Endpoints
 
@@ -79,10 +79,17 @@ thin/fresh tokens must never `proceed`. Current run: 13/13.
 pins `framework: null` (a framework preset once built a second broken lambda that
 captured `/`). Deploys are manual: `pnpm deploy:prod`.
 
-## A2A task fulfillment
+## Delivery model
 
-Marketplace task-flow purchases are fulfilled by an `okx-a2a` daemon (hosted on an
-always-on VPS, not in this repo): each accepted job fetches the report server-side
-via an internal-key header (a non-buyer path that skips the x402 gate) and delivers
-it through the job's encrypted file channel and XMTP message thread — x402-mode
-tasks have no escrow `deliver` step, so those are the only seller-side channels.
+Dossier is an **A2MCP / x402** service, so delivery is **pull-based**: after the buyer
+pays, their client replays the request to the endpoint and receives the report in the
+response body. This is OKX's designed flow for x402 — there is no seller-side push or
+escrow `deliver` step (the CLI explicitly rejects `deliver` for paymentMode 3, and
+backend attachment registration is not available for x402 tasks). The practical
+consequence is that the **endpoint host must be reachable from the buyer's environment**,
+which is why the service runs on a dedicated domain rather than a shared `*.vercel.app`
+host that some corporate networks filter.
+
+An `okx-a2a` daemon (on an always-on VPS, not in this repo) additionally watches accepted
+jobs and can send the report summary plus retrieval details to the buyer as an A2A/XMTP
+message — a best-effort courtesy channel, not a substitute for the endpoint pull.

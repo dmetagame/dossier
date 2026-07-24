@@ -7,7 +7,7 @@ Primary: Dossier (agent #7012). Fill these into the submission form.
 - **Prize categories to target:** Finance Copilot (primary), Best Product (secondary)
 - **Build direction:** Professional Asset Creation (OKX priority ASP direction #1)
 - **Service:** Token Due-Diligence Report (A2MCP, 0.5 USD₮0 per call)
-- **Endpoint:** https://verdict-pi.vercel.app/dossier
+- **Endpoint:** https://dossier.rouma.xyz/dossier
 - **X post link:** [fill in after posting the submission post]
 
 **One-line pitch:**
@@ -29,5 +29,5 @@ out. Deterministic and built from live data, so results are verifiable and repro
 **Payment:** x402 on X Layer, settled in USD₮0 via the OKX facilitator SDK. OKX
 x402-check validates the endpoint (valid, 0.5 USD₮0, eip155:196).
 
-**Free sample:** https://verdict-pi.vercel.app/dossier/sample shows a real generated
+**Free sample:** https://dossier.rouma.xyz/dossier/sample shows a real generated
 report before paying.

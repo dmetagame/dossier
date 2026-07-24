@@ -13,7 +13,7 @@ It needs one call that returns a finished report."
 
 **0:12–0:30 — the call**
 Terminal. Show the request, one input only:
-`curl -X POST https://verdict-pi.vercel.app/dossier -d '{"tokenAddress":"0x..."}'`
+`curl -X POST https://dossier.rouma.xyz/dossier -d '{"tokenAddress":"0x..."}'`
 Say: "One input. It even finds the chain itself." First response is HTTP 402. "It's a
 paid service. First call returns a payment challenge, priced in USD₮0 on X Layer,
 standard x402."

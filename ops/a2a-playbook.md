@@ -34,10 +34,10 @@ Whether to deliver is decided by EVIDENCE, never by the next-action text:
 2. Generate the deliverable yourself (do not wait for the buyer's replay):
    - Read the internal key: `KEY=$(cat ~/.okx-agent-task/internal-key.txt)`
    - Dossier (7012), full report:
-     `curl -s -X POST https://verdict-pi.vercel.app/dossier -H "x-internal-key: $KEY" -H 'content-type: application/json' -d '{"tokenAddress":"0x…","chain":"…"}' -o report.html`
+     `curl -s -X POST https://dossier.rouma.xyz/dossier -H "x-internal-key: $KEY" -H 'content-type: application/json' -d '{"tokenAddress":"0x…","chain":"…"}' -o report.html`
      Also fetch `"format":"json"` for the summary numbers.
    - Verdict (7008), decision JSON:
-     `curl -s -X POST https://verdict-pi.vercel.app/verdict -H "x-internal-key: $KEY" -H 'content-type: application/json' -d '{"chain":"…","tokenAddress":"0x…"}'`
+     `curl -s -X POST https://dossier.rouma.xyz/verdict -H "x-internal-key: $KEY" -H 'content-type: application/json' -d '{"chain":"…","tokenAddress":"0x…"}'`
    - `chain` may be omitted for /dossier; a 400 with `candidates` means
      ambiguous — ask the buyer via XMTP which chain (step 4 form).
 

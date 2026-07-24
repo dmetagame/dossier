@@ -38,4 +38,4 @@ Dossier, my #OKXAI Genesis entry: one call turns into a polished, executive-read
 due-diligence report on any token, paid per call over x402 on X Layer. Live on OKX.AI
 now. It turns an hour of dashboard-stitching into a single request. [listing link]
 
-Try the free sample first: https://verdict-pi.vercel.app/dossier/sample
+Try the free sample first: https://dossier.rouma.xyz/dossier/sample
