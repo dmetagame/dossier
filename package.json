@@ -1,5 +1,5 @@
 {
-  "name": "verdict",
+  "name": "dossier",
   "version": "0.1.0",
   "private": true,
   "description": "Pre-transaction verdict engine for AI agents — paid A2MCP service on OKX.AI",
