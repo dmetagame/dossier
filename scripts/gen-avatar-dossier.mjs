@@ -10,7 +10,10 @@ const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" vi
       <stop offset="0" stop-color="#7C8CF8"/><stop offset="1" stop-color="#5563E6"/>
     </linearGradient>
   </defs>
-  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+  <!-- Square corners: OKX review asked for no rounded corners, and the
+       marketplace applies its own masking. rx here would leave transparent
+       corners baked into the PNG. -->
+  <rect width="512" height="512" fill="url(#bg)"/>
   <!-- page with folded corner -->
   <path d="M168 132 H300 L356 188 V380 H168 Z" fill="#fff" opacity="0.06"
         stroke="url(#acc)" stroke-width="14" stroke-linejoin="round"/>
