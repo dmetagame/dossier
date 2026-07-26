@@ -54,6 +54,9 @@ Whether to deliver is decided by EVIDENCE, never by the next-action text:
         3. the attachment params (fileKey/digest/salt/nonce/secret/filename),
         4. the exact x402 replay request (method, URL, JSON body).
         A buyer who reads only the message text still receives the analysis.
+        Format numbers for humans: thousands separators, and prices in plain
+        decimal never scientific notation (a sub-micro price prints as
+        0.000002932, never 2.932e-06).
      c. `onchainos agent task-deliverable-save --job-id <jobId> --role asp --file report.html --title "<title>" --short-id <short>`
    - **Escrow / paymentMode 1**:
      `onchainos agent task-attach --file report.html <jobId>` then
