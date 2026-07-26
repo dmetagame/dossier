@@ -191,7 +191,8 @@ if (!config.devSkipPayment && paymentConfigured()) {
       error: "Payment required",
       service: name,
       description,
-      method: "POST",
+      method: "GET or POST",
+      parameters: "JSON body on POST, or query string on GET or POST",
       input,
       output: { mimeType: outputMimeType, description: outputDescription },
     },
@@ -267,26 +268,40 @@ if (!config.devSkipPayment && paymentConfigured()) {
   });
 }
 
-// A GET that gets past the gate still cannot name a token, so it answers 400
-// (never 2xx): the middleware settles only on success, so a probe or a curious
-// browser is never charged, and the path never reports itself as non-x402.
-const getNeedsPost = (c: any) =>
+// Buyers' x402 clients do not all replay the same way: some POST the original
+// JSON body, some replay with GET and carry the parameters in the query string
+// (OKX's own `payment quote` defaults to GET). Accepting only a POST body meant
+// a paid caller could be answered 400 and get no report, so parameters are read
+// from the query string and the JSON body alike, with the body winning.
+async function readParams(c: any): Promise<Record<string, unknown>> {
+  const query = c.req.query() as Record<string, string>;
+  let body: unknown = {};
+  const m = c.req.method;
+  if (m !== "GET" && m !== "HEAD") body = await c.req.json().catch(() => ({}));
+  if (!body || typeof body !== "object" || Array.isArray(body)) body = {};
+  return { ...query, ...(body as Record<string, unknown>) };
+}
+
+const invalid = (c: any, issues: unknown) =>
   c.json(
     {
-      error: "this endpoint takes a POST with a JSON body",
-      usage: { method: "POST", body: { tokenAddress: "0x…", chain: "(optional)" } },
+      error: "invalid request",
+      hint: "send tokenAddress either as a JSON body on POST or as a query parameter on GET or POST.",
+      examples: {
+        post: 'POST /dossier  {"tokenAddress":"0x…","chain":"(optional)"}',
+        get: "GET /dossier?tokenAddress=0x…&chain=(optional)",
+      },
       freeSample: "/dossier/sample",
+      issues,
     },
     400,
   );
-app.get("/verdict", getNeedsPost);
-app.get("/dossier", getNeedsPost);
 
-app.post("/verdict", async (c) => {
+app.on(["GET", "POST"], "/verdict", async (c) => {
   // Reached only after the middleware has verified payment (or in dev-skip mode).
-  const parsed = VerdictRequest.safeParse(await c.req.json().catch(() => ({})));
+  const parsed = VerdictRequest.safeParse(await readParams(c));
   if (!parsed.success) {
-    return c.json({ error: "invalid request", issues: parsed.error.issues }, 400);
+    return invalid(c, parsed.error.issues);
   }
   try {
     const verdict = await evaluate(parsed.data);
@@ -302,11 +317,11 @@ app.post("/verdict", async (c) => {
   }
 });
 
-app.post("/dossier", async (c) => {
+app.on(["GET", "POST"], "/dossier", async (c) => {
   // Reached only after the middleware has verified payment (or in dev-skip mode).
-  const parsed = DossierRequest.safeParse(await c.req.json().catch(() => ({})));
+  const parsed = DossierRequest.safeParse(await readParams(c));
   if (!parsed.success) {
-    return c.json({ error: "invalid request", issues: parsed.error.issues }, 400);
+    return invalid(c, parsed.error.issues);
   }
   try {
     const dossier = await buildDossier(parsed.data);

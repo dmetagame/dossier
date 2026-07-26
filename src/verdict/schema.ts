@@ -14,7 +14,8 @@ export const VerdictRequest = z.object({
   chain: ChainName,
   tokenAddress: z.string().regex(/^0x[a-fA-F0-9]{40}$/, "must be an EVM address"),
   action: z.enum(["buy", "sell", "hold", "lp"]).default("buy"),
-  amountUsd: z.number().positive().max(10_000_000).optional(),
+  // Coerced: a query-string value arrives as a string.
+  amountUsd: z.coerce.number().positive().max(10_000_000).optional(),
 });
 export type VerdictRequest = z.infer<typeof VerdictRequest>;
 
