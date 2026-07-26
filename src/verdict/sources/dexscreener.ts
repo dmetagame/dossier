@@ -6,13 +6,21 @@ import { SUPPORTED_CHAINS } from "../schema";
 
 // Cross-chain resolution for "just an address" requests. The tokens endpoint
 // already returns pairs on every chain, so one call tells us where the token
-// actually trades. We only auto-resolve when the answer is unambiguous — the
-// same address on two chains is two different contracts (bridges, and scam
-// clones deployed at identical addresses), and a due-diligence report must
-// never silently guess which one the buyer meant.
+// actually trades.
+//
+// The same address on two chains is two different contracts (bridged
+// deployments, and clones deployed at identical addresses), so when several
+// match we analyse the deepest-liquidity deployment — the one a buyer almost
+// always means — and report which chain was chosen and what the alternatives
+// were, so a wrong guess is visible rather than silent. Passing `chain`
+// explicitly always wins and skips this entirely.
 export type ChainResolution =
-  | { status: "ok"; chain: (typeof SUPPORTED_CHAINS)[number] }
-  | { status: "ambiguous"; candidates: string[] }
+  | {
+      status: "ok";
+      chain: (typeof SUPPORTED_CHAINS)[number];
+      ambiguous: boolean;
+      alternatives: string[];
+    }
   | { status: "not_found" }
   | { status: "unavailable" };
 
@@ -28,17 +36,26 @@ export async function resolveChain(address: string): Promise<ChainResolution> {
     return { status: "unavailable" };
   }
   const addr = address.toLowerCase();
-  const chains = new Set<string>();
+  // Rank candidate chains by the token's pooled liquidity on each.
+  const liquidityByChain = new Map<string, number>();
   for (const p of json.pairs ?? []) {
     const chain = (p.chainId ?? "").toLowerCase();
     if (!(SUPPORTED_CHAINS as readonly string[]).includes(chain)) continue;
-    if (p.baseToken?.address?.toLowerCase() === addr || p.quoteToken?.address?.toLowerCase() === addr) {
-      chains.add(chain);
-    }
+    const onThisPair =
+      p.baseToken?.address?.toLowerCase() === addr || p.quoteToken?.address?.toLowerCase() === addr;
+    if (!onThisPair) continue;
+    liquidityByChain.set(chain, (liquidityByChain.get(chain) ?? 0) + (p.liquidity?.usd ?? 0));
   }
-  if (chains.size === 0) return { status: "not_found" };
-  if (chains.size > 1) return { status: "ambiguous", candidates: [...chains].sort() };
-  return { status: "ok", chain: [...chains][0] as (typeof SUPPORTED_CHAINS)[number] };
+  if (liquidityByChain.size === 0) return { status: "not_found" };
+
+  const ranked = [...liquidityByChain.entries()].sort((a, b) => b[1] - a[1]);
+  const chain = ranked[0]![0];
+  return {
+    status: "ok",
+    chain: chain as (typeof SUPPORTED_CHAINS)[number],
+    ambiguous: ranked.length > 1,
+    alternatives: ranked.slice(1).map(([c]) => c),
+  };
 }
 
 export interface MarketSnapshot {

@@ -87,6 +87,8 @@ export function renderDossierHtml(d: Dossier, opts: RenderOpts = {}): string {
   footer { margin-top:36px; padding-top:14px; border-top:1px solid var(--line);
     color:var(--muted); font-size:12px; display:flex; justify-content:space-between; }
   .addr { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; word-break:break-all; }
+  .chainnote { margin-top:8px; padding:8px 10px; border-left:3px solid #b7791f; background:#fdf6e7;
+    color:#6b5316; font-size:12.5px; max-width:60ch; }
   .banner { background:#eef1f7; border:1px solid var(--line); border-radius:10px;
     padding:10px 14px; font-size:13px; color:var(--muted); margin-bottom:24px; }
   @media print { body { background:#fff; } .wrap { padding:0; } .banner { display:none; } }
@@ -96,6 +98,13 @@ export function renderDossierHtml(d: Dossier, opts: RenderOpts = {}): string {
     <div>
       <h1>${esc(d.title)}</h1>
       <div class="sub">${esc(d.token.chain)} · <span class="addr">${esc(d.token.address)}</span></div>
+      ${
+        d.chainResolution?.ambiguous
+          ? `<div class="chainnote">This address is deployed on more than one chain. This report covers the
+             <strong>${esc(d.token.chain)}</strong> deployment, which holds the deepest liquidity. Also deployed on
+             ${esc(d.chainResolution.alternatives.join(", "))} — request again with that chain to analyse it instead.</div>`
+          : ""
+      }
     </div>
     <div class="badge" style="background:${vc}">
       <div class="v">${esc(v.verdict)}</div>

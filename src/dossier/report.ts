@@ -6,13 +6,12 @@ import { ChainName, SUPPORTED_CHAINS } from "../verdict/schema";
 
 export { SourcesUnavailableError };
 
-// Chain omitted and the address trades on more than one supported chain:
-// the buyer must disambiguate — same address, different contracts.
-export class ChainAmbiguousError extends Error {
-  constructor(public candidates: string[]) {
-    super(`token trades on multiple chains: ${candidates.join(", ")} — specify "chain"`);
-    this.name = "ChainAmbiguousError";
-  }
+// How the chain was determined, so the buyer can always tell whether they
+// specified it, we inferred it, or we picked between several deployments.
+export interface ChainResolutionInfo {
+  source: "specified" | "auto-detected";
+  ambiguous: boolean;
+  alternatives: string[];
 }
 
 // Chain omitted and no supported chain has a market for the address.
@@ -61,16 +60,26 @@ export interface Dossier {
     topHolderPct?: number;
   };
   sources: string[];
+  chainResolution: ChainResolutionInfo;
 }
 
 export async function buildDossier(req: DossierRequest): Promise<Dossier> {
   let chain = req.chain;
+  let chainResolution: ChainResolutionInfo = {
+    source: "specified",
+    ambiguous: false,
+    alternatives: [],
+  };
   if (!chain) {
     const resolved = await resolveChain(req.tokenAddress);
-    if (resolved.status === "ambiguous") throw new ChainAmbiguousError(resolved.candidates);
     if (resolved.status === "not_found") throw new ChainNotFoundError();
     if (resolved.status === "unavailable") throw new SourcesUnavailableError();
     chain = resolved.chain;
+    chainResolution = {
+      source: "auto-detected",
+      ambiguous: resolved.ambiguous,
+      alternatives: resolved.alternatives,
+    };
   }
 
   const [sec, market, verdict] = await Promise.all([
@@ -114,5 +123,6 @@ export async function buildDossier(req: DossierRequest): Promise<Dossier> {
       topHolderPct: sec.status === "ok" ? sec.topHolderPct : undefined,
     },
     sources,
+    chainResolution,
   };
 }

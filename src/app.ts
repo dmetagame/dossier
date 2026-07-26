@@ -5,12 +5,7 @@ import { OKXFacilitatorClient } from "@okxweb3/x402-core";
 import { config, paymentConfigured } from "./config";
 import { VerdictRequest, SUPPORTED_CHAINS } from "./verdict/schema";
 import { evaluate, SourcesUnavailableError } from "./verdict/engine";
-import {
-  DossierRequest,
-  buildDossier,
-  ChainAmbiguousError,
-  ChainNotFoundError,
-} from "./dossier/report";
+import { DossierRequest, buildDossier, ChainNotFoundError } from "./dossier/report";
 import { renderDossierHtml } from "./dossier/render";
 
 export const app = new Hono();
@@ -150,7 +145,7 @@ if (!config.devSkipPayment && paymentConfigured()) {
     type: "string",
     enum: chainEnum,
     description:
-      "Optional. Auto-detected when the address trades on exactly one supported chain; required when it is ambiguous.",
+      "Optional. Auto-detected from live markets; when the address is deployed on several chains the deepest-liquidity deployment is analysed and the report states which chain was used.",
   } as const;
   const dossierInputSchema = {
     type: "object",
@@ -312,9 +307,6 @@ app.post("/dossier", async (c) => {
     return c.html(renderDossierHtml(dossier));
   } catch (e) {
     // Non-2xx responses are never settled, so none of these charge the buyer.
-    if (e instanceof ChainAmbiguousError) {
-      return c.json({ error: e.message, candidates: e.candidates }, 400);
-    }
     if (e instanceof ChainNotFoundError) {
       return c.json({ error: e.message }, 404);
     }
