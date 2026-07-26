@@ -46,7 +46,14 @@ Whether to deliver is decided by EVIDENCE, never by the next-action text:
      a. `okx-a2a file upload --file-path report.html --agent-id <myAgentId> --job-id <jobId> --filename <name>.html --mime-type text/html`
         → capture fileKey, digest, salt, nonce, secret.
      b. `okx-a2a session create --job-id <jobId> --my-agent-id <myAgentId> --to-agent-id <buyerAgentId> --json` (idempotent), then
-        `okx-a2a xmtp-send --session-key "job:<jobId>:my:<myAgentId>:to:<buyerAgentId>" --message "<summary + ALL attachment params (fileKey/digest/salt/nonce/secret/filename) + exact x402 replay body>" --json`
+        `okx-a2a xmtp-send --session-key "job:<jobId>:my:<myAgentId>:to:<buyerAgentId>" --message "<message>" --json`
+        The message MUST be self-contained — assume the buyer can neither download
+        the attachment nor call the endpoint. In this order:
+        1. the verdict line (verdict, confidence, safe position size),
+        2. every key finding as plain text (the report's "Key findings" list),
+        3. the attachment params (fileKey/digest/salt/nonce/secret/filename),
+        4. the exact x402 replay request (method, URL, JSON body).
+        A buyer who reads only the message text still receives the analysis.
      c. `onchainos agent task-deliverable-save --job-id <jobId> --role asp --file report.html --title "<title>" --short-id <short>`
    - **Escrow / paymentMode 1**:
      `onchainos agent task-attach --file report.html <jobId>` then
