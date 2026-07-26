@@ -3,7 +3,7 @@ import { paymentMiddleware, x402ResourceServer } from "@okxweb3/x402-hono";
 import { ExactEvmScheme } from "@okxweb3/x402-evm/exact/server";
 import { OKXFacilitatorClient } from "@okxweb3/x402-core";
 import { config, paymentConfigured } from "./config";
-import { VerdictRequest } from "./verdict/schema";
+import { VerdictRequest, SUPPORTED_CHAINS } from "./verdict/schema";
 import { evaluate, SourcesUnavailableError } from "./verdict/engine";
 import {
   DossierRequest,
@@ -135,17 +135,104 @@ if (!config.devSkipPayment && paymentConfigured()) {
     "Pre-trade token risk verdict: proceed, caution, or abort, with a safe position size and confidence.";
   const dossierDescription =
     "Full due-diligence dossier on a token, returned as a shareable formatted report.";
+
+  // Machine-readable parameter contract, served in the body of the unpaid 402
+  // (which the SDK otherwise leaves as `{}`). A caller that has never seen this
+  // service — a marketplace validator, a buying agent — can discover exactly
+  // what to send and what it will get back without paying first.
+  const chainEnum = [...SUPPORTED_CHAINS];
+  const tokenAddressSchema = {
+    type: "string",
+    pattern: "^0x[a-fA-F0-9]{40}$",
+    description: "EVM token contract address.",
+  } as const;
+  const chainSchema = {
+    type: "string",
+    enum: chainEnum,
+    description:
+      "Optional. Auto-detected when the address trades on exactly one supported chain; required when it is ambiguous.",
+  } as const;
+  const dossierInputSchema = {
+    type: "object",
+    properties: {
+      tokenAddress: tokenAddressSchema,
+      chain: chainSchema,
+      format: {
+        type: "string",
+        enum: ["html", "json"],
+        default: "html",
+        description: "html returns the rendered report document; json returns the same data structured.",
+      },
+    },
+    required: ["tokenAddress"],
+    additionalProperties: false,
+  } as const;
+  const verdictInputSchema = {
+    type: "object",
+    properties: {
+      tokenAddress: tokenAddressSchema,
+      chain: chainSchema,
+      amountUsd: { type: "number", description: "Optional intended position size in USD." },
+    },
+    required: ["tokenAddress"],
+    additionalProperties: false,
+  } as const;
+  const unpaidBody = (
+    name: string,
+    description: string,
+    input: unknown,
+    outputMimeType: string,
+    outputDescription: string,
+  ) => () => ({
+    contentType: "application/json",
+    body: {
+      error: "Payment required",
+      service: name,
+      description,
+      method: "POST",
+      input,
+      output: { mimeType: outputMimeType, description: outputDescription },
+    },
+  });
   // Every method that can reach a paid path is gated, not just POST: x402
   // validators and availability probes use GET and HEAD, and an unpaid 2xx on
   // a paid path fails validation outright.
   const pay = paymentMiddleware(
     {
-        "POST /verdict": { accepts: verdictAccepts, description: verdictDescription },
-        "GET /verdict": { accepts: verdictAccepts, description: verdictDescription },
-        "HEAD /verdict": { accepts: verdictAccepts, description: verdictDescription },
-        "POST /dossier": { accepts: dossierAccepts, description: dossierDescription },
-        "GET /dossier": { accepts: dossierAccepts, description: dossierDescription },
-        "HEAD /dossier": { accepts: dossierAccepts, description: dossierDescription },
+        ...Object.fromEntries(
+          ["POST", "GET", "HEAD"].map((m) => [
+            `${m} /verdict`,
+            {
+              accepts: verdictAccepts,
+              description: verdictDescription,
+              mimeType: "application/json",
+              unpaidResponseBody: unpaidBody(
+                "Pre-Trade Token Verdict",
+                verdictDescription,
+                verdictInputSchema,
+                "application/json",
+                "Decision object: verdict, maxSizeUsd, confidence, reasons, per-check results.",
+              ),
+            },
+          ]),
+        ),
+        ...Object.fromEntries(
+          ["POST", "GET", "HEAD"].map((m) => [
+            `${m} /dossier`,
+            {
+              accepts: dossierAccepts,
+              description: dossierDescription,
+              mimeType: "text/html",
+              unpaidResponseBody: unpaidBody(
+                "Token Due-Diligence Report",
+                dossierDescription,
+                dossierInputSchema,
+                "text/html",
+                "Self-contained due-diligence report document; format:json returns the same data as JSON.",
+              ),
+            },
+          ]),
+        ),
       },
     resourceServer,
   );
