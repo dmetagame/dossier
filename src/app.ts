@@ -135,14 +135,17 @@ if (!config.devSkipPayment && paymentConfigured()) {
     "Pre-trade token risk verdict: proceed, caution, or abort, with a safe position size and confidence.";
   const dossierDescription =
     "Full due-diligence dossier on a token, returned as a shareable formatted report.";
-  // GET is gated as well as POST: x402 validators probe with GET, and an
-  // unpaid 2xx on the paid path fails validation outright.
+  // Every method that can reach a paid path is gated, not just POST: x402
+  // validators and availability probes use GET and HEAD, and an unpaid 2xx on
+  // a paid path fails validation outright.
   const pay = paymentMiddleware(
     {
         "POST /verdict": { accepts: verdictAccepts, description: verdictDescription },
         "GET /verdict": { accepts: verdictAccepts, description: verdictDescription },
+        "HEAD /verdict": { accepts: verdictAccepts, description: verdictDescription },
         "POST /dossier": { accepts: dossierAccepts, description: dossierDescription },
         "GET /dossier": { accepts: dossierAccepts, description: dossierDescription },
+        "HEAD /dossier": { accepts: dossierAccepts, description: dossierDescription },
       },
     resourceServer,
   );
