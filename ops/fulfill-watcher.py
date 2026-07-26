@@ -153,18 +153,56 @@ def send_message(job, buyer, text):
     return bool(r and r.get("ok"))
 
 
-def deliver(job, buyer, title):
-    addr, chain = resolve_token(title)
-    if not addr:
-        log("  no token resolved from title; asking buyer")
-        return send_message(job, buyer, (
-            "Payment received for: %s. I could not identify the token from the request. "
-            "Reply with the token contract address (0x...) and optionally the chain "
-            "(ethereum, bsc, base, arbitrum, polygon, xlayer) and the full due-diligence "
-            "report will be delivered within a minute. The same report is also returned "
-            "directly in the paid response of POST %s with body "
-            '{"tokenAddress":"0x..."}.' % (title, ENDPOINT)))
+# Marks messages this watcher sent, so replies can be told apart from our own
+# traffic when we re-read the thread.
+ASK_MARKER = "[dossier:need-token]"
+OURS = ("DOSSIER REPORT", ASK_MARKER)
 
+
+def read_buyer_reply(job, buyer):
+    """Look for a token the buyer supplied in reply to our question.
+
+    Returns (address, chain) or (None, None). Only messages we did not send are
+    considered, so our own question text can never be read back as an answer.
+    """
+    r = run([OKXA2A, "session", "history", "--job-id", job,
+             "--toAgentId", str(buyer), "--limit", "30", "--json"])
+    try:
+        msgs = json.loads(r.stdout)
+    except Exception:
+        return None, None
+    if not isinstance(msgs, list):
+        return None, None
+    for m in reversed(msgs):
+        raw = m.get("content") or ""
+        try:
+            text = json.loads(raw).get("content") or ""
+        except Exception:
+            text = raw
+        if any(mark in text for mark in OURS):
+            continue
+        hit = re.search(r"0x[a-fA-F0-9]{40}", text)
+        if hit:
+            chain = None
+            for c in SUPPORTED_CHAINS:
+                if re.search(r"\b%s\b" % c, text, re.I):
+                    chain = c
+                    break
+            return hit.group(0), chain
+    return None, None
+
+
+def ask_for_token(job, buyer, title):
+    return send_message(job, buyer, (
+        "%s Payment received for: %s. I could not identify the token from the request. "
+        "Reply with the token contract address (0x...) and optionally the chain "
+        "(ethereum, bsc, base, arbitrum, polygon, xlayer) and the full due-diligence "
+        "report will be delivered within two minutes. The same report is also returned "
+        "directly in the paid response of POST %s with body "
+        '{"tokenAddress":"0x..."}.' % (ASK_MARKER, title, ENDPOINT)))
+
+
+def deliver(job, buyer, addr, chain):
     raw = fetch(addr, chain, "json")
     try:
         data = json.loads(raw)
@@ -239,15 +277,48 @@ def main():
     log("tasks=%d candidates=%d" % (len(tasks), len(todo)))
     for t in todo:
         job = t["jobId"]
-        if state.get(job, {}).get("done"):
+        st = state.get(job, {})
+        if st.get("done"):
             continue
         if has_deliverable(job):
             state[job] = {"done": True, "why": "already had deliverable"}
             save_state(state)
             continue
-        log("fulfilling", job[:12], "|", t.get("title"))
+
+        buyer = t.get("counterpartyAgentId")
+        title = t.get("title") or ""
+        addr, chain = resolve_token(title)
+
+        # If the title was unusable we asked the buyer; a job is never closed on
+        # the question alone, so their answer is picked up on a later tick.
+        if not addr and st.get("asked"):
+            addr, chain = read_buyer_reply(job, buyer)
+            if addr:
+                log("  buyer supplied token", addr[:12], "chain", chain)
+
+        if not addr:
+            if st.get("asked"):
+                # Re-ask at most once a day rather than every two minutes.
+                if time.time() - st.get("asked_at", 0) > 86400:
+                    ask_for_token(job, buyer, title)
+                    state[job] = {"asked": True, "asked_at": time.time()}
+                    save_state(state)
+                continue
+            log("fulfilling", job[:12], "| no token in title, asking buyer")
+            if ask_for_token(job, buyer, title):
+                state[job] = {"asked": True, "asked_at": time.time()}
+                save_state(state)
+            continue
+
+        log("fulfilling", job[:12], "|", title)
         try:
-            ok = deliver(job, t.get("counterpartyAgentId"), t.get("title") or "")
+            # Re-check immediately before sending: another path (an AI session)
+            # may have delivered since the top of this loop.
+            if has_deliverable(job):
+                state[job] = {"done": True, "why": "delivered by another path"}
+                save_state(state)
+                continue
+            ok = deliver(job, buyer, addr, chain)
         except Exception as e:
             log("  error:", repr(e)[:200])
             ok = False
