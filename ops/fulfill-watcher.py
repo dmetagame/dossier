@@ -22,6 +22,8 @@ ENDPOINT = "https://dossier.rouma.xyz/dossier"
 HOME = os.path.expanduser("~")
 KEY_FILE = os.path.join(HOME, ".okx-agent-task", "internal-key.txt")
 STATE_FILE = os.path.join(HOME, ".okx-agent-task", "fulfill-watcher-state.json")
+# How long to let the buyer's own paid replay land before messaging them.
+ASK_GRACE_SECONDS = 900
 ONCHAINOS = os.path.join(HOME, ".local", "bin", "onchainos")
 OKXA2A = os.path.join(HOME, ".npm-global", "bin", "okx-a2a")
 SUPPORTED_CHAINS = {"ethereum", "bsc", "base", "arbitrum", "polygon", "xlayer"}
@@ -193,12 +195,16 @@ def read_buyer_reply(job, buyer):
 
 
 def ask_for_token(job, buyer, title):
+    # A buyer whose own x402 replay already succeeded has their report and needs
+    # nothing from us; we cannot see that from the ASP side, so the message must
+    # say so plainly rather than imply the order failed.
     return send_message(job, buyer, (
-        "%s Payment received for: %s. I could not identify the token from the request. "
-        "Reply with the token contract address (0x...) and optionally the chain "
-        "(ethereum, bsc, base, arbitrum, polygon, xlayer) and the full due-diligence "
-        "report will be delivered within two minutes. The same report is also returned "
-        "directly in the paid response of POST %s with body "
+        "%s Regarding: %s. If you already received your report in the paid response, "
+        "this message needs no action — please ignore it. If you have not, it is because "
+        "the token was not visible to me from the job title: reply with the contract "
+        "address (0x...) and optionally the chain (ethereum, bsc, base, arbitrum, polygon, "
+        "xlayer) and the full report will be delivered within two minutes. You can also "
+        "fetch it yourself at any time with POST %s and body "
         '{"tokenAddress":"0x..."}.' % (ASK_MARKER, title, ENDPOINT)))
 
 
@@ -270,6 +276,9 @@ def main():
         log("could not list tasks; will retry next tick")
         return
     tasks = (data.get("data") or {}).get("tasks") or []
+    # "complete" means the buyer released funds, which only happens after they
+    # have what they paid for — never chase those. Only "accepted" jobs, where
+    # we cannot see whether the buyer's own replay succeeded, are candidates.
     todo = [t for t in tasks
             if str(t.get("myAgentId")) == ASP
             and t.get("myRole") == "asp"
@@ -297,16 +306,27 @@ def main():
                 log("  buyer supplied token", addr[:12], "chain", chain)
 
         if not addr:
+            # Give the buyer's own x402 replay time to land before asking for
+            # anything: a served buyer needs no message from us, and an
+            # unnecessary "I could not identify the token" reads as a failure.
+            first_seen = st.get("first_seen")
+            if not first_seen:
+                state[job] = {**st, "first_seen": time.time()}
+                save_state(state)
+                log("  no token in title; holding %ds for the buyer's own replay" % ASK_GRACE_SECONDS)
+                continue
+            if time.time() - first_seen < ASK_GRACE_SECONDS:
+                continue
             if st.get("asked"):
                 # Re-ask at most once a day rather than every two minutes.
                 if time.time() - st.get("asked_at", 0) > 86400:
                     ask_for_token(job, buyer, title)
-                    state[job] = {"asked": True, "asked_at": time.time()}
+                    state[job] = {**st, "asked": True, "asked_at": time.time()}
                     save_state(state)
                 continue
             log("fulfilling", job[:12], "| no token in title, asking buyer")
             if ask_for_token(job, buyer, title):
-                state[job] = {"asked": True, "asked_at": time.time()}
+                state[job] = {**st, "asked": True, "asked_at": time.time()}
                 save_state(state)
             continue
 
