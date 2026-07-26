@@ -7,10 +7,17 @@ import { VerdictRequest, SUPPORTED_CHAINS } from "./verdict/schema";
 import { evaluate, SourcesUnavailableError } from "./verdict/engine";
 import { DossierRequest, buildDossier, ChainNotFoundError } from "./dossier/report";
 import { renderDossierHtml } from "./dossier/render";
+import { renderSiteHtml } from "./site";
 
 export const app = new Hono();
 
+// Human landing page at the root; the same information stays machine-readable
+// at /info for agents and crawlers that want structure rather than markup.
 app.get("/", (c) =>
+  c.html(renderSiteHtml({ price: config.dossierPrice, agentId: 7012 })),
+);
+
+app.get("/info", (c) =>
   c.json({
     service: "Dossier",
     agentId: 7012,
