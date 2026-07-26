@@ -45,33 +45,11 @@ app.get("/", (c) =>
   }),
 );
 
-// Browser-friendly GET handlers: the paid routes are POST-only, so someone
-// (e.g. an OKX reviewer) opening these URLs in a browser should see usage
-// instructions rather than a 404.
-app.get("/dossier", (c) =>
-  c.json({
-    service: "Dossier — Token Due-Diligence Report",
-    agentId: 7012,
-    usage: {
-      method: "POST",
-      body: { tokenAddress: "0x…", chain: "(optional — auto-detected when unambiguous)", format: "html | json" },
-      pricing: `${config.dossierPrice} per call (x402, USD₮0 on X Layer, eip155:196)`,
-    },
-    sample: "/dossier/sample",
-  }),
-);
-
-app.get("/verdict", (c) =>
-  c.json({
-    service: "Verdict — Pre-trade token risk decision",
-    agentId: 7008,
-    usage: {
-      method: "POST",
-      body: { chain: "bsc", tokenAddress: "0x…" },
-      pricing: `${config.price} per call (x402, USD₮0 on X Layer, eip155:196)`,
-    },
-  }),
-);
+// NOTE: /dossier and /verdict must NEVER answer an unpaid request with 2xx on
+// ANY method. x402 validators (including OKX's `agent x402-check`, which probes
+// with GET) treat a 200 as "not a valid x402 service" and reject the listing.
+// Usage information lives on `/` and the free `/dossier/sample` instead; the
+// paid paths are gated for GET and POST alike below.
 
 // Free sample report on a well-known token, cached in-instance so repeat views
 // don't burn free-API quota. Lets buyers and reviewers see the asset up front.
@@ -123,6 +101,8 @@ if (!config.devSkipPayment && !paymentConfigured()) {
     c.json({ error: "payment layer not configured — service temporarily unavailable" }, 503);
   app.post("/verdict", dark);
   app.post("/dossier", dark);
+  app.get("/verdict", dark);
+  app.get("/dossier", dark);
 }
 
 if (!config.devSkipPayment && paymentConfigured()) {
@@ -137,30 +117,32 @@ if (!config.devSkipPayment && paymentConfigured()) {
     config.network,
     new ExactEvmScheme(),
   );
+  const verdictAccepts = {
+    scheme: "exact",
+    price: config.price,
+    network: config.network,
+    payTo: config.payTo,
+    maxTimeoutSeconds: 300,
+  } as const;
+  const dossierAccepts = {
+    scheme: "exact",
+    price: config.dossierPrice,
+    network: config.network,
+    payTo: config.payTo,
+    maxTimeoutSeconds: 300,
+  } as const;
+  const verdictDescription =
+    "Pre-trade token risk verdict: proceed, caution, or abort, with a safe position size and confidence.";
+  const dossierDescription =
+    "Full due-diligence dossier on a token, returned as a shareable formatted report.";
+  // GET is gated as well as POST: x402 validators probe with GET, and an
+  // unpaid 2xx on the paid path fails validation outright.
   const pay = paymentMiddleware(
     {
-        "POST /verdict": {
-          accepts: {
-            scheme: "exact",
-            price: config.price,
-            network: config.network,
-            payTo: config.payTo,
-            maxTimeoutSeconds: 300,
-          },
-          description:
-            "Pre-trade token risk verdict: proceed, caution, or abort, with a safe position size and confidence.",
-        },
-        "POST /dossier": {
-          accepts: {
-            scheme: "exact",
-            price: config.dossierPrice,
-            network: config.network,
-            payTo: config.payTo,
-            maxTimeoutSeconds: 300,
-          },
-          description:
-            "Full due-diligence dossier on a token, returned as a shareable formatted report.",
-        },
+        "POST /verdict": { accepts: verdictAccepts, description: verdictDescription },
+        "GET /verdict": { accepts: verdictAccepts, description: verdictDescription },
+        "POST /dossier": { accepts: dossierAccepts, description: dossierDescription },
+        "GET /dossier": { accepts: dossierAccepts, description: dossierDescription },
       },
     resourceServer,
   );
@@ -192,6 +174,21 @@ if (!config.devSkipPayment && paymentConfigured()) {
     }
   });
 }
+
+// A GET that gets past the gate still cannot name a token, so it answers 400
+// (never 2xx): the middleware settles only on success, so a probe or a curious
+// browser is never charged, and the path never reports itself as non-x402.
+const getNeedsPost = (c: any) =>
+  c.json(
+    {
+      error: "this endpoint takes a POST with a JSON body",
+      usage: { method: "POST", body: { tokenAddress: "0x…", chain: "(optional)" } },
+      freeSample: "/dossier/sample",
+    },
+    400,
+  );
+app.get("/verdict", getNeedsPost);
+app.get("/dossier", getNeedsPost);
 
 app.post("/verdict", async (c) => {
   // Reached only after the middleware has verified payment (or in dev-skip mode).
