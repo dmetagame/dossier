@@ -1,0 +1,260 @@
+#!/usr/bin/env python3
+"""Deterministic ASP fulfilment watcher for Dossier (agent 7012).
+
+Why this exists: incoming marketplace jobs were dispatched to an AI session that
+could fail for reasons unrelated to the job (expired provider credentials, API
+errors), leaving a paid buyer with nothing. Delivering a dossier needs no model:
+resolve the token, call our own service, push the result into the job channel.
+This runs on a timer, is idempotent, and has no LLM or OAuth dependency.
+
+Per job with role=asp, agent 7012, status=accepted and no ASP deliverable yet:
+  1. resolve the token (0x address in the title, else symbol via DexScreener)
+  2. fetch the report through the internal-key bypass
+  3. upload it to the job file channel
+  4. send a self-contained A2A message (analysis inline + retrieval details)
+  5. save a local deliverable record
+If the token cannot be resolved, ask the buyer once over A2A instead.
+"""
+import json, os, re, subprocess, sys, time
+
+ASP = "7012"
+ENDPOINT = "https://dossier.rouma.xyz/dossier"
+HOME = os.path.expanduser("~")
+KEY_FILE = os.path.join(HOME, ".okx-agent-task", "internal-key.txt")
+STATE_FILE = os.path.join(HOME, ".okx-agent-task", "fulfill-watcher-state.json")
+ONCHAINOS = os.path.join(HOME, ".local", "bin", "onchainos")
+OKXA2A = os.path.join(HOME, ".npm-global", "bin", "okx-a2a")
+SUPPORTED_CHAINS = {"ethereum", "bsc", "base", "arbitrum", "polygon", "xlayer"}
+STOPWORDS = {
+    "due", "diligence", "on", "for", "the", "a", "an", "check", "quick", "risk",
+    "report", "before", "i", "buy", "token", "analysis", "please", "of", "my",
+}
+
+
+def log(*a):
+    print(time.strftime("%Y-%m-%d %H:%M:%S"), *a, flush=True)
+
+
+def run(cmd, timeout=180):
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(cmd, 1, "", "timeout")
+
+
+def jrun(cmd, timeout=180):
+    r = run(cmd, timeout)
+    m = re.search(r"\{.*\}", r.stdout, re.S)
+    if not m:
+        return None
+    try:
+        return json.loads(m.group(0))
+    except Exception:
+        return None
+
+
+def load_state():
+    try:
+        return json.load(open(STATE_FILE))
+    except Exception:
+        return {}
+
+
+def save_state(s):
+    tmp = STATE_FILE + ".tmp"
+    json.dump(s, open(tmp, "w"))
+    os.replace(tmp, STATE_FILE)
+
+
+def fmt_price(n):
+    """Plain decimal, never scientific notation."""
+    if n is None:
+        return "n/a"
+    try:
+        f = float(n)
+    except Exception:
+        return str(n)
+    if f == 0:
+        return "0"
+    if abs(f) >= 1:
+        return format(round(f, 6), ",")
+    d = ("%.18f" % f).split(".")[1]
+    lead = len(d) - len(d.lstrip("0"))
+    return "0." + d[: lead + 4].rstrip("0")
+
+
+def money(n):
+    try:
+        return format(int(float(n)), ",")
+    except Exception:
+        return "n/a"
+
+
+def resolve_token(title):
+    """0x address in the title wins; otherwise resolve a symbol via DexScreener.
+
+    Only EVM chains this service supports are eligible: an unfiltered search
+    ranks by liquidity across every chain and would resolve PEPE or CAKE to
+    their Solana listings, which we cannot analyse.
+    """
+    m = re.search(r"0x[a-fA-F0-9]{40}", title or "")
+    if m:
+        return m.group(0), None
+    words = [w.strip(".,:;!?()[]'\"") for w in (title or "").split()]
+    cands = [w for w in words if w and w.lower() not in STOPWORDS and len(w) <= 12]
+    for w in cands:
+        r = run(["curl", "-s", "--max-time", "15",
+                 "https://api.dexscreener.com/latest/dex/search?q=" + w])
+        try:
+            pairs = json.loads(r.stdout).get("pairs") or []
+        except Exception:
+            continue
+        best, best_liq = None, 0.0
+        for p in pairs:
+            base = p.get("baseToken") or {}
+            addr = base.get("address") or ""
+            chain = (p.get("chainId") or "").lower()
+            if chain not in SUPPORTED_CHAINS:
+                continue
+            if not re.fullmatch(r"0x[a-fA-F0-9]{40}", addr):
+                continue
+            if (base.get("symbol") or "").lower() != w.lower():
+                continue
+            liq = float((p.get("liquidity") or {}).get("usd") or 0)
+            if liq > best_liq:
+                best, best_liq = p, liq
+        if best and best_liq > 10000:
+            return best["baseToken"]["address"], best.get("chainId")
+    return None, None
+
+
+def fetch(addr, chain, fmt):
+    key = open(KEY_FILE).read().strip()
+    body = {"tokenAddress": addr, "format": fmt}
+    if chain:
+        body["chain"] = chain
+    r = run(["curl", "-s", "-X", "POST", ENDPOINT,
+             "-H", "x-internal-key: " + key,
+             "-H", "content-type: application/json",
+             "-d", json.dumps(body)], timeout=120)
+    return r.stdout
+
+
+def has_deliverable(job):
+    r = run([ONCHAINOS, "agent", "task-deliverable-list", "--job-id", job, "--role", "asp"])
+    return "originalName" in r.stdout
+
+
+def send_message(job, buyer, text):
+    run([OKXA2A, "session", "create", "--job-id", job,
+         "--my-agent-id", ASP, "--to-agent-id", str(buyer), "--json"])
+    key = "job:%s:my:%s:to:%s" % (job, ASP, buyer)
+    r = jrun([OKXA2A, "xmtp-send", "--session-key", key, "--message", text, "--json"])
+    return bool(r and r.get("ok"))
+
+
+def deliver(job, buyer, title):
+    addr, chain = resolve_token(title)
+    if not addr:
+        log("  no token resolved from title; asking buyer")
+        return send_message(job, buyer, (
+            "Payment received for: %s. I could not identify the token from the request. "
+            "Reply with the token contract address (0x...) and optionally the chain "
+            "(ethereum, bsc, base, arbitrum, polygon, xlayer) and the full due-diligence "
+            "report will be delivered within a minute. The same report is also returned "
+            "directly in the paid response of POST %s with body "
+            '{"tokenAddress":"0x..."}.' % (title, ENDPOINT)))
+
+    raw = fetch(addr, chain, "json")
+    try:
+        data = json.loads(raw)
+    except Exception:
+        log("  service did not return JSON; aborting this job")
+        return False
+    if "riskVerdict" not in data:
+        log("  service error:", raw[:160])
+        return False
+
+    html = fetch(addr, chain, "html")
+    sym = (data.get("token") or {}).get("symbol") or "token"
+    safe_sym = re.sub(r"[^A-Za-z0-9_-]", "", str(sym)) or "token"
+    path = "/tmp/dossier-%s-%s.html" % (safe_sym, job[:10])
+    open(path, "w").write(html)
+
+    up = jrun([OKXA2A, "file", "upload", "--file-path", path, "--agent-id", ASP,
+               "--job-id", job, "--filename", "dossier-%s.html" % safe_sym,
+               "--mime-type", "text/html"], timeout=240) or {}
+
+    v = data["riskVerdict"]
+    tok = data.get("token") or {}
+    L = []
+    L.append("DOSSIER REPORT - %s (%s)" % (sym, tok.get("chain")))
+    L.append("")
+    L.append("VERDICT: %s | confidence %s | safe position size up to $%s" % (
+        str(v.get("verdict")).upper(), v.get("confidence"),
+        money(v.get("maxSizeUsd")) if v.get("maxSizeUsd") is not None else "n/a"))
+    L.append("")
+    L.append("KEY FINDINGS:")
+    for r_ in v.get("reasons", []):
+        L.append("  - " + r_)
+    L.append("")
+    L.append("SNAPSHOT: price $%s | liquidity $%s | 24h volume $%s | holders %s" % (
+        fmt_price(tok.get("priceUsd")), money(tok.get("liquidityUsd")),
+        money(tok.get("volume24hUsd")),
+        money(tok.get("holderCount")) if tok.get("holderCount") else "n/a"))
+    L.append("CONTRACT: %s" % addr)
+    L.append("SOURCES: %s" % ", ".join(data.get("sources") or []))
+    L.append("")
+    if up.get("fileKey"):
+        L.append("FULL HTML REPORT (encrypted attachment in this job's file channel):")
+        for k in ("fileKey", "digest", "salt", "nonce", "secret", "filename"):
+            L.append("  %s %s" % (k, up.get(k)))
+        L.append("  retrieve with: okx-a2a file download --file-key <fileKey> "
+                 "--agent-id <yourAgentId> --digest <digest> --salt <salt> "
+                 "--nonce <nonce> --secret <secret>")
+        L.append("")
+    L.append("OR fetch it yourself (x402 replay):")
+    L.append('  POST %s  body {"tokenAddress":"%s"%s}' % (
+        ENDPOINT, addr, (',"chain":"%s"' % tok.get("chain")) if tok.get("chain") else ""))
+
+    ok = send_message(job, buyer, "\n".join(L))
+    run([ONCHAINOS, "agent", "task-deliverable-save", "--job-id", job, "--role", "asp",
+         "--file", path, "--title", "Due-diligence dossier: %s" % sym,
+         "--short-id", job[:6] + "-" + job[-4:]])
+    log("  delivered %s verdict=%s message_ok=%s" % (sym, v.get("verdict"), ok))
+    return ok
+
+
+def main():
+    state = load_state()
+    data = jrun([ONCHAINOS, "agent", "active-tasks"])
+    if not data or not data.get("ok"):
+        log("could not list tasks; will retry next tick")
+        return
+    tasks = (data.get("data") or {}).get("tasks") or []
+    todo = [t for t in tasks
+            if str(t.get("myAgentId")) == ASP
+            and t.get("myRole") == "asp"
+            and t.get("status") == "accepted"]
+    log("tasks=%d candidates=%d" % (len(tasks), len(todo)))
+    for t in todo:
+        job = t["jobId"]
+        if state.get(job, {}).get("done"):
+            continue
+        if has_deliverable(job):
+            state[job] = {"done": True, "why": "already had deliverable"}
+            save_state(state)
+            continue
+        log("fulfilling", job[:12], "|", t.get("title"))
+        try:
+            ok = deliver(job, t.get("counterpartyAgentId"), t.get("title") or "")
+        except Exception as e:
+            log("  error:", repr(e)[:200])
+            ok = False
+        if ok:
+            state[job] = {"done": True, "at": time.time()}
+            save_state(state)
+
+
+if __name__ == "__main__":
+    main()
