@@ -110,11 +110,22 @@ function honeypotCheck(sec: Sec): CheckResult {
   if (sec.status !== "ok") return { status: "unknown", detail: "sellability (no security data)" };
   if (sec.isHoneypot) return { status: "fail", detail: "Flagged as a honeypot — buyers cannot sell." };
   if (sec.cannotSellAll) return { status: "fail", detail: "Contract restricts selling full balances." };
-  if ((sec.sellTaxPct ?? 0) > 15)
-    return { status: "fail", detail: `Sell tax ${sec.sellTaxPct?.toFixed(0)}% — exit is punitive.` };
-  if ((sec.sellTaxPct ?? 0) > 5 || (sec.buyTaxPct ?? 0) > 5)
-    return { status: "warn", detail: `Trading taxes present (buy ${sec.buyTaxPct ?? 0}%, sell ${sec.sellTaxPct ?? 0}%).` };
-  return { status: "pass", detail: "Sellable, no honeypot indicators." };
+  // Absent tax figures are not the same as zero tax. The source omits them for
+  // many tokens, and reporting a clean pass on that silence would be claiming
+  // knowledge we do not have — the mistake this engine exists to avoid.
+  const taxesKnown = sec.sellTaxPct !== undefined || sec.buyTaxPct !== undefined;
+  if (taxesKnown) {
+    const sell = sec.sellTaxPct ?? 0;
+    const buy = sec.buyTaxPct ?? 0;
+    if (sell > 15) return { status: "fail", detail: `Sell tax ${sell.toFixed(0)}% — exit is punitive.` };
+    if (sell > 5 || buy > 5)
+      return { status: "warn", detail: `Trading taxes present (buy ${buy}%, sell ${sell}%).` };
+    return { status: "pass", detail: `No honeypot flags; buy ${buy}% / sell ${sell}% tax.` };
+  }
+  return {
+    status: "warn",
+    detail: "No honeypot flag, but the security source did not report trading taxes — a sell tax cannot be ruled out.",
+  };
 }
 
 function controlCheck(sec: Sec): CheckResult {
