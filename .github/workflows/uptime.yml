@@ -58,12 +58,13 @@ jobs:
       - name: The challenge is still valid and priced correctly
         run: |
           set -euo pipefail
-          hdr=$(curl -sS -D - -o /dev/null --max-time 45 -X POST "$BASE/dossier" \
-                | tr -d '\r' | grep -i '^payment-required:' | sed 's/^[^:]*: *//')
-          [ -n "$hdr" ] || { echo "::error::no PAYMENT-REQUIRED header on the paid route"; exit 1; }
-          echo "$hdr" | base64 -d | python3 - <<'PY'
+          curl -sS -D - -o /dev/null --max-time 45 -X POST "$BASE/dossier" \
+            | tr -d '\r' | grep -i '^payment-required:' | sed 's/^[^:]*: *//' > hdr.b64
+          [ -s hdr.b64 ] || { echo "::error::no PAYMENT-REQUIRED header on the paid route"; exit 1; }
+          base64 -d < hdr.b64 > challenge.json
+          python3 - challenge.json <<'PY'
           import json, sys
-          c = json.load(sys.stdin)
+          c = json.load(open(sys.argv[1]))
           a = c["accepts"][0]
           url = c["resource"]["url"]
           assert url.startswith("https://"), f"resource url is not https: {url}"
