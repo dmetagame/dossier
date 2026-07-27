@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { timingSafeEqual } from "node:crypto";
 import { paymentMiddleware, x402ResourceServer } from "@okxweb3/x402-hono";
 import { ExactEvmScheme } from "@okxweb3/x402-evm/exact/server";
 import { OKXFacilitatorClient } from "@okxweb3/x402-core";
@@ -9,6 +10,17 @@ import { DossierRequest, buildDossier, ChainNotFoundError } from "./dossier/repo
 import { renderDossierHtml } from "./dossier/render";
 import * as archive from "./dossier/archive";
 import { renderSiteHtml } from "./site";
+
+// Constant-time comparison for the payment-bypass secret. A `===` on a secret
+// is a habit worth not having, even where a remote timing attack over TLS is
+// impractical.
+function internalKeyMatches(given: string | undefined): boolean {
+  if (!given) return false;
+  const a = Buffer.from(given);
+  const b = Buffer.from(config.internalKey);
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
+}
 
 export const app = new Hono();
 
@@ -334,7 +346,7 @@ if (!config.devSkipPayment && paymentConfigured()) {
     // A2A fulfillment bypass: our own daemon delivers reports into the task
     // channel after the buyer already paid at the task level, so its fetches
     // must not hit the x402 gate again. Guarded by a non-empty shared secret.
-    if (config.internalKey && c.req.header("x-internal-key") === config.internalKey) {
+    if (config.internalKey && internalKeyMatches(c.req.header("x-internal-key"))) {
       return next();
     }
     let handlerStarted = false;
