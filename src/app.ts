@@ -18,6 +18,8 @@ import { renderDossierHtml } from "./dossier/render";
 import * as archive from "./dossier/archive";
 import { renderSiteHtml } from "./site";
 import { fontByPath } from "./fonts";
+import { publicKey, SCHEMA_VERSION, METHODOLOGY_VERSION } from "./attest";
+import { renderVerifyHtml } from "./verify-page";
 import * as ratelimit from "./ratelimit";
 import {
   dossierInputSchema,
@@ -42,6 +44,7 @@ export const app = new Hono();
 // after nothing else, so it cannot affect the paid paths: those are excluded by
 // name below. Runs in observe mode until real traffic confirms the budgets.
 const FREE_LIMITED = new Set([
+  "/verify",
   "/dossier/recovery",
   "/dossier/sample",
   "/dossier/preflight",
@@ -109,6 +112,24 @@ app.get("/f/:file", (c) => {
   c.header("Cache-Control", "public, max-age=31536000, immutable");
   return c.body(new Uint8Array(f.body));
 });
+
+// The signing key, published so a report can be checked against a key fetched
+// from a place the reader chooses, rather than the one bundled in the report.
+app.get("/.well-known/dossier-signing-key.json", (c) => {
+  const k = publicKey();
+  c.header("Cache-Control", "public, max-age=300");
+  return c.json({
+    issuer: { agentId: 7012, name: "Dossier" },
+    schemaVersion: SCHEMA_VERSION,
+    methodologyVersion: METHODOLOGY_VERSION,
+    ...(k ?? { algorithm: null, publicKey: null, note: "This instance is not signing reports." }),
+    verifier: `${config.publicOrigin}/verify`,
+  });
+});
+
+// Public verifier. Checks run in the visitor's browser; the server only serves
+// the page. See src/verify-page.ts for why that distinction matters.
+app.get("/verify", (c) => c.html(renderVerifyHtml(config.publicOrigin)));
 
 app.get("/info", (c) =>
   c.json({
@@ -284,6 +305,11 @@ app.on(["GET", "POST"], "/dossier/recovery", async (c) => {
     recoveredAt: new Date().toISOString(),
     contentType: rec.contentType,
     deliverable: parseArchived(rec),
+    // The settlement transaction above is asserted by this server, not covered
+    // by the report's signature: a report is issued before its payment settles.
+    signatureCovers:
+      "the report's own findings, inputs and source observations — not the payment transaction",
+    verifier: `${config.publicOrigin}/verify`,
   });
 });
 

@@ -114,7 +114,10 @@ function keys(): Keys | null {
   try {
     const der = Buffer.concat([Buffer.from(PKCS8_ED25519_PREFIX, "hex"), Buffer.from(seed, "hex")]);
     const privateKey = createPrivateKey({ key: der, format: "der", type: "pkcs8" });
-    const jwk = createPublicKey(privateKey).export({ format: "jwk" }) as unknown as { x?: string };
+    // Export via PEM: the KeyObject overload of createPublicKey is not in the
+    // installed @types/node, and a PEM round trip is unambiguous.
+    const pem = privateKey.export({ type: "pkcs8", format: "pem" }) as string;
+    const jwk = createPublicKey(pem).export({ format: "jwk" }) as unknown as { x?: string };
     cached = { privateKey, publicKeyB64: jwk.x ?? "" };
   } catch {
     cached = null;

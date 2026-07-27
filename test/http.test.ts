@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 import { stubUpstream, tempArchive, ADDR } from "./helpers";
 import { app } from "../src/app";
 import * as archive from "../src/dossier/archive";
+import { verifyAttestation } from "../src/attest";
 
 const { dir, cleanup } = tempArchive();
 process.env.ARCHIVE_DIR = dir;
@@ -252,6 +253,66 @@ describe("recovery", () => {
       originalBody: { tokenAddress: ADDR.uni },
     });
     assert.equal(r.status, 403);
+  });
+});
+
+describe("independent verification", () => {
+  test("the signing key is published at a well-known path", async () => {
+    const r = await get("/.well-known/dossier-signing-key.json");
+    assert.equal(r.status, 200);
+    const j = (await r.json()) as Record<string, any>;
+    assert.equal(j.issuer.agentId, 7012);
+    assert.ok(j.schemaVersion);
+    assert.ok(j.verifier.endsWith("/verify"));
+  });
+
+  test("the verifier page runs the check in the browser, not on our server", async () => {
+    const r = await get("/verify");
+    assert.equal(r.status, 200);
+    const html = await r.text();
+    assert.ok(html.includes("crypto.subtle.verify"), "verification must happen client-side");
+    assert.ok(html.includes("Ed25519"));
+    // If it posted the attestation back to us, it would be our claim again.
+    assert.equal(/fetch\(["'][^"']*verify["']/.test(html), false);
+  });
+
+  test("a report carries a hash of exactly what produced it", async () => {
+    const j = (await (
+      await post("/dossier", { tokenAddress: ADDR.cake, chain: "bsc", format: "json" })
+    ).json()) as Record<string, any>;
+    const att = j.attestation;
+    assert.ok(att, "every report should carry an attestation");
+    assert.equal(att.payload.issuer.agentId, 7012);
+    assert.equal(att.payload.token.address, ADDR.cake);
+    assert.equal(att.payload.result.verdict, j.riskVerdict.verdict);
+    assert.equal(att.payload.result.coverage, j.riskVerdict.confidence);
+    const sources = att.payload.observations.map((o: any) => o.source);
+    assert.ok(sources.includes("goplus"));
+    assert.ok(sources.includes("dexscreener"));
+    assert.ok(sources.some((s: string) => s.endsWith("-rpc")));
+  });
+
+  test("the attestation verifies with the published key", async () => {
+    const j = (await (
+      await post("/dossier", { tokenAddress: ADDR.cake, chain: "bsc", format: "json" })
+    ).json()) as Record<string, any>;
+    const key = (await (await get("/.well-known/dossier-signing-key.json")).json()) as any;
+    const r = verifyAttestation(j.attestation, key.publicKey ?? undefined);
+    if (key.publicKey) {
+      assert.equal(r.verified, true, r.reason);
+    } else {
+      // No key configured in this environment: the hash must still be right.
+      assert.equal(r.hashMatches, true);
+    }
+  });
+
+  test("the html report shows the hash and points at the verifier", async () => {
+    const html = await (
+      await post("/dossier", { tokenAddress: ADDR.cake, chain: "bsc" })
+    ).text();
+    assert.ok(html.includes("Verification"));
+    assert.ok(html.includes("Payload sha256"));
+    assert.ok(html.includes("/verify"));
   });
 });
 

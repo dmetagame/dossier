@@ -2,6 +2,17 @@ import { z } from "zod";
 import { resolveChain } from "../verdict/sources/dexscreener";
 import { evaluate, fetchSources, SourcesUnavailableError } from "../verdict/engine";
 import { ChainName, SUPPORTED_CHAINS } from "../verdict/schema";
+import {
+  attest,
+  canonicalJson,
+  sha256,
+  METHODOLOGY_VERSION,
+  SCHEMA_VERSION,
+  type Attestation,
+  type SourceObservation,
+} from "../attest";
+import { config } from "../config";
+import { randomUUID } from "node:crypto";
 
 export { SourcesUnavailableError };
 
@@ -176,6 +187,11 @@ export interface Dossier {
   chainResolution: ChainResolutionInfo;
   /** Read directly from the chain; present whenever an RPC answered. */
   contract?: ContractFacts;
+  /**
+   * Signed statement of what produced this report, so it can be checked by
+   * someone who does not trust us. See src/attest.ts.
+   */
+  attestation?: Attestation;
 }
 
 export async function buildDossier(req: DossierRequest): Promise<Dossier> {
@@ -221,6 +237,57 @@ export async function buildDossier(req: DossierRequest): Promise<Dossier> {
   }
 
   const verdict = await evaluate({ chain, tokenAddress: req.tokenAddress, action: "buy" }, snapshot);
+
+  // Everything the signature commits to: which sources were read, when, and
+  // what they returned, plus the findings themselves. Anyone can recompute the
+  // hash from the payload and check it against the published key.
+  const observations: SourceObservation[] = [
+    {
+      source: "goplus",
+      status: sec.status,
+      url: sec.status === "ok" ? sec.provenance?.url : undefined,
+      retrievedAt: sec.status === "ok" ? sec.provenance?.retrievedAt : undefined,
+      responseSha256: sec.status === "ok" ? sec.provenance?.responseSha256 : undefined,
+    },
+    {
+      source: "dexscreener",
+      status: market.status,
+      url: market.status === "ok" ? market.provenance?.url : undefined,
+      retrievedAt: market.status === "ok" ? market.provenance?.retrievedAt : undefined,
+      responseSha256: market.status === "ok" ? market.provenance?.responseSha256 : undefined,
+    },
+    {
+      source: `${chain}-rpc`,
+      status: chainFacts.status,
+      url: chainFacts.status === "ok" ? chainFacts.provenance?.url : undefined,
+      retrievedAt: chainFacts.status === "ok" ? chainFacts.provenance?.retrievedAt : undefined,
+    },
+  ];
+
+  const reportId = randomUUID();
+  const attestation = attest(
+    {
+      schemaVersion: SCHEMA_VERSION,
+      methodologyVersion: METHODOLOGY_VERSION,
+      reportId,
+      requestSha256: sha256(canonicalJson({ chain, tokenAddress: req.tokenAddress.toLowerCase() })),
+      token: { chain, address: req.tokenAddress.toLowerCase() },
+      result: {
+        verdict: verdict.verdict,
+        coverage: verdict.confidence,
+        maxSizeUsd: verdict.maxSizeUsd,
+        checks: Object.fromEntries(
+          Object.entries(verdict.checks).map(([k, v]) => [k, v.status]),
+        ),
+      },
+      chainId: chainFacts.status === "ok" ? chainFacts.chainId : undefined,
+      blockNumber: chainFacts.status === "ok" ? chainFacts.blockNumber : undefined,
+      observations,
+      issuedAt: new Date().toISOString(),
+      issuer: { agentId: 7012, name: "Dossier" },
+    },
+    `${config.publicOrigin}/verify`,
+  );
 
   const sources: string[] = [];
   if (sec.status === "ok") sources.push("GoPlus");
@@ -275,5 +342,6 @@ export async function buildDossier(req: DossierRequest): Promise<Dossier> {
             capabilities: chainFacts.capabilities,
           }
         : undefined,
+    attestation,
   };
 }

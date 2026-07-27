@@ -50,9 +50,22 @@ for (const c of CASES) {
     dexscreener: await get(`https://api.dexscreener.com/latest/dex/tokens/${c.address}`),
   };
   const chain = { "56": "bsc", "1": "ethereum", "196": "xlayer" }[c.chainId];
-  const stop = record();
-  const facts: any = chain ? await fetchChainFacts(chain, c.address) : { status: "skipped" };
-  stop();
+  // Public RPCs are occasionally flaky; a fixture recorded during a blip would
+  // freeze "unavailable" into the suite and quietly weaken it.
+  let facts: any = { status: "skipped" };
+  if (chain) {
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      const stop = record();
+      facts = await fetchChainFacts(chain, c.address);
+      stop();
+      if (facts.status === "ok") break;
+      console.log(`    rpc ${facts.status} for ${c.name}, retrying (${attempt}/4)`);
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+    if (facts.status !== "ok") {
+      throw new Error(`could not record a healthy RPC response for ${c.name}; try again later`);
+    }
+  }
   const g = (out as any)[c.name].goplus.body?.result?.[c.address.toLowerCase()] ? "ok" : "empty";
   const d = ((out as any)[c.name].dexscreener.body?.pairs || []).length;
   console.log(

@@ -74,6 +74,10 @@ export interface RpcFacts {
   /** Heuristic, from the deployed bytecode (the implementation's, for a proxy). */
   capabilities?: string[];
   bytecodeBytes?: number;
+  /** Pins the reads to a point in chain history, for the signed attestation. */
+  chainId?: number;
+  blockNumber?: number;
+  provenance?: { url?: string; retrievedAt?: string; responseSha256?: string };
 }
 
 export type RpcSnapshot = RpcFacts | { status: "unavailable" };
@@ -142,7 +146,19 @@ interface RpcCall {
   params: unknown[];
 }
 
+// X Layer's public RPC rejects more than ten calls in one batch with
+// -32014 "too many RPC calls", which would have made the chain this feature
+// exists for the one chain it never worked on. Chunk below that everywhere.
+const MAX_BATCH = 8;
+
 async function batch(url: string, calls: RpcCall[], timeoutMs: number): Promise<(string | undefined)[]> {
+  if (calls.length > MAX_BATCH) {
+    const out: (string | undefined)[] = [];
+    for (let i = 0; i < calls.length; i += MAX_BATCH) {
+      out.push(...(await batch(url, calls.slice(i, i + MAX_BATCH), timeoutMs)));
+    }
+    return out;
+  }
   const payload = calls.map((c, i) => ({ jsonrpc: "2.0", id: i + 1, ...c }));
   const res = await fetch(url, {
     method: "POST",
@@ -180,7 +196,7 @@ export async function fetchChainFacts(chain: string, address: string): Promise<R
 
   for (const url of urls) {
     try {
-      const [code, name, symbol, decimals, supply, implSlot, adminSlot, owner, getOwner] =
+      const [code, name, symbol, decimals, supply, implSlot, adminSlot, owner, getOwner, chainIdHex, blockHex] =
         await batch(
           url,
           [
@@ -193,6 +209,8 @@ export async function fetchChainFacts(chain: string, address: string): Promise<R
             { method: "eth_getStorageAt", params: [address, SLOT_ADMIN, "latest"] },
             call(address, SEL.owner),
             call(address, SEL.getOwner),
+            { method: "eth_chainId", params: [] },
+            { method: "eth_blockNumber", params: [] },
           ],
           9000,
         );
@@ -200,10 +218,21 @@ export async function fetchChainFacts(chain: string, address: string): Promise<R
       // eth_getCode is the one call that must answer; without it we know nothing.
       if (code === undefined) throw new Error("no answer to eth_getCode");
 
+      const num = (h?: string) => {
+        try {
+          return h ? Number(BigInt(h)) : undefined;
+        } catch {
+          return undefined;
+        }
+      };
+      const chainId = num(chainIdHex);
+      const blockNumber = num(blockHex);
+      const provenance = { url, retrievedAt: new Date().toISOString() };
+
       const bytecode = strip(code);
       if (bytecode.length === 0) {
         // Real knowledge: nothing is deployed here.
-        return { status: "ok", isContract: false };
+        return { status: "ok", isContract: false, chainId, blockNumber, provenance };
       }
 
       const impl = decodeAddress(implSlot ?? "");
@@ -254,6 +283,9 @@ export async function fetchChainFacts(chain: string, address: string): Promise<R
         ownerRenounced: ownerAddr ? ownerAddr === ZERO : undefined,
         capabilities: capabilities.length ? capabilities : undefined,
         bytecodeBytes: Math.floor(bytecode.length / 2),
+        chainId,
+        blockNumber,
+        provenance,
       };
     } catch {
       // Try the next endpoint for this chain before giving up.

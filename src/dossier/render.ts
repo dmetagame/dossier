@@ -188,6 +188,39 @@ export function renderDossierHtml(d: Dossier, opts: RenderOpts = {}): string {
     </div>
   </section>
 
+  ${
+    d.attestation
+      ? `<section>
+    <h2>Verification</h2>
+    <div class="kv">
+      <div><span class="lab">Report id</span><span class="addr">${esc(d.attestation.payload.reportId)}</span></div>
+      <div><span class="lab">Methodology</span><span class="addr">${esc(d.attestation.payload.methodologyVersion)}</span></div>
+      <div><span class="lab">Payload sha256</span><span class="addr">${esc(d.attestation.payloadSha256)}</span></div>
+      <div><span class="lab">Observed at block</span><span class="addr">${
+        d.attestation.payload.blockNumber
+          ? `${esc(d.attestation.payload.chainId)} @ ${esc(d.attestation.payload.blockNumber)}`
+          : "not recorded"
+      }</span></div>
+    </div>
+    ${
+      d.attestation.signature
+        ? `<div class="kv" style="margin-top:8px">
+        <div><span class="lab">Signature</span><span class="addr">${esc(d.attestation.signature)}</span></div>
+        <div><span class="lab">Public key</span><span class="addr">${esc(d.attestation.publicKey)}</span></div>
+      </div>
+      <div class="chainnote">Check this report yourself at ${esc(d.attestation.verifyWith)}. It runs in
+        your browser, against a key you can fetch separately. A valid signature proves who issued the
+        report and that its findings and inputs are unaltered; it does not prove the sources were
+        right, and it does not cover the payment transaction, which does not exist when the report is
+        made.</div>`
+        : `<div class="chainnote">${esc(d.attestation.unsignedReason)} The payload hash above can
+           still be checked at ${esc(d.attestation.verifyWith)}, which confirms the report has not
+           been altered even though nothing attests to who issued it.</div>`
+    }
+  </section>`
+      : ""
+  }
+
   <footer>
     <span>Dossier · OKX.AI agent #7012 · sources: ${d.sources.length ? esc(d.sources.join(", ")) : "none available"}</span>
     <span>Generated ${esc(d.generatedAt)}</span>

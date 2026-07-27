@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 // DexScreener pairs API — free, no key, reachable from the dev box.
 // Gives liquidity depth, volume, price, and pair age across chains incl. X Layer.
 
@@ -59,6 +60,7 @@ export async function resolveChain(address: string): Promise<ChainResolution> {
 }
 
 export interface MarketSnapshot {
+  provenance?: { url?: string; retrievedAt?: string; responseSha256?: string };
   status: SourceStatus;
   symbol?: string;
   priceUsd?: number;
@@ -76,11 +78,19 @@ export async function fetchDexScreener(chain: string, address: string): Promise<
   // One respectful retry on 429; a still-failing source is "unavailable",
   // never silently equated with "no market for this token".
   let json: { pairs?: any[] } | null = null;
+  let marketProvenance: MarketSnapshot["provenance"];
   for (let attempt = 0; attempt < 2 && !json; attempt++) {
     try {
       const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${address}`, {
         signal: AbortSignal.timeout(8000),
       });
+      if (res.ok) {
+        marketProvenance = {
+          url: `https://api.dexscreener.com/latest/dex/tokens/${address}`,
+          retrievedAt: new Date().toISOString(),
+          responseSha256: createHash("sha256").update(await res.clone().text()).digest("hex"),
+        };
+      }
       if (res.status === 429 && attempt === 0) {
         await new Promise((r) => setTimeout(r, 1500));
         continue;
@@ -132,6 +142,7 @@ export async function fetchDexScreener(chain: string, address: string): Promise<
 
   return {
     status: "ok",
+    provenance: marketProvenance,
     symbol,
     priceUsd,
     liquidityUsd,
