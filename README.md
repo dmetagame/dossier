@@ -16,15 +16,42 @@ Free sample of a real generated report: https://dossier.rouma.xyz/dossier/sample
 
 | Route | Method | Price | What it does |
 |---|---|---|---|
-| `/dossier` | POST | 0.5 USD₮0 | Full due-diligence report (`html` default, `json` optional) |
-| `/dossier/sample` | GET | free | Real cached sample report |
-| `/verdict` | POST | 0.2 USD₮0 | Companion service (agent #7008): the risk decision alone as JSON |
-| `/health`, `/` | GET | free | Status and usage cards |
+| `/dossier` | GET, POST | 0.5 USD₮0 | Full due-diligence report (`html` default, `json` optional) |
+| `/verdict` | GET, POST | 0.2 USD₮0 | Companion service (agent #7008): the risk decision alone as JSON |
+| `/dossier/recovery` | GET, POST | free | Re-fetch a report you already paid for |
+| `/dossier/sample` | GET | free | Real sample report, cached |
+| `/` | GET | free | Landing page |
+| `/info` | GET | free | Machine-readable service description |
+| `/health` | GET | free | Status |
 
-Request body: `{"tokenAddress": "0x…", "chain": "…", "format": "html|json"}`.
-`chain` is optional — auto-detected when the address trades on exactly one supported
-chain (ethereum, bsc, base, arbitrum, polygon, xlayer); genuinely ambiguous addresses
-get an unpaid 400 listing the candidate chains, never a guess.
+Parameters: `{"tokenAddress": "0x…", "chain": "…", "format": "html|json"}`. They may be
+sent as a JSON body or as query-string parameters, on either method — buyers' x402
+clients replay differently and OKX's own `payment quote` defaults to GET, so a
+POST-body-only service would answer a paying caller with 400.
+
+`chain` is optional. It is auto-detected from live markets; when an address is deployed
+on several chains the deepest-liquidity deployment is analysed and the report states
+which chain it used and what the alternatives were.
+
+## Recovery
+
+A paid response can be lost for reasons unrelated to this service: the client crashes,
+the connection drops after settlement, the file is overwritten. Every delivered report
+is archived (90 days, 5000 records, pruned) and can be re-fetched:
+
+```bash
+curl "https://dossier.rouma.xyz/dossier/recovery?paymentTransaction=0x…"
+```
+
+It returns the archived bytes, identical to what was delivered, with the request,
+delivery timestamp and settlement transaction attached. Recovery **requires the
+settlement transaction hash**, which only the payer knows; a request-parameters hash is
+deliberately refused on its own, because those parameters are guessable for any popular
+token and accepting them would hand a paid report to someone who never bought one.
+Sending the original request as well is checked and must match.
+
+Each delivery is archived under its own id, so two buyers asking about the same token
+cannot evict each other's record.
 
 ## Payment (x402 v2)
 
@@ -75,9 +102,27 @@ thin/fresh tokens must never `proceed`. Current run: 13/13.
 
 ## Deploy
 
-`pnpm build:api` bundles `src/vercel.ts` into `api/index.js` (esbuild); `vercel.json`
-pins `framework: null` (a framework preset once built a second broken lambda that
-captured `/`). Deploys are manual: `pnpm deploy:prod`.
+The service runs on its own host behind Caddy (automatic TLS), not on a shared
+platform: OKX's review environment could not reach a `*.vercel.app` host, and the
+facilitator handshake was unreliable from that runtime.
+
+```bash
+git pull
+npx esbuild src/server.ts --bundle --platform=node --target=node20 \
+  --format=esm --outfile=dist/server.mjs
+sudo systemctl restart dossier
+```
+
+Verify the new code is actually in the bundle before restarting — a silent build
+failure otherwise leaves the previous version serving:
+
+```bash
+grep -c "<a string from your change>" dist/server.mjs
+```
+
+A `src/vercel.ts` entry and `pnpm build:api` are kept working for serverless targets,
+with `vercel.json` pinning `framework: null` (a framework preset once built a second
+broken lambda that captured `/`). That path is not what serves production.
 
 ## Delivery model
 
