@@ -57,10 +57,25 @@ describe("the free surface", () => {
     }
   });
 
-  test("/health reports whether payment is configured", async () => {
+  test("/health separates payment being configured from payment working", async () => {
+    // A two-hour outage hid behind exactly this distinction: credentials were
+    // present, so "configured" was true, while every paid call answered 503.
     const j = (await (await get("/health")).json()) as Record<string, unknown>;
     assert.equal(j.ok, true);
     assert.ok("paymentConfigured" in j);
+    assert.ok("paymentLayer" in j, "the live state is what a monitor needs");
+    assert.ok(
+      ["disabled", "not_configured", "connecting", "ready", "failing"].includes(String(j.paymentLayer)),
+      `unexpected paymentLayer: ${j.paymentLayer}`,
+    );
+    assert.ok("signing" in j);
+  });
+
+  test("/health stays 200 when payments are down, because the free surface is not", async () => {
+    // Failing health here would take the landing page, the sample, the
+    // preflight and recovery down with the payment layer, which is worse.
+    const r = await get("/health");
+    assert.equal(r.status, 200);
   });
 
   test("fonts are served from our own origin with a long cache", async () => {

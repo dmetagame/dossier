@@ -35,6 +35,20 @@ function internalKeyMatches(given: string | undefined): boolean {
 
 export const app = new Hono();
 
+/**
+ * Whether the payment layer actually works, as opposed to being configured.
+ *
+ * Those are different things, and the difference hid a two-hour outage: the
+ * credentials were present, so `paymentConfigured()` was true, while every paid
+ * call answered 503 because the facilitator was rejecting them. Health has to
+ * report the live state, not the intent.
+ */
+type PaymentLayer = "disabled" | "not_configured" | "connecting" | "ready" | "failing";
+let paymentLayer: PaymentLayer = "connecting";
+export function paymentLayerState(): PaymentLayer {
+  return paymentLayer;
+}
+
 // Rate limiting for the free surface only. Registered before the routes but
 // after nothing else, so it cannot affect the paid paths: those are excluded by
 // name below. Runs in observe mode until real traffic confirms the budgets.
@@ -312,11 +326,16 @@ function parseArchived(rec: archive.ArchiveRecord): unknown {
   }
 }
 
+// Stays 200 while the process is serving, even if payments are down: the free
+// surface is unaffected and killing a healthy process would make things worse.
+// The paid path is monitored separately, by asking it for a 402.
 app.get("/health", (c) =>
   c.json({
     ok: true,
     devSkipPayment: config.devSkipPayment,
     paymentConfigured: paymentConfigured(),
+    paymentLayer: paymentLayer,
+    signing: publicKey() ? "enabled" : "unsigned",
   }),
 );
 
@@ -328,7 +347,10 @@ app.get("/health", (c) =>
 // Fail closed: if facilitator credentials are missing in production (e.g. an
 // env var wiped by a project re-link), the paid routes must go dark rather
 // than silently serve for free while the marketplace listing says paid.
+if (config.devSkipPayment) paymentLayer = "disabled";
+
 if (!config.devSkipPayment && !paymentConfigured()) {
+  paymentLayer = "not_configured";
   const dark = (c: any) =>
     c.json({ error: "payment layer not configured — service temporarily unavailable" }, 503);
   app.post("/dossier", dark);
@@ -428,9 +450,11 @@ if (!config.devSkipPayment && paymentConfigured()) {
     for (let attempt = 1; ; attempt++) {
       try {
         await resourceServer.initialize();
+        paymentLayer = "ready";
         console.log("[x402] facilitator ready");
         return;
       } catch (e) {
+        paymentLayer = "failing";
         const wait = Math.min(60_000, 2 ** Math.min(attempt, 5) * 1000);
         console.error(
           `[x402] facilitator init failed (attempt ${attempt}), retrying in ${wait / 1000}s:`,

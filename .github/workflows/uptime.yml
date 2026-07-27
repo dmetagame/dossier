@@ -1,0 +1,93 @@
+name: Uptime
+
+# Runs from GitHub, not from the box, because a monitor that lives on the host
+# it watches cannot report the host being down.
+#
+# It checks the *paid* path, not just /health. On 27 July the process answered
+# /health with 200 for two hours while every paid call returned 503, because the
+# facilitator was rejecting our credentials. A health check alone would have
+# reported everything fine the entire time.
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: uptime
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      BASE: https://dossier.rouma.xyz
+    steps:
+      - name: The free surface answers
+        run: |
+          set -euo pipefail
+          for path in / /health /info /dossier/sample; do
+            code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 45 "$BASE$path")
+            echo "  $path -> $code"
+            [ "$code" = "200" ] || { echo "::error::$path returned $code, expected 200"; exit 1; }
+          done
+
+      - name: The paid path still demands payment
+        run: |
+          set -euo pipefail
+          # 402 means the payment layer is genuinely up. 503 is the shape an
+          # unreachable or rejecting facilitator takes, and is the failure that
+          # went unnoticed for two hours.
+          for method in GET POST; do
+            code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 45 -X $method "$BASE/dossier")
+            echo "  $method /dossier -> $code"
+            if [ "$code" = "503" ]; then
+              echo "::error::$method /dossier returned 503: the payment layer is down, no one can buy"
+              exit 1
+            fi
+            [ "$code" = "402" ] || { echo "::error::$method /dossier returned $code, expected 402"; exit 1; }
+          done
+
+      - name: The service reports its own payment layer as ready
+        run: |
+          set -euo pipefail
+          state=$(curl -sS --max-time 30 "$BASE/health" | python3 -c "import json,sys; print(json.load(sys.stdin).get('paymentLayer'))")
+          echo "  paymentLayer -> $state"
+          [ "$state" = "ready" ] || { echo "::error::payment layer is '$state', not ready"; exit 1; }
+
+      - name: The challenge is still valid and priced correctly
+        run: |
+          set -euo pipefail
+          hdr=$(curl -sS -D - -o /dev/null --max-time 45 -X POST "$BASE/dossier" \
+                | tr -d '\r' | grep -i '^payment-required:' | sed 's/^[^:]*: *//')
+          [ -n "$hdr" ] || { echo "::error::no PAYMENT-REQUIRED header on the paid route"; exit 1; }
+          echo "$hdr" | base64 -d | python3 - <<'PY'
+          import json, sys
+          c = json.load(sys.stdin)
+          a = c["accepts"][0]
+          url = c["resource"]["url"]
+          assert url.startswith("https://"), f"resource url is not https: {url}"
+          assert a["network"] == "eip155:196", f"wrong network: {a['network']}"
+          assert a["amount"] == "500000", f"price changed: {a['amount']}"
+          assert a["payTo"].lower() == "0x51c25782af63381056cd1c3c59c0544628d67697", "payout address changed"
+          schema = c["extensions"]["outputSchema"]["input"]["schema"]
+          assert schema["required"] == ["tokenAddress"], "the input contract lost its required field"
+          print("  challenge ok:", a["amount"], a["network"], "| required:", schema["required"])
+          PY
+
+      - name: Reports are still signed with the published key
+        run: |
+          set -euo pipefail
+          key=$(curl -sS --max-time 30 "$BASE/.well-known/dossier-signing-key.json" \
+                | python3 -c "import json,sys; print(json.load(sys.stdin).get('publicKey') or '')")
+          echo "  published key -> ${key:0:16}…"
+          [ -n "$key" ] || { echo "::error::no signing key published; reports would go out unsigned"; exit 1; }
+
+      - name: TLS certificate is not about to expire
+        run: |
+          set -euo pipefail
+          end=$(echo | openssl s_client -servername dossier.rouma.xyz -connect dossier.rouma.xyz:443 2>/dev/null \
+                | openssl x509 -noout -enddate | cut -d= -f2)
+          days=$(( ( $(date -d "$end" +%s) - $(date +%s) ) / 86400 ))
+          echo "  certificate expires in $days days ($end)"
+          [ "$days" -gt 10 ] || { echo "::error::certificate expires in $days days"; exit 1; }
