@@ -27,6 +27,9 @@ ASK_GRACE_SECONDS = 900
 ONCHAINOS = os.path.join(HOME, ".local", "bin", "onchainos")
 OKXA2A = os.path.join(HOME, ".npm-global", "bin", "okx-a2a")
 SUPPORTED_CHAINS = {"ethereum", "bsc", "base", "arbitrum", "polygon", "xlayer"}
+# How far ahead the deepest token must be before a bare ticker is treated as
+# naming it unambiguously. Below this, we ask the buyer which token they mean.
+TICKER_DOMINANCE = 10.0
 STOPWORDS = {
     "due", "diligence", "on", "for", "the", "a", "an", "check", "quick", "risk",
     "report", "before", "i", "buy", "token", "analysis", "please", "of", "my",
@@ -98,10 +101,14 @@ def resolve_token(title):
     Only EVM chains this service supports are eligible: an unfiltered search
     ranks by liquidity across every chain and would resolve PEPE or CAKE to
     their Solana listings, which we cannot analyse.
+
+    Returns (address, chain, alternatives). A non-empty `alternatives` means the
+    ticker matched several distinct tokens and the buyer must say which one:
+    delivering a confident verdict on the wrong asset is worse than asking.
     """
     m = re.search(r"0x[a-fA-F0-9]{40}", title or "")
     if m:
-        return m.group(0), None
+        return m.group(0), None, []
     words = [w.strip(".,:;!?()[]'\"") for w in (title or "").split()]
     cands = [w for w in words if w and w.lower() not in STOPWORDS and len(w) <= 12]
     for w in cands:
@@ -111,7 +118,10 @@ def resolve_token(title):
             pairs = json.loads(r.stdout).get("pairs") or []
         except Exception:
             continue
-        best, best_liq = None, 0.0
+        # Aggregate per token, not per pool. Comparing single pools ranked a
+        # 3M-dollar impostor pool above Uniswap's UNI, whose depth is spread
+        # across many pairs, and delivered a report on the wrong asset.
+        totals = {}
         for p in pairs:
             base = p.get("baseToken") or {}
             addr = base.get("address") or ""
@@ -122,12 +132,23 @@ def resolve_token(title):
                 continue
             if (base.get("symbol") or "").lower() != w.lower():
                 continue
-            liq = float((p.get("liquidity") or {}).get("usd") or 0)
-            if liq > best_liq:
-                best, best_liq = p, liq
-        if best and best_liq > 10000:
-            return best["baseToken"]["address"], best.get("chainId")
-    return None, None
+            key = (chain, addr)
+            totals[key] = totals.get(key, 0.0) + float((p.get("liquidity") or {}).get("usd") or 0)
+        ranked = sorted(totals.items(), key=lambda kv: kv[1], reverse=True)
+        ranked = [(k, v) for k, v in ranked if v > 10000]
+        if not ranked:
+            continue
+        (chain, addr), liq = ranked[0]
+        # A ticker is not an identifier. Anyone can deploy "UNI"; picking the
+        # bigger one and reporting on it with confidence is the worst failure
+        # this service can have, so an unclear winner is referred back to the
+        # buyer rather than guessed at.
+        if len(ranked) > 1 and liq < ranked[1][1] * TICKER_DOMINANCE:
+            alts = [{"chain": c, "address": a, "liquidityUsd": int(v)} for (c, a), v in ranked[:4]]
+            log("  ticker %s is ambiguous across %d tokens; asking rather than guessing" % (w, len(ranked)))
+            return None, None, alts
+        return addr, chain, []
+    return None, None, []
 
 
 def fetch(addr, chain, fmt, job=None):
@@ -199,21 +220,31 @@ def read_buyer_reply(job, buyer):
     return None, None
 
 
-def ask_for_token(job, buyer, title):
+def ask_for_token(job, buyer, title, alts=None):
     # A buyer whose own x402 replay already succeeded has their report and needs
     # nothing from us; we cannot see that from the ASP side, so the message must
     # say so plainly rather than imply the order failed.
+    if alts:
+        # Naming the candidates turns "which token?" into a one-word answer, and
+        # shows the buyer why a ticker alone was not enough to act on.
+        listing = "\n".join(
+            "  %s on %s  (liquidity $%s)" % (a["address"], a["chain"], money(a["liquidityUsd"]))
+            for a in alts)
+        why = ("more than one token trades under that ticker and I will not guess "
+               "which one you meant:\n%s\nReply with the contract address you want" % listing)
+    else:
+        why = ("the token was not visible to me from the job title: reply with the contract "
+               "address (0x...)")
     return send_message(job, buyer, (
         "%s Regarding: %s. If you already received your report in the paid response, "
         "this message needs no action — please ignore it. If you have not, it is because "
-        "the token was not visible to me from the job title: reply with the contract "
-        "address (0x...) and optionally the chain (ethereum, bsc, base, arbitrum, polygon, "
-        "xlayer) and the full report will be delivered within two minutes. You can also "
+        "%s and optionally the chain (ethereum, bsc, base, arbitrum, polygon, "
+        "xlayer), and the full report will be delivered within two minutes. You can also "
         "fetch it yourself at any time with POST %s and body "
-        '{"tokenAddress":"0x..."}.' % (ASK_MARKER, title, ENDPOINT)))
+        '{"tokenAddress":"0x..."}.' % (ASK_MARKER, title, why, ENDPOINT)))
 
 
-def deliver(job, buyer, addr, chain):
+def deliver(job, buyer, addr, chain, from_ticker=False):
     raw = fetch(addr, chain, "json")
     try:
         data = json.loads(raw)
@@ -252,6 +283,12 @@ def deliver(job, buyer, addr, chain):
         money(tok.get("volume24hUsd")),
         money(tok.get("holderCount")) if tok.get("holderCount") else "n/a"))
     L.append("CONTRACT: %s" % addr)
+    if from_ticker:
+        # The buyer named a ticker, not an address. Say so, so a mismatch is
+        # caught by the person who knows which token they meant.
+        L.append("  (resolved from the ticker in the job title, by far the deepest"
+                 " token trading under it. If you meant a different contract,"
+                 " reply with its address and I will re-run this.)")
     L.append("SOURCES: %s" % ", ".join(data.get("sources") or []))
     L.append("")
     if up.get("fileKey"):
@@ -304,7 +341,7 @@ def main():
 
         buyer = t.get("counterpartyAgentId")
         title = t.get("title") or ""
-        addr, chain = resolve_token(title)
+        addr, chain, alts = resolve_token(title)
 
         # If the title was unusable we asked the buyer; a job is never closed on
         # the question alone, so their answer is picked up on a later tick.
@@ -328,12 +365,13 @@ def main():
             if st.get("asked"):
                 # Re-ask at most once a day rather than every two minutes.
                 if time.time() - st.get("asked_at", 0) > 86400:
-                    ask_for_token(job, buyer, title)
+                    ask_for_token(job, buyer, title, alts)
                     state[job] = {**st, "asked": True, "asked_at": time.time()}
                     save_state(state)
                 continue
-            log("fulfilling", job[:12], "| no token in title, asking buyer")
-            if ask_for_token(job, buyer, title):
+            log("fulfilling", job[:12],
+                "| ambiguous ticker, asking buyer" if alts else "| no token in title, asking buyer")
+            if ask_for_token(job, buyer, title, alts):
                 state[job] = {**st, "asked": True, "asked_at": time.time()}
                 save_state(state)
             continue
@@ -346,7 +384,7 @@ def main():
                 state[job] = {"done": True, "why": "delivered by another path"}
                 save_state(state)
                 continue
-            ok = deliver(job, buyer, addr, chain)
+            ok = deliver(job, buyer, addr, chain, from_ticker=not re.search(r'0x[a-fA-F0-9]{40}', title or ''))
         except Exception as e:
             log("  error:", repr(e)[:200])
             ok = False
