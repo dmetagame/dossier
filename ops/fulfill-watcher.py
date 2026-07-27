@@ -270,8 +270,12 @@ def deliver(job, buyer, addr, chain, from_ticker=False):
     L = []
     L.append("DOSSIER REPORT - %s (%s)" % (sym, tok.get("chain")))
     L.append("")
-    L.append("VERDICT: %s | confidence %s | safe position size up to $%s" % (
-        str(v.get("verdict")).upper(), v.get("confidence"),
+    # Wording matches the report itself. "safe" is not a claim a 1%-of-deepest-
+    # pool rule of thumb supports, and the buyer is holding the document that
+    # calls it a heuristic.
+    L.append("VERDICT: %s | data coverage %s | heuristic size cap $%s" % (
+        str(v.get("verdict")).upper(),
+        ("%d%%" % round(float(v.get("confidence") or 0) * 100)),
         money(v.get("maxSizeUsd")) if v.get("maxSizeUsd") is not None else "n/a"))
     L.append("")
     L.append("KEY FINDINGS:")
