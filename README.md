@@ -162,9 +162,20 @@ facilitator handshake was unreliable from that runtime.
 ```bash
 git pull
 npx esbuild src/server.ts --bundle --platform=node --target=node20 \
-  --format=esm --outfile=dist/server.mjs
+  --format=esm --loader:.woff2=base64 --outfile=dist/server.mjs
 sudo systemctl restart dossier
 ```
+
+`--loader:.woff2=base64` is required: the landing page self-hosts three webfont
+subsets, embedded in the bundle and served from memory by `/f/*`, because the
+deploy is a single file with no static-asset directory.
+
+The landing page's GSAP/Lenis bundle is built separately by
+`scripts/build-client.mjs` into `src/generated/hero-bundle.ts`, which is
+committed. That keeps the command above working on a host that has not installed
+the client-side devDependencies. If you change anything under `src/client/`, run
+`pnpm build:server` instead, which rebuilds the client bundle first and cannot
+ship a stale one.
 
 Verify the new code is actually in the bundle before restarting — a silent build
 failure otherwise leaves the previous version serving:

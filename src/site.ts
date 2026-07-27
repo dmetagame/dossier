@@ -1,231 +1,228 @@
-// Public landing page for dossier.rouma.xyz. Self-contained (no external
-// assets or fonts) so it renders instantly and cannot break from a third-party
-// outage — the same constraint the report itself is built under.
+// The landing page at GET /.
 //
-// Template-literal safety: the page below is a TS template literal, so the hero
-// blocks are kept in their own constants that contain no backtick and no `${`.
-// The inline script therefore uses string concatenation rather than template
-// literals. Interpolating the constants is the only substitution that happens.
+// Design decision, stated so it is not re-litigated by accident: this page is
+// set as a *document*, not as a dark product page. The thing being sold is an
+// executive-ready report that prints to PDF, and the report renderer
+// (src/dossier/render.ts) is a light page on #fbfcfe with three verdict
+// colours. The landing page previously used an unrelated dark indigo scheme
+// with a periwinkle accent that appears nowhere in the product, which is both
+// generic and a split identity. It now takes its palette from the report,
+// exactly: --ink, --muted, --line, and the proceed/caution/unavailable colours.
+//
+// Typefaces deliberately diverge from the report. The report must stay a
+// self-contained document with zero external assets, so it keeps a system
+// stack; webfonts there would either break that guarantee or add weight to
+// every paid response. Same palette and register, different face, on purpose.
 
-// Verdict and status colours are taken verbatim from src/dossier/render.ts so
-// the hero and the report it advertises cannot drift apart.
-const HERO_CSS = `
-  .hero-fig{position:relative;margin:26px 0 6px;padding:20px 16px 22px;border:1px solid var(--line);
-    border-radius:14px;background:var(--panel);overflow:hidden}
-  .hero-fig canvas{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
-  .hf-addr{position:relative;text-align:center;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
-    font-size:13px;color:var(--muted);letter-spacing:.02em;opacity:0;margin-bottom:18px}
-  .hf-rows{position:relative;max-width:420px;margin:0 auto}
-  .hf-row{display:flex;align-items:center;gap:10px;padding:7px 0;opacity:0;
-    transform:translateY(4px);font-size:14px}
-  .hf-lbl{flex:1;color:var(--ink)}
-  .hf-dot{width:9px;height:9px;border-radius:50%;flex:none;background:var(--h-idle);transform:scale(.6)}
-  .hf-st{width:92px;text-align:right;color:var(--muted);font-size:12.5px;font-variant:small-caps}
-  .hf-foot{position:relative;text-align:center;margin-top:20px;min-height:58px}
-  .hf-verdict{font-size:20px;font-weight:700;letter-spacing:.06em;opacity:0}
-  .hf-meta{font-size:12.5px;color:var(--muted);margin-top:4px;opacity:0}
-  @media (max-width:640px){
-    .hf-row{font-size:13.5px}
-    .hf-st{width:78px}
-    .hf-rows{max-width:100%}
-  }
-`;
+import { FONT_FACE_CSS, FONTS } from "./fonts";
+import { HERO_BUNDLE } from "./generated/hero-bundle";
+
+// Five stations on a 420-unit ring, clockwise from the top. Index 3 is the one
+// that lands `unavailable`; holder data is the field our sources most often
+// cannot answer, so it is the honest one to illustrate.
+//
+// Labels sit on a wider radius than the dots (37.6% vs 28.6% of the box) and
+// anchor away from the ring, so a label never covers the station it names.
+const ANGLES = [-90, -18, 54, 126, 198];
+const STATIONS = [
+  { label: "sellability", x: 50.0, y: 12.4, anchor: "c" },
+  { label: "contract control", x: 85.8, y: 38.4, anchor: "l" },
+  { label: "liquidity", x: 72.1, y: 80.4, anchor: "l" },
+  { label: "holders", x: 27.9, y: 80.4, anchor: "r" },
+  { label: "market activity", x: 14.2, y: 38.4, anchor: "r" },
+];
+
+const HERO_SVG = `
+<svg class="h-svg" viewBox="0 0 420 420" aria-hidden="true" focusable="false">
+  <circle class="h-track" cx="210" cy="210" r="120"/>
+  <path class="h-ring-arc" d="M210 90 A120 120 0 1 1 209.9 90"/>
+  ${ANGLES.map(
+    (a, i) => `<g transform="translate(210 210) rotate(${a})">
+    <line class="h-probe" x1="0" y1="0" x2="120" y2="0"/>
+    <circle class="h-dot${i === 3 ? " is-unavailable" : ""}" cx="120" cy="0" r="6.5"/>
+  </g>`,
+  ).join("\n  ")}
+</svg>`;
 
 const HERO_HTML = `
-    <figure class="hero-fig" id="hf" aria-label="A due-diligence report assembling: five checks resolve, one source is unavailable, and the verdict is caution at 80 percent confidence.">
-      <canvas id="hfc" aria-hidden="true"></canvas>
-      <div class="hf-addr" id="hfa">0x0e09…1cE82</div>
-      <div class="hf-rows" id="hfr">
-        <div class="hf-row"><span class="hf-lbl">Sellability</span><span class="hf-dot"></span><span class="hf-st"></span></div>
-        <div class="hf-row"><span class="hf-lbl">Contract control</span><span class="hf-dot"></span><span class="hf-st"></span></div>
-        <div class="hf-row"><span class="hf-lbl">Liquidity</span><span class="hf-dot"></span><span class="hf-st"></span></div>
-        <div class="hf-row"><span class="hf-lbl">Market activity</span><span class="hf-dot"></span><span class="hf-st"></span></div>
-        <div class="hf-row"><span class="hf-lbl">Holder concentration</span><span class="hf-dot"></span><span class="hf-st"></span></div>
-      </div>
-      <div class="hf-foot">
-        <div class="hf-verdict" id="hfv">CAUTION</div>
-        <div class="hf-meta" id="hfm">confidence 80% · safe max size $81,151</div>
-      </div>
-    </figure>`;
+<figure class="hero-viz" role="img"
+  aria-label="Illustration of one run: five checks are dispatched, four resolve, one source is unavailable, and the verdict is caution at eighty percent coverage.">
+  ${HERO_SVG}
+  <div class="h-centre" aria-hidden="true">
+    <div class="h-addr">0x0e09…1cE82</div>
+    <div class="h-verdict">caution</div>
+    <div class="h-figs">
+      <span class="h-fig">coverage <b>80%</b></span>
+      <span class="h-fig">1 source unavailable</span>
+    </div>
+  </div>
+  <div class="h-labels" aria-hidden="true">
+    ${STATIONS.map(
+      (s, i) =>
+        `<span class="h-label a-${s.anchor}${i === 3 ? " is-unavailable" : ""}" style="--lx:${s.x}%;--ly:${s.y}%">` +
+        `<i class="h-ldot"></i>${s.label}</span>`,
+    ).join("\n    ")}
+  </div>
+</figure>`;
 
-// One 16s loop, time-driven from performance.now() so it is stateless and
-// resyncs correctly after being paused. Motion is deterministic by design:
-// hard attack, hard stop, snapped positions — an instrument taking a reading,
-// which is the same claim the engine makes about itself.
-const HERO_JS = `
-(function(){
-  var fig=document.getElementById('hf'),cv=document.getElementById('hfc');
-  if(!fig||!cv||!cv.getContext)return;
-  var ctx=cv.getContext('2d'),addr=document.getElementById('hfa'),
-      verdict=document.getElementById('hfv'),meta=document.getElementById('hfm'),
-      rows=[].slice.call(document.querySelectorAll('.hf-row'));
-  var PASS='#1c8f5a',WARN='#b7791f',UNK='#8a94a6',PROBE='#7c8cf8',RULE='#243154';
-  var RES=[['pass',PASS],['warn',WARN],['pass',PASS],['pass',PASS],['unavailable',UNK]];
-  var LOOP=16000,CONF=0.8,W=0,H=0,dpr=1,anchor=null,dots=[],raf=0,vis=true,seen=true;
-  var reduce=window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-  function ease(x){return x<=0?0:x>=1?1:1-Math.pow(2,-10*x);}
-  function seg(t,a,b){return (t-a)/(b-a);}
-  function measure(){
-    var fr=fig.getBoundingClientRect();
-    W=fr.width;H=fr.height;
-    dpr=Math.min(window.devicePixelRatio||1,2);
-    cv.width=Math.round(W*dpr);cv.height=Math.round(H*dpr);
-    ctx.setTransform(dpr,0,0,dpr,0,0);
-    var ar=addr.getBoundingClientRect();
-    anchor={x:ar.left-fr.left+ar.width/2,y:ar.top-fr.top+ar.height};
-    dots=rows.map(function(r){
-      var d=r.querySelector('.hf-dot').getBoundingClientRect();
-      return {x:d.left-fr.left+d.width/2,y:d.top-fr.top+d.height/2};
-    });
-  }
-  function draw(t){
-    ctx.clearRect(0,0,W,H);
-    if(!anchor||!dots.length)return;
-    var out=ease(seg(t,15000,15700));
-    // Probes are visible only while travelling. Leaving a permanent fan of
-    // lines behind was decoration: once a row has resolved, the row itself is
-    // the record, and the fan only competed with it during the hold.
-    for(var i=0;i<5;i++){
-      var go=2000+i*400,land=go+900,p=ease(seg(t,go,land));
-      if(t<go||p>=1)continue;
-      var d=dots[i],x=anchor.x+(d.x-anchor.x)*p,y=anchor.y+(d.y-anchor.y)*p,
-          q=Math.max(0,p-0.12);
-      ctx.strokeStyle=PROBE;ctx.globalAlpha=0.85;ctx.lineWidth=1.5;
-      ctx.beginPath();
-      ctx.moveTo(anchor.x+(d.x-anchor.x)*q,anchor.y+(d.y-anchor.y)*q);
-      ctx.lineTo(x,y);ctx.stroke();
-    }
-    // The arc must retract with everything else or the last frame of the loop
-    // would not match the first, and the restart would show a cut.
-    var ap=ease(seg(t,10000,11200))*(1-out);
-    if(ap>0.001){
-      var vr=verdict.getBoundingClientRect(),fr2=fig.getBoundingClientRect();
-      var cx=vr.left-fr2.left+vr.width/2,cy=vr.top-fr2.top+vr.height/2,r=Math.max(vr.width,60)/2+16;
-      ctx.globalAlpha=ap;
-      ctx.strokeStyle=RULE;ctx.lineWidth=2;ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);ctx.stroke();
-      ctx.strokeStyle=WARN;ctx.lineWidth=2.5;ctx.lineCap='butt';
-      ctx.beginPath();ctx.arc(cx,cy,r,-Math.PI/2,-Math.PI/2+Math.PI*2*CONF*ap);ctx.stroke();
-    }
-    ctx.globalAlpha=1;
-  }
-  function apply(t){
-    addr.style.opacity=t<15000?String(ease(seg(t,0,400))):String(1-ease(seg(t,15000,15700)));
-    for(var i=0;i<5;i++){
-      var land=2900+i*400,rp=ease(seg(t,land-200,land+200)),out=ease(seg(t,15000,15700));
-      var el=rows[i],dot=el.querySelector('.hf-dot'),st=el.querySelector('.hf-st');
-      el.style.opacity=String(rp*(1-out));
-      el.style.transform='translateY('+((1-rp)*4)+'px)';
-      var rt=6000+i*700,on=t>=rt&&t<15400;
-      dot.style.background=on?RES[i][1]:'var(--h-idle)';
-      dot.style.transform='scale('+(on?1:0.6)+')';
-      st.textContent=on?RES[i][0]:'';
-      st.style.color=on?RES[i][1]:'var(--muted)';
-    }
-    var vp=t>=11200&&t<15400?1:0,vo=ease(seg(t,15000,15700));
-    verdict.style.opacity=String(vp*(1-vo));
-    verdict.style.color=WARN;
-    meta.style.opacity=String((t>=11500&&t<15400?1:0)*(1-vo));
-  }
-  function frame(){
-    var t=reduce?13000:(performance.now()%LOOP);
-    apply(t);draw(t);
-    if(!reduce&&vis&&seen)raf=requestAnimationFrame(frame);else raf=0;
-  }
-  function start(){if(!raf&&vis&&seen&&!reduce)raf=requestAnimationFrame(frame);}
-  function stop(){if(raf)cancelAnimationFrame(raf);raf=0;}
-  measure();
-  if(reduce){apply(13000);draw(13000);}
-  else{
-    document.addEventListener('visibilitychange',function(){vis=!document.hidden;vis?start():stop();});
-    if(window.IntersectionObserver){
-      new IntersectionObserver(function(e){seen=e[0].isIntersecting;seen?start():stop();},{threshold:0.05}).observe(fig);
-    }
-    start();
-  }
-  var rt;
-  addEventListener('resize',function(){clearTimeout(rt);rt=setTimeout(function(){measure();if(reduce){apply(13000);draw(13000);}},150);});
-})();`;
+const CSS = `
+${FONT_FACE_CSS}
+:root{
+  /* Pulled from src/dossier/render.ts so the page and the product it sells
+     cannot drift apart. */
+  --ink:#141a24; --muted:#5b6472; --line:#e4e8ee; --bg:#fbfcfe; --paper:#fff;
+  --proceed:#1c8f5a; --caution:#b7791f; --abort:#c02b2b; --unavailable:#8a94a6;
+  --serif:"Instrument Serif",Georgia,"Times New Roman",serif;
+  --sans:"Geist",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  --mono:"Geist Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font:1rem/1.6 var(--sans);
+  -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+a{color:var(--ink);text-underline-offset:3px;text-decoration-thickness:1px}
+b,strong{font-weight:600}
+.wrap{max-width:1060px;margin:0 auto;padding:0 28px}
 
+/* type scale */
+.eyebrow{font:600 .75rem/1 var(--mono);text-transform:uppercase;letter-spacing:.12em;
+  color:var(--muted)}
+h1{font:400 clamp(2.75rem,6vw,5.5rem)/0.95 var(--serif);letter-spacing:-.03em;
+  margin:.5rem 0 0;max-width:15ch}
+h2{font:400 clamp(1.75rem,3vw,2.75rem)/1.1 var(--serif);letter-spacing:-.02em;margin:0 0 1.25rem}
+h3{font:600 1rem/1.4 var(--sans);margin:0 0 .4rem;letter-spacing:-.01em}
+.lede{font-size:1.0625rem;color:var(--muted);max-width:58ch;margin:1.5rem 0 0}
+.caption{font-size:.8125rem;color:var(--muted)}
+.num,.h-fig b,td.n{font-family:var(--mono);font-variant-numeric:tabular-nums}
+
+header{display:flex;align-items:center;justify-content:space-between;gap:1rem;
+  padding:1.75rem 0;flex-wrap:wrap}
+.brand{display:flex;align-items:center;gap:.6rem;font:600 1.0625rem/1 var(--sans);
+  letter-spacing:-.02em}
+.mark{width:26px;height:26px;border:1.5px solid var(--ink);border-radius:4px;
+  display:grid;place-items:center;font:600 .8125rem/1 var(--mono)}
+.tag{font:.75rem/1 var(--mono);color:var(--muted);border:1px solid var(--line);
+  border-radius:999px;padding:.45rem .75rem}
+
+.hero{display:grid;grid-template-columns:1.05fr .95fr;gap:3rem;align-items:center;
+  padding:2rem 0 3.5rem}
+.cta{display:flex;gap:.6rem;flex-wrap:wrap;margin:2rem 0 .9rem}
+.btn{display:inline-block;padding:.7rem 1.15rem;border-radius:7px;text-decoration:none;
+  font:500 .9375rem/1.2 var(--sans);border:1px solid var(--ink)}
+.btn.p{background:var(--ink);color:var(--bg)}
+.btn.s{border-color:var(--line);color:var(--ink)}
+.btn:focus-visible,a:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
+
+/* hero figure: reserves its space before paint, so nothing shifts */
+.hero-viz{position:relative;margin:0;width:100%;max-width:440px;justify-self:end;
+  aspect-ratio:1/1}
+.h-svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible}
+.h-track{fill:none;stroke:var(--line);stroke-width:1}
+.h-ring-arc{fill:none;stroke:var(--caution);stroke-width:2.5;stroke-linecap:butt;
+  transform:rotate(-0.0001deg)}
+.h-probe{stroke:var(--line);stroke-width:1.5}
+.h-dot{fill:var(--proceed)}
+.h-dot.is-unavailable{fill:var(--unavailable)}
+.h-centre{position:absolute;inset:0;display:grid;place-content:center;text-align:center;gap:.35rem}
+.h-addr{font:.8125rem/1 var(--mono);color:var(--muted);letter-spacing:.02em}
+.h-verdict{font:400 2rem/1 var(--serif);color:var(--caution);letter-spacing:-.02em}
+.h-figs{display:flex;flex-direction:column;gap:.15rem}
+.h-fig{font:.75rem/1.5 var(--mono);color:var(--muted);font-variant-numeric:tabular-nums}
+.h-labels{position:absolute;inset:0}
+.h-labels{overflow:visible}
+.h-label{position:absolute;left:var(--lx);top:var(--ly);
+  font:.75rem/1 var(--mono);color:var(--muted);white-space:nowrap;
+  display:flex;align-items:center;gap:.4rem}
+.h-label.a-c{transform:translate(-50%,-50%)}
+.h-label.a-l{transform:translate(0,-50%)}
+.h-label.a-r{transform:translate(-100%,-50%)}
+.h-ldot{width:6px;height:6px;border-radius:50%;background:var(--proceed);display:none}
+.h-label.is-unavailable .h-ldot{background:var(--unavailable)}
+
+section{padding:3.5rem 0;border-top:1px solid var(--line)}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:1.5rem}
+.card p{margin:0;color:var(--muted);font-size:.9375rem}
+pre{background:var(--paper);border:1px solid var(--line);border-radius:10px;padding:1.1rem;
+  overflow-x:auto;font:.8125rem/1.7 var(--mono);margin:0 0 .9rem}
+code{font-family:var(--mono);font-size:.9em}
+.k{color:var(--caution)}.s{color:var(--proceed)}.c{color:var(--muted)}
+table{width:100%;border-collapse:collapse;font-size:.9375rem}
+td{padding:.85rem 0;border-top:1px solid var(--line);vertical-align:top}
+td:first-child{color:var(--muted);width:34%;padding-right:1.5rem}
+footer{padding:2.5rem 0 4rem;border-top:1px solid var(--line);color:var(--muted);
+  font-size:.8125rem}
+.addr{font-family:var(--mono);word-break:break-all;font-size:.75rem}
+
+@media (max-width:900px){
+  .hero{grid-template-columns:1fr;gap:2.5rem;padding-bottom:2.5rem}
+  .hero-viz{justify-self:center;max-width:380px}
+}
+/* Below 640 the ring tightens and the labels leave it entirely, stacking into
+   a legible column. Shrinking the ring alone would make five rotated labels
+   collide. */
+@media (max-width:640px){
+  /* The ring tightens and keeps the arc; the five stations leave it and stack
+     as a legible column beside it, with the verdict block below spanning both.
+     Five rotated labels around a 150px ring would collide. */
+  .hero-viz{max-width:none;aspect-ratio:auto;display:grid;gap:1rem 1.25rem;
+    grid-template-columns:132px 1fr;grid-template-areas:"ring labels" "centre centre";
+    align-items:center;justify-self:stretch}
+  .h-svg{position:relative;grid-area:ring;width:132px;height:132px;overflow:hidden}
+  .h-svg .h-probe,.h-svg .h-dot{display:none}
+  .h-centre{position:relative;inset:auto;grid-area:centre;place-content:center;gap:.25rem}
+  .h-labels{position:static;inset:auto;grid-area:labels;display:flex;
+    flex-direction:column;gap:.5rem;align-items:flex-start}
+  .h-label,.h-label.a-c,.h-label.a-l,.h-label.a-r{position:static;left:auto;top:auto;
+    transform:none;padding:0}
+  .h-ldot{display:block;flex:none}
+  .h-verdict{font-size:1.75rem}
+}
+@media (prefers-reduced-motion:reduce){
+  html{scroll-behavior:auto}
+}`;
 
 export function renderSiteHtml(opts: { price: string; agentId: number }): string {
   const { price, agentId } = opts;
+  // Inlined script: escape any "</" so a literal </script> in the bundle cannot
+  // close the tag early.
+  const inline = HERO_BUNDLE.replace(/<\//g, "<\\/");
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Dossier — token due diligence, one paid call</title>
 <meta name="description" content="One call returns a finished due-diligence report on any token: risk verdict, safe position size, security flags, liquidity, market activity and holder concentration. Paid per call over x402 on X Layer.">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' fill='%230B1220'/%3E%3Cpath d='M20 14h18l8 8v28H20z' fill='none' stroke='%237C8CF8' stroke-width='4'/%3E%3C/svg%3E">
-<style>
-  :root{--bg:#0b1220;--panel:#121a2e;--line:#243154;--ink:#eaf0ff;--muted:#9aa8c7;
-        --acc:#7c8cf8;--acc2:#5563e6;--ok:#3ecf8e;--warn:#f0b354;
-        --h-idle:#2a3352;--h-unknown:#8a94a6;}
-  *{box-sizing:border-box}
-  body{margin:0;background:var(--bg);color:var(--ink);
-    font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
-    -webkit-font-smoothing:antialiased}
-  a{color:var(--acc)}
-  .wrap{max-width:940px;margin:0 auto;padding:0 22px}
-  header{padding:26px 0;display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap}
-  .brand{display:flex;align-items:center;gap:11px;font-weight:700;letter-spacing:-.01em;font-size:18px}
-  .mark{width:30px;height:30px;border-radius:7px;background:linear-gradient(135deg,#7c8cf8,#5563e6);
-    display:grid;place-items:center;color:#0b1220;font-weight:800;font-size:15px}
-  .badge{font-size:12.5px;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:5px 11px}
-  .hero{padding:34px 0 8px}
-  h1{font-size:clamp(30px,5.2vw,50px);line-height:1.08;letter-spacing:-.025em;margin:0 0 16px;max-width:17ch}
-  .lede{font-size:clamp(16px,2.1vw,19px);color:var(--muted);max-width:62ch;margin:0 0 26px}
-  .cta{display:flex;gap:11px;flex-wrap:wrap;margin-bottom:12px}
-  .btn{display:inline-block;padding:12px 20px;border-radius:9px;text-decoration:none;font-weight:600;font-size:15px}
-  .btn.p{background:linear-gradient(135deg,#7c8cf8,#5563e6);color:#0b1220}
-  .btn.s{border:1px solid var(--line);color:var(--ink)}
-  .note{font-size:13.5px;color:var(--muted);margin:0}
-  section{padding:40px 0;border-top:1px solid var(--line);margin-top:40px}
-  h2{font-size:13px;text-transform:uppercase;letter-spacing:.09em;color:var(--muted);margin:0 0 18px;font-weight:600}
-  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px}
-  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:17px}
-  .card h3{margin:0 0 6px;font-size:15.5px}
-  .card p{margin:0;color:var(--muted);font-size:14px}
-  pre{background:#080d18;border:1px solid var(--line);border-radius:11px;padding:16px;overflow-x:auto;
-    font:13px/1.65 ui-monospace,SFMono-Regular,Menlo,monospace;color:#d4dcf5;margin:0 0 12px}
-  .k{color:var(--acc)}.s{color:var(--ok)}.c{color:var(--muted)}
-  table{width:100%;border-collapse:collapse;font-size:14.5px}
-  td{padding:11px 0;border-top:1px solid var(--line);vertical-align:top}
-  td:first-child{color:var(--muted);width:42%;padding-right:16px}
-  footer{padding:30px 0 50px;color:var(--muted);font-size:13.5px;border-top:1px solid var(--line);margin-top:40px}
-  .addr{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;word-break:break-all}
-${HERO_CSS}
-  @media (prefers-color-scheme:light){
-    :root{--bg:#fbfcfe;--panel:#fff;--line:#e4e8ee;--ink:#141a24;--muted:#5b6472;--acc:#4655d6;--acc2:#3b48c0}
-    pre{background:#0f1626;color:#d4dcf5}
-    .btn.p{color:#fff}
-    :root{--h-idle:#d7dce6}
-  }
-</style></head><body>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' fill='%23fbfcfe'/%3E%3Cpath d='M20 14h18l8 8v28H20z' fill='none' stroke='%23141a24' stroke-width='4'/%3E%3C/svg%3E">
+<link rel="preload" href="${FONTS.serif!.path}" as="font" type="font/woff2" crossorigin>
+<style>${CSS}</style></head><body>
 <div class="wrap">
 
   <header>
-    <div class="brand"><div class="mark">D</div> Dossier</div>
-    <div class="badge">Live on OKX.AI · agent #${agentId}</div>
+    <div class="brand"><span class="mark">D</span> Dossier</div>
+    <div class="tag">Live on OKX.AI · agent #${agentId}</div>
   </header>
 
   <div class="hero">
-    <h1>Token due diligence, in one paid call.</h1>
-    <p class="lede">Send a contract address. Get back a finished, shareable report: a clear risk
-      verdict, the safe position size, security flags, liquidity depth, market activity and holder
-      concentration — compiled from live on-chain data, not opinions.</p>
-    <div class="cta">
-      <a class="btn p" href="/dossier/sample">Read a real report</a>
-      <a class="btn s" href="#use">How to call it</a>
+    <div>
+      <div class="eyebrow">Due diligence · X Layer</div>
+      <h1>Token due diligence, in one paid call.</h1>
+      <p class="lede">Send a contract address. Get back a finished, shareable report: a clear risk
+        verdict, the safe position size, security flags, liquidity depth, market activity and holder
+        concentration, compiled from live on-chain data rather than opinions.</p>
+      <div class="cta">
+        <a class="btn p" href="/dossier/sample">Read a real report</a>
+        <a class="btn s" href="#use">How to call it</a>
+      </div>
+      <p class="caption">The sample is a genuine report generated on request. No signup, nothing to install.</p>
     </div>
-    <p class="note">The sample is a genuine report generated on request. No signup, nothing to install.</p>
+    ${HERO_HTML}
   </div>
-${HERO_HTML}
 
   <section>
     <h2>What one call returns</h2>
     <div class="grid">
       <div class="card"><h3>A decision, not a data dump</h3>
-        <p>Proceed, caution or abort, with the safe position size in USD and a confidence score you can act on.</p></div>
+        <p>Proceed, caution or abort, with the safe position size in USD and a coverage score you can act on.</p></div>
       <div class="card"><h3>Five risk checks</h3>
-        <p>Sellability, contract control, liquidity depth, market activity and holder concentration — each pass, warn or fail with the reason.</p></div>
+        <p>Sellability, contract control, liquidity depth, market activity and holder concentration, each pass, warn or fail with the reason.</p></div>
       <div class="card"><h3>A document, not JSON</h3>
         <p>A self-contained page you can read, share or print to PDF. Ask for <code>format:"json"</code> if a machine is reading it.</p></div>
       <div class="card"><h3>Deterministic</h3>
@@ -235,40 +232,42 @@ ${HERO_HTML}
 
   <section id="use">
     <h2>Call it</h2>
-    <pre><span class="c"># the first call returns an x402 payment challenge</span>
+    <pre><span class="c"># check coverage first, free, no payment</span>
+curl <span class="s">"https://dossier.rouma.xyz/dossier/preflight?tokenAddress=0x0e09…1cE82"</span>
+
+<span class="c"># the paid call returns an x402 challenge, then the report</span>
 curl -X POST <span class="s">https://dossier.rouma.xyz/dossier</span> \\
   -H <span class="s">'content-type: application/json'</span> \\
   -d <span class="s">'{"<span class="k">tokenAddress</span>":"0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82"}'</span></pre>
-    <p class="note">Pay the challenge and replay the request; the report comes back in the response.
-      Buying agents on OKX.AI handle this automatically. <code>chain</code> is optional — it is detected
-      from live markets, and when an address exists on several chains the deepest-liquidity deployment
-      is analysed and the report says which one it used.</p>
+    <p class="caption">The payment challenge carries the input contract, so an agent discovers what to
+      send before it authorises payment. Buying agents on OKX.AI handle the payment automatically.
+      <code>chain</code> is optional: it is detected from live markets, and when an address exists on
+      several chains the deepest-liquidity deployment is analysed and the report says which it used.</p>
   </section>
 
   <section>
     <h2>Terms</h2>
     <table>
-      <tr><td>Price</td><td>${price} per call, USD₮0 on X Layer</td></tr>
+      <tr><td>Price</td><td class="n">${price} per call, USD₮0 on X Layer</td></tr>
       <tr><td>Payment</td><td>x402 v2 via the official OKX Payment SDK, settled on-chain</td></tr>
       <tr><td>Chains</td><td>Ethereum, BNB Chain, Base, Arbitrum, Polygon, X Layer</td></tr>
       <tr><td>Sources</td><td>GoPlus security data and DexScreener markets, live at request time</td></tr>
       <tr><td>Failures</td><td>Never charged. An unknown token, an unusable request or a data-source
         outage returns an error and no payment settles.</td></tr>
       <tr><td>Coverage</td><td>When a source cannot answer, the affected checks are marked unknown and
-        the confidence score drops. Gaps are stated, never filled in.</td></tr>
+        the coverage score drops. Gaps are stated, never filled in.</td></tr>
     </table>
   </section>
 
   <footer>
-    <div class="wrap" style="padding:0">
-      Dossier · OKX.AI agent #${agentId} · payouts to
-      <span class="addr">0x51c25782af63381056cd1c3c59c0544628d67697</span><br>
-      Machine-readable service description at <a href="/info">/info</a> ·
-      free sample at <a href="/dossier/sample">/dossier/sample</a>
-    </div>
+    Dossier · OKX.AI agent #${agentId} · payouts to
+    <span class="addr">0x51c25782af63381056cd1c3c59c0544628d67697</span><br>
+    Machine-readable service description at <a href="/info">/info</a> ·
+    free sample at <a href="/dossier/sample">/dossier/sample</a> ·
+    coverage preflight at <a href="/dossier/preflight?tokenAddress=0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82">/dossier/preflight</a>
   </footer>
 
 </div>
-<script>${HERO_JS}</script>
+<script>${inline}</script>
 </body></html>`;
 }

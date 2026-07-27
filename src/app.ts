@@ -16,6 +16,7 @@ import {
 import { renderDossierHtml } from "./dossier/render";
 import * as archive from "./dossier/archive";
 import { renderSiteHtml } from "./site";
+import { fontByPath } from "./fonts";
 import * as ratelimit from "./ratelimit";
 
 // Constant-time comparison for the payment-bypass secret. A `===` on a secret
@@ -90,6 +91,18 @@ function internalJobId(c: any): string | undefined {
 app.get("/", (c) =>
   c.html(renderSiteHtml({ price: config.dossierPrice, agentId: 7012 })),
 );
+
+// Self-hosted webfonts for the landing page, served from the bundle. Content
+// hashed in the filename, so they can be cached forever. Not rate limited: the
+// limiter only touches FREE_LIMITED paths, and these are static bytes already
+// in memory.
+app.get("/f/:file", (c) => {
+  const f = fontByPath(c.req.path);
+  if (!f) return c.notFound();
+  c.header("Content-Type", "font/woff2");
+  c.header("Cache-Control", "public, max-age=31536000, immutable");
+  return c.body(new Uint8Array(f.body));
+});
 
 app.get("/info", (c) =>
   c.json({
