@@ -1,4 +1,4 @@
-import type { Verdict, VerdictRequest, CheckResult } from "./schema";
+import type { Verdict, RiskRequest, CheckResult } from "./schema";
 import { fetchGoPlus, goplusSupports } from "./sources/goplus";
 import { fetchDexScreener } from "./sources/dexscreener";
 import { fetchChainFacts, rpcSupports, type RpcSnapshot } from "./sources/rpc";
@@ -50,7 +50,7 @@ export async function fetchSources(chain: string, tokenAddress: string): Promise
   return { sec, market, chain: chainFacts, startedAt };
 }
 
-export async function evaluate(req: VerdictRequest, prefetched?: SourceSnapshot): Promise<Verdict> {
+export async function evaluate(req: RiskRequest, prefetched?: SourceSnapshot): Promise<Verdict> {
   const snapshot = prefetched ?? (await fetchSources(req.chain, req.tokenAddress));
   const { sec, market, chain: chainFacts } = snapshot;
   const started = snapshot.startedAt;
@@ -122,7 +122,7 @@ export async function evaluate(req: VerdictRequest, prefetched?: SourceSnapshot)
   ];
   if (req.amountUsd && maxSizeUsd !== null && req.amountUsd > maxSizeUsd) {
     reasons.push(
-      `Requested $${req.amountUsd} exceeds the safe size for current liquidity — capped at $${maxSizeUsd}.`,
+      `Requested $${req.amountUsd} exceeds the heuristic size cap for current liquidity — capped at $${maxSizeUsd}.`,
     );
   }
 

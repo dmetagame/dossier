@@ -5,7 +5,7 @@ report. Live on OKX.AI as an A2MCP service (agent #7012) at
 `https://dossier.rouma.xyz/dossier`, paid per call over x402 on X Layer.
 
 An agent or analyst sends a token address; Dossier returns a **finished document**,
-not a data dump: risk verdict up top, safe position size, security flags, liquidity,
+not a data dump: risk verdict up top, a heuristic size cap, security flags, liquidity,
 market activity, and holder distribution, compiled deterministically from live
 GoPlus + DexScreener data and rendered as a self-contained HTML report that reads,
 shares, and prints to PDF. `format: "json"` returns the same content as structured data.
@@ -17,7 +17,6 @@ Free sample of a real generated report: https://dossier.rouma.xyz/dossier/sample
 | Route | Method | Price | What it does |
 |---|---|---|---|
 | `/dossier` | GET, POST | 0.5 USD₮0 | Full due-diligence report (`html` default, `json` optional) |
-| `/verdict` | GET, POST | 0.2 USD₮0 | Companion service (agent #7008): the risk decision alone as JSON |
 | `/dossier/recovery` | GET, POST | free | Re-fetch a report you already paid for (`paymentTransaction` or `jobId`) |
 | `/dossier/preflight` | GET, POST | free | Coverage check for a token before you pay |
 | `/dossier/sample` | GET | free | Real sample report, cached |

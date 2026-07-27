@@ -10,14 +10,14 @@ export const ChainName = z.preprocess(
   z.enum(SUPPORTED_CHAINS),
 );
 
-export const VerdictRequest = z.object({
+export const RiskRequest = z.object({
   chain: ChainName,
   tokenAddress: z.string().regex(/^0x[a-fA-F0-9]{40}$/, "must be an EVM address"),
   action: z.enum(["buy", "sell", "hold", "lp"]).default("buy"),
   // Coerced: a query-string value arrives as a string.
   amountUsd: z.coerce.number().positive().max(10_000_000).optional(),
 });
-export type VerdictRequest = z.infer<typeof VerdictRequest>;
+export type RiskRequest = z.infer<typeof RiskRequest>;
 
 // The differentiator: not a scanner readout, a decision. Every response gives
 // the calling agent a specific action, a sized limit, and a confidence it can

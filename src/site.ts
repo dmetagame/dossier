@@ -189,7 +189,7 @@ export function renderSiteHtml(opts: { price: string; agentId: number }): string
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Dossier — token due diligence, one paid call</title>
-<meta name="description" content="One call returns a finished due-diligence report on any token: risk verdict, safe position size, security flags, liquidity, market activity and holder concentration. Paid per call over x402 on X Layer.">
+<meta name="description" content="One call returns a finished due-diligence report on any token: risk verdict, a heuristic position-size cap, security flags, liquidity, market activity and holder concentration. Paid per call over x402 on X Layer.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' fill='%23fbfcfe'/%3E%3Cpath d='M20 14h18l8 8v28H20z' fill='none' stroke='%23141a24' stroke-width='4'/%3E%3C/svg%3E">
 <link rel="preload" href="${FONTS.serif!.path}" as="font" type="font/woff2" crossorigin>
 <style>${CSS}</style></head><body>
@@ -205,7 +205,7 @@ export function renderSiteHtml(opts: { price: string; agentId: number }): string
       <div class="eyebrow">Due diligence · X Layer</div>
       <h1>Token due diligence, in one paid call.</h1>
       <p class="lede">Send a contract address. Get back a finished, shareable report: a clear risk
-        verdict, the safe position size, security flags, liquidity depth, market activity and holder
+        verdict, a heuristic size cap, security flags, liquidity depth, market activity and holder
         concentration, compiled from live on-chain data rather than opinions.</p>
       <div class="cta">
         <a class="btn p" href="/dossier/sample">Read a real report</a>
@@ -220,7 +220,7 @@ export function renderSiteHtml(opts: { price: string; agentId: number }): string
     <h2>What one call returns</h2>
     <div class="grid">
       <div class="card"><h3>A decision, not a data dump</h3>
-        <p>Proceed, caution or abort, with the safe position size in USD and a coverage score you can act on.</p></div>
+        <p>Proceed, caution or abort, with a heuristic size cap in USD and a coverage score you can act on.</p></div>
       <div class="card"><h3>Five risk checks</h3>
         <p>Sellability, contract control, liquidity depth, market activity and holder concentration, each pass, warn or fail with the reason.</p></div>
       <div class="card"><h3>A document, not JSON</h3>

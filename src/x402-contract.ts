@@ -10,7 +10,7 @@
 // its own module rather than inside a conditional block in app.ts, because it is
 // the part of the service a buyer depends on before they can even pay us.
 
-import { SUPPORTED_CHAINS } from "./verdict/schema";
+import { SUPPORTED_CHAINS } from "./engine/schema";
 
 const tokenAddressSchema = {
   type: "string",
@@ -36,17 +36,6 @@ export const dossierInputSchema = {
       default: "html",
       description: "html returns the rendered report document; json returns the same data structured.",
     },
-  },
-  required: ["tokenAddress"],
-  additionalProperties: false,
-} as const;
-
-export const verdictInputSchema = {
-  type: "object",
-  properties: {
-    tokenAddress: tokenAddressSchema,
-    chain: chainSchema,
-    amountUsd: { type: "number", description: "Optional intended position size in USD." },
   },
   required: ["tokenAddress"],
   additionalProperties: false,

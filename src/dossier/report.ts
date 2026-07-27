@@ -1,7 +1,7 @@
 import { z } from "zod";
-import { resolveChain } from "../verdict/sources/dexscreener";
-import { evaluate, fetchSources, SourcesUnavailableError } from "../verdict/engine";
-import { ChainName, SUPPORTED_CHAINS } from "../verdict/schema";
+import { resolveChain } from "../engine/sources/dexscreener";
+import { evaluate, fetchSources, SourcesUnavailableError } from "../engine/engine";
+import { ChainName, SUPPORTED_CHAINS } from "../engine/schema";
 import {
   attest,
   canonicalJson,

@@ -4,8 +4,7 @@ import { paymentMiddleware, x402ResourceServer } from "@okxweb3/x402-hono";
 import { ExactEvmScheme } from "@okxweb3/x402-evm/exact/server";
 import { OKXFacilitatorClient } from "@okxweb3/x402-core";
 import { config, paymentConfigured } from "./config";
-import { VerdictRequest, SUPPORTED_CHAINS } from "./verdict/schema";
-import { evaluate, SourcesUnavailableError } from "./verdict/engine";
+import { SourcesUnavailableError } from "./engine/engine";
 import {
   DossierRequest,
   buildDossier,
@@ -21,11 +20,7 @@ import { fontByPath } from "./fonts";
 import { publicKey, SCHEMA_VERSION, METHODOLOGY_VERSION } from "./attest";
 import { renderVerifyHtml } from "./verify-page";
 import * as ratelimit from "./ratelimit";
-import {
-  dossierInputSchema,
-  verdictInputSchema,
-  httpInputSchema,
-} from "./x402-contract";
+import { dossierInputSchema, httpInputSchema } from "./x402-contract";
 
 // Constant-time comparison for the payment-bypass secret. A `===` on a secret
 // is a habit worth not having, even where a remote timing attack over TLS is
@@ -136,7 +131,7 @@ app.get("/info", (c) =>
     service: "Dossier",
     agentId: 7012,
     description:
-      "One paid call returns a polished, executive-ready due-diligence report on any token: risk verdict, safe position size, security flags, liquidity, and holder distribution, compiled deterministically from live data and rendered as a self-contained document.",
+      "One paid call returns a polished, executive-ready due-diligence report on any token: risk verdict, a heuristic position-size cap, security flags, liquidity, and holder distribution, compiled deterministically from live data and rendered as a self-contained document.",
     endpoints: [
       {
         path: "/dossier",
@@ -158,18 +153,11 @@ app.get("/info", (c) =>
         description:
           "Coverage check for a specific token before paying: which data sources have it, expected coverage, which fields the report will contain, and whether it can be produced at all.",
       },
-      {
-        path: "/verdict",
-        method: "POST",
-        pricing: `${config.price} per call (x402, USD₮0 on X Layer)`,
-        description:
-          "Companion service (agent #7008): the pre-trade risk decision alone — proceed/caution/abort, safe position size, confidence — as JSON.",
-      },
     ],
   }),
 );
 
-// NOTE: /dossier and /verdict must NEVER answer an unpaid request with 2xx on
+// NOTE: /dossier must NEVER answer an unpaid request with 2xx on
 // ANY method. x402 validators (including OKX's `agent x402-check`, which probes
 // with GET) treat a 200 as "not a valid x402 service" and reject the listing.
 // Usage information lives on `/` and the free `/dossier/sample` instead; the
@@ -332,7 +320,7 @@ app.get("/health", (c) =>
   }),
 );
 
-// x402 payment gate on POST /verdict. The OKX SDK builds the marketplace-validated
+// x402 payment gate on POST /dossier. The OKX SDK builds the marketplace-validated
 // 402 challenge (correct PAYMENT-REQUIRED header, USD₮0 on eip155:196) and, via the
 // facilitator, verifies the buyer's signed payment and settles after a successful
 // response. We supply only price, payout address, and facilitator credentials.
@@ -343,9 +331,7 @@ app.get("/health", (c) =>
 if (!config.devSkipPayment && !paymentConfigured()) {
   const dark = (c: any) =>
     c.json({ error: "payment layer not configured — service temporarily unavailable" }, 503);
-  app.post("/verdict", dark);
   app.post("/dossier", dark);
-  app.get("/verdict", dark);
   app.get("/dossier", dark);
 }
 
@@ -361,13 +347,6 @@ if (!config.devSkipPayment && paymentConfigured()) {
     config.network,
     new ExactEvmScheme(),
   );
-  const verdictAccepts = {
-    scheme: "exact",
-    price: config.price,
-    network: config.network,
-    payTo: config.payTo,
-    maxTimeoutSeconds: 300,
-  } as const;
   const dossierAccepts = {
     scheme: "exact",
     price: config.dossierPrice,
@@ -375,8 +354,6 @@ if (!config.devSkipPayment && paymentConfigured()) {
     payTo: config.payTo,
     maxTimeoutSeconds: 300,
   } as const;
-  const verdictDescription =
-    "Pre-trade token risk verdict: proceed, caution, or abort, with a safe position size and confidence.";
   const dossierDescription =
     "Full due-diligence dossier on a token, returned as a shareable formatted report.";
 
@@ -407,29 +384,6 @@ if (!config.devSkipPayment && paymentConfigured()) {
   // a paid path fails validation outright.
   const pay = paymentMiddleware(
     {
-        ...Object.fromEntries(
-          ["POST", "GET", "HEAD"].map((m) => [
-            `${m} /verdict`,
-            {
-              accepts: verdictAccepts,
-              resource: `${config.publicOrigin}/verdict`,
-              description: verdictDescription,
-              mimeType: "application/json",
-              extensions: httpInputSchema(
-                verdictInputSchema,
-                "application/json",
-                "Decision object: verdict, maxSizeUsd, confidence, reasons, per-check results.",
-              ),
-              unpaidResponseBody: unpaidBody(
-                "Pre-Trade Token Verdict",
-                verdictDescription,
-                verdictInputSchema,
-                "application/json",
-                "Decision object: verdict, maxSizeUsd, confidence, reasons, per-check results.",
-              ),
-            },
-          ]),
-        ),
         ...Object.fromEntries(
           ["POST", "GET", "HEAD"].map((m) => [
             `${m} /dossier`,
@@ -588,26 +542,6 @@ const invalid = (c: any, issues: unknown) =>
     },
     400,
   );
-
-app.on(["GET", "POST"], "/verdict", async (c) => {
-  // Reached only after the middleware has verified payment (or in dev-skip mode).
-  const parsed = VerdictRequest.safeParse(await readParams(c));
-  if (!parsed.success) {
-    return invalid(c, parsed.error.issues);
-  }
-  try {
-    const verdict = await evaluate(parsed.data);
-    return c.json(verdict);
-  } catch (e) {
-    if (e instanceof SourcesUnavailableError) {
-      // Non-2xx: the middleware does not settle, so an outage never charges the
-      // buyer even though their payment was already verified upstream.
-      c.header("Retry-After", "30");
-      return c.json({ error: "data sources temporarily unavailable — retry shortly" }, 503);
-    }
-    throw e;
-  }
-});
 
 app.on(["GET", "POST"], "/dossier", async (c) => {
   // Reached only after the middleware has verified payment (or in dev-skip mode).

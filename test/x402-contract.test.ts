@@ -6,8 +6,8 @@
 
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { dossierInputSchema, verdictInputSchema, httpInputSchema } from "../src/x402-contract";
-import { SUPPORTED_CHAINS } from "../src/verdict/schema";
+import { dossierInputSchema, httpInputSchema } from "../src/x402-contract";
+import { SUPPORTED_CHAINS } from "../src/engine/schema";
 import { config } from "../src/config";
 
 describe("the published input contract", () => {
@@ -47,13 +47,6 @@ describe("the published input contract", () => {
     const out = (ext.outputSchema as any).output;
     assert.equal(out.mimeType, "text/html");
     assert.ok(out.description.length > 0);
-  });
-
-  test("the verdict route publishes its own shape", () => {
-    const v = httpInputSchema(verdictInputSchema, "application/json", "decision");
-    const schema = (v.outputSchema as any).input.schema;
-    assert.deepEqual(schema.required, ["tokenAddress"]);
-    assert.ok("amountUsd" in schema.properties);
   });
 
   test("nothing here touches the accepts entries the client signs over", () => {

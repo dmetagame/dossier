@@ -4,7 +4,7 @@
 // Run deliberately, not in CI:  node test/capture-fixtures.mjs
 // CI replays the committed fixtures and never touches the network.
 import { writeFileSync, mkdirSync } from "node:fs";
-import { fetchChainFacts } from "../src/verdict/sources/rpc";
+import { fetchChainFacts } from "../src/engine/sources/rpc";
 
 const DIR = new URL("./fixtures/", import.meta.url).pathname;
 mkdirSync(DIR, { recursive: true });

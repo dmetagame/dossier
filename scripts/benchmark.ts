@@ -1,8 +1,8 @@
 // Benchmark harness: established tokens must never "abort"; risky/fresh tokens
 // must never "proceed"; GoPlus-flagged honeypots must "abort". Run:
 //   NODE_OPTIONS=--dns-result-order=ipv4first pnpm tsx scripts/benchmark.ts
-import { evaluate } from "../src/verdict/engine";
-import { fetchDexScreener } from "../src/verdict/sources/dexscreener";
+import { evaluate } from "../src/engine/engine";
+import { fetchDexScreener } from "../src/engine/sources/dexscreener";
 
 interface Case {
   label: string;

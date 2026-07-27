@@ -5,7 +5,7 @@
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { stubUpstream, withStub, ADDR } from "./helpers";
-import { evaluate, fetchSources, SourcesUnavailableError } from "../src/verdict/engine";
+import { evaluate, fetchSources, SourcesUnavailableError } from "../src/engine/engine";
 
 let restore: () => void;
 before(() => {
@@ -52,7 +52,7 @@ describe("deterministic scoring", () => {
       amountUsd: 10_000_000,
     });
     assert.ok(huge.maxSizeUsd! < 10_000_000);
-    assert.ok(huge.reasons.some((r) => /exceeds the safe size/.test(r)));
+    assert.ok(huge.reasons.some((r) => /exceeds the heuristic size cap/.test(r)));
   });
 });
 
