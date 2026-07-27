@@ -1,48 +1,44 @@
 # Pending decisions
 
-## 1. The listing copy still says "safe position size"
+## 1. Listing copy: half fixed, half blocked
 
-**Status: parked deliberately on 2026-07-27. Not forgotten, not done.**
+**Agent description: DONE (2026-07-27 evening).** It no longer claims a "safe position
+size". It now says "a heuristic size cap", and gained two things it had been missing: that
+the report reads the chain directly, and that every report is signed so a buyer can verify
+it independently. 494 of 500 characters.
 
-Everything we control now says "heuristic size cap": the report itself, the landing page,
-the README, `/info`, and the engine's own reason string. The only place the old claim
-survives is OKX's stored listing copy, in both the agent description and the service
-description.
+**Service description: BLOCKED.** The API refuses it:
 
-**Why it is not fixed yet.** Editing it means `onchainos agent update`, and the CLI states
-that QA runs at register and update. Agent 7012 currently sits at approvalDisplayStatus 4,
-"Listed, eligible for task recommendations", with ★5.0 and 10 sold. An edit sends it back
-through review, for an unknown period, and it was rejected twice before it was approved.
-That is a real cost against a copy inconsistency.
+```
+Wallet API error (code=81001): service in use, only name/description can be modified: 36013
+```
 
-**The replacement text, ready to paste** (agent description, under 500 chars):
+and the CLI will not build a `--service` payload without `serviceType`, `fee` and
+`endpoint`, which are exactly the fields the API rejects for an in-use service. So the
+service description still reads "safe position size". Try the OKX web portal, which may
+allow a description-only edit that the CLI cannot express. Do not delete and recreate the
+service to work around it: that would discard the service id, and with it the sales and
+review history attached to it.
 
-> Dossier transforms a single request into a polished, executive-ready due diligence report
-> for any token. It consolidates live security, market and holder data, plus direct reads
-> from the chain itself, into one shareable document: a clear risk assessment, a heuristic
-> position-size cap with its formula stated, and the key findings at the top. Every report
-> is signed, so a buyer can verify it independently. Instead of piecing together multiple
-> dashboards, an agent or analyst receives a complete report in one call.
+Ready-to-paste replacement (488 chars, fits the limit):
 
-**Service description part 1:**
+> Produces a complete, formatted due-diligence report on a token for an agent or analyst.
+> Covers the risk decision, a heuristic size cap, security flags, liquidity, market
+> activity, holder concentration, and the contract's on-chain identity. Every report is
+> signed, so the buyer can verify it. The finished report is returned directly in the paid
+> response.
+> 1. Token contract address 2. Optional: chain name, detected automatically when
+> unambiguous 3. Optional: output format, report or data
 
-> Generates a complete, formatted due diligence report on a token for an agent or analyst.
-> The report includes a risk assessment, a heuristic position-size cap, security alerts,
-> liquidity, market activity, holder concentration, and the contract's on-chain identity,
-> all compiled into a single shareable document. Every report carries a signature the buyer
-> can verify independently. The final report is delivered directly in the paid response.
+**Cost of the edit, as warned.** The agent went from approvalStatus 4 "Listed" to 3,
+"Listing under review", statusLabel "not listed". While in that state it is absent from
+public search, `www.okx.ai/agents/7012` returns 404, and `designated-route` returns zero
+services, so the marketplace purchase path is closed. The endpoint itself is unaffected:
+`/dossier` still answers 402, `x402-check` still reports valid, and a buyer holding the
+URL can still pay and be served.
 
-**Service description part 2** (unchanged):
-
-> 1. Token contract address 2. Optional: chain name, auto-detected when unambiguous
-> 3. Optional: output format, either report or data
-
-**When to do it.** After judging, or whenever a spell in the review queue is acceptable.
-The listing is much stronger than when it was rejected: signed reports, a public verifier,
-a free preflight, direct chain reads, and an independent five-star review.
-
-**Note:** the fee field is locked while the service is in use, so this is a description-only
-edit either way.
+The review remark reads "AI quality review suggested pass", which is the same signal that
+preceded approval last time. Nothing to do but wait for it to clear.
 
 ## 2. Rotate the OKX API credentials
 
