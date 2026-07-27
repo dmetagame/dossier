@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 // GoPlus token security API — free, no key, reachable from the dev box.
 // https://docs.gopluslabs.io/reference/tokensecurityusingget_1
 
@@ -15,7 +16,15 @@ const CHAIN_IDS: Record<string, string> = {
 // treat this as knowledge about the token.
 export type SourceStatus = "ok" | "not_found" | "unavailable";
 
+/** Provenance, so a signed report can pin what each source actually said. */
+export interface Provenance {
+  url?: string;
+  retrievedAt?: string;
+  responseSha256?: string;
+}
+
 export interface GoPlusTokenSecurity {
+  provenance?: Provenance;
   status: SourceStatus;
   isHoneypot?: boolean;
   cannotSellAll?: boolean;
@@ -42,6 +51,7 @@ export async function fetchGoPlus(chain: string, address: string): Promise<GoPlu
   // One respectful retry on 429; a still-failing source is "unavailable",
   // never silently equated with "no data about this token".
   let json: { result?: Record<string, any> } | null = null;
+  let provenance: Provenance = { url };
   for (let attempt = 0; attempt < 2 && !json; attempt++) {
     try {
       const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
@@ -89,6 +99,7 @@ export async function fetchGoPlus(chain: string, address: string): Promise<GoPlu
 
   return {
     status: "ok",
+    provenance,
     isHoneypot: flag(entry.is_honeypot),
     cannotSellAll: flag(entry.cannot_sell_all),
     buyTaxPct: pct(entry.buy_tax),

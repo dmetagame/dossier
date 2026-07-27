@@ -431,13 +431,36 @@ if (!config.devSkipPayment && paymentConfigured()) {
     resourceServer,
     undefined,
     undefined,
-    // Do NOT sync with the facilitator at module load. That sync runs outside
-    // any request, so when the facilitator rejects our credentials the promise
-    // rejects unhandled and Node exits — which is how a 401 from OKX took the
-    // whole site down, free pages included, in a restart loop. Deferring it
-    // into the request puts the failure somewhere we can catch and answer 503.
+    // The SDK's own startup sync runs outside any request, so a facilitator
+    // that rejects our credentials produced an unhandled rejection and Node
+    // exited — a 401 from OKX took the whole site down, free pages included,
+    // in a restart loop. It is disabled here and driven below instead, where
+    // the failure is ours to handle.
     false,
   );
+
+  // Initialise on our own terms: the middleware cannot build a challenge until
+  // the facilitator has told it which schemes are supported, so this must
+  // happen, but it must not be able to kill the process. Retries with backoff
+  // and keeps retrying in the background, so a facilitator outage degrades the
+  // paid routes to 503 and then heals itself without a restart.
+  const initFacilitator = async (): Promise<void> => {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await resourceServer.initialize();
+        console.log("[x402] facilitator ready");
+        return;
+      } catch (e) {
+        const wait = Math.min(60_000, 2 ** Math.min(attempt, 5) * 1000);
+        console.error(
+          `[x402] facilitator init failed (attempt ${attempt}), retrying in ${wait / 1000}s:`,
+          (e as Error)?.message?.slice(0, 160) ?? e,
+        );
+        await new Promise((r) => setTimeout(r, wait));
+      }
+    }
+  };
+  void initFacilitator();
   // Cold-start resilience: on a fresh serverless instance the SDK's first
   // facilitator sync can transiently fail and rethrow (→ 500). Retry once
   // after a short pause so a cold-start blip self-heals into a normal 402
