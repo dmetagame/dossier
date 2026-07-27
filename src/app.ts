@@ -346,15 +346,18 @@ if (!config.devSkipPayment && paymentConfigured()) {
       }
     };
     try {
-      await pay(c, trackedNext);
+      // pay() returns a Response for the unpaid 402 path and undefined once a
+      // verified payment has run the handler — both must be passed through
+      // unchanged, or Hono reports the context as unfinalized.
+      const res = await pay(c, trackedNext);
       linkSettlement();
-      return;
+      return res;
     } catch (e) {
       if (handlerStarted) throw e;
       await new Promise((r) => setTimeout(r, 500));
-      await pay(c, next);
+      const res = await pay(c, next);
       linkSettlement();
-      return;
+      return res;
     }
   });
 }
