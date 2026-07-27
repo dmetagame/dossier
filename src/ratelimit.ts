@@ -28,6 +28,9 @@ const buckets = new Map<string, Counter>();
 export const limits: Record<string, Limit> = {
   "/dossier/recovery": { windowMs: 60_000, max: 60 },
   "/dossier/sample": { windowMs: 60_000, max: 60 },
+  // Preflight is the most expensive free route: it hits both upstream sources
+  // on every call, so it gets the tightest budget.
+  "/dossier/preflight": { windowMs: 60_000, max: 30 },
   default: { windowMs: 60_000, max: 240 },
 };
 

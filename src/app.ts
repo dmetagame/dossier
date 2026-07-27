@@ -6,7 +6,13 @@ import { OKXFacilitatorClient } from "@okxweb3/x402-core";
 import { config, paymentConfigured } from "./config";
 import { VerdictRequest, SUPPORTED_CHAINS } from "./verdict/schema";
 import { evaluate, SourcesUnavailableError } from "./verdict/engine";
-import { DossierRequest, buildDossier, ChainNotFoundError } from "./dossier/report";
+import {
+  DossierRequest,
+  buildDossier,
+  preflight,
+  ChainNotFoundError,
+  TokenNotFoundError,
+} from "./dossier/report";
 import { renderDossierHtml } from "./dossier/render";
 import * as archive from "./dossier/archive";
 import { renderSiteHtml } from "./site";
@@ -28,7 +34,14 @@ export const app = new Hono();
 // Rate limiting for the free surface only. Registered before the routes but
 // after nothing else, so it cannot affect the paid paths: those are excluded by
 // name below. Runs in observe mode until real traffic confirms the budgets.
-const FREE_LIMITED = new Set(["/dossier/recovery", "/dossier/sample", "/", "/info", "/health"]);
+const FREE_LIMITED = new Set([
+  "/dossier/recovery",
+  "/dossier/sample",
+  "/dossier/preflight",
+  "/",
+  "/info",
+  "/health",
+]);
 app.use(async (c, next) => {
   const path = c.req.path;
   if (!FREE_LIMITED.has(path)) return next();
@@ -98,6 +111,14 @@ app.get("/info", (c) =>
         description: "A real sample report, so you can see the deliverable before paying.",
       },
       {
+        path: "/dossier/preflight",
+        method: "GET or POST",
+        pricing: "free",
+        body: { tokenAddress: "0x…", chain: "(optional)" },
+        description:
+          "Coverage check for a specific token before paying: which data sources have it, expected coverage, which fields the report will contain, and whether it can be produced at all.",
+      },
+      {
         path: "/verdict",
         method: "POST",
         pricing: `${config.price} per call (x402, USD₮0 on X Layer)`,
@@ -141,6 +162,32 @@ app.get("/dossier/sample", async (c) => {
     }
   }
   return c.html(sampleCache.html);
+});
+
+// Coverage preflight, free: what the paid report will and will not contain for
+// this token, so nobody pays 0.50 to discover that a token has no market data.
+// It returns coverage and field availability only, never the verdict or any
+// security flag — otherwise the free route would replace the paid one.
+app.on(["GET", "POST"], "/dossier/preflight", async (c) => {
+  const parsed = DossierRequest.safeParse(await readParams(c));
+  if (!parsed.success) return invalid(c, parsed.error.issues);
+  try {
+    const p = await preflight(parsed.data);
+    return c.json({
+      ...p,
+      price: config.dossierPrice,
+      paidEndpoint: `${config.publicOrigin}/dossier`,
+    });
+  } catch (e) {
+    if (e instanceof ChainNotFoundError) {
+      return c.json({ error: "chain_not_found", message: e.message, reportAvailable: false }, 404);
+    }
+    if (e instanceof SourcesUnavailableError) {
+      c.header("Retry-After", "30");
+      return c.json({ error: "data sources temporarily unavailable — retry shortly" }, 503);
+    }
+    throw e;
+  }
 });
 
 // Recovery: a buyer who lost the paid response can fetch it again. Free —
@@ -570,6 +617,19 @@ app.on(["GET", "POST"], "/dossier", async (c) => {
     // Non-2xx responses are never settled, so none of these charge the buyer.
     if (e instanceof ChainNotFoundError) {
       return c.json({ error: e.message }, 404);
+    }
+    // Non-2xx, so the middleware never settles: an address nothing has heard of
+    // costs the buyer nothing.
+    if (e instanceof TokenNotFoundError) {
+      return c.json(
+        {
+          error: "token_not_found",
+          message: e.message,
+          charged: false,
+          hint: "Check coverage before paying with the free GET /dossier/preflight?tokenAddress=0x…",
+        },
+        404,
+      );
     }
     if (e instanceof SourcesUnavailableError) {
       c.header("Retry-After", "30");

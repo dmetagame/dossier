@@ -21,6 +21,21 @@ export class ChainNotFoundError extends Error {
   }
 }
 
+/**
+ * Both sources answered, and neither has ever heard of this address.
+ *
+ * There is no report to write: no security record, no market, nothing to check.
+ * Returning an aborted report at 200 would settle the payment and charge for the
+ * sentence "we found nothing", which is not what the listing sells. A non-2xx
+ * cannot settle, so the buyer keeps their money.
+ */
+export class TokenNotFoundError extends Error {
+  constructor(readonly chain: string, readonly address: string) {
+    super(`no security record and no market found for ${address} on ${chain}`);
+    this.name = "TokenNotFoundError";
+  }
+}
+
 // Dossier: one request -> a polished, shareable due-diligence report on a token,
 // assembled deterministically from live on-chain data. The deliverable is a
 // self-contained HTML document (prints cleanly to PDF) plus the structured data
@@ -33,6 +48,74 @@ export const DossierRequest = z.object({
   format: z.enum(["html", "json"]).default("html"),
 });
 export type DossierRequest = z.infer<typeof DossierRequest>;
+
+export interface Preflight {
+  token: { address: string; chain: string; symbol?: string };
+  sources: { goplus: string; dexscreener: string };
+  expectedCoverage: number;
+  fieldsAvailable: string[];
+  fieldsUnavailable: string[];
+  reportAvailable: boolean;
+  note: string;
+}
+
+/**
+ * What a buyer would get, before they pay for it.
+ *
+ * Deliberately withholds the answer: coverage and field availability only, never
+ * the verdict, the reasons, the size cap, or any security flag. It tells you
+ * whether the report is worth 0.50, not what it says — otherwise the free
+ * endpoint would replace the paid one.
+ */
+export async function preflight(req: DossierRequest): Promise<Preflight> {
+  let chain = req.chain as z.infer<typeof ChainName>;
+  if (!chain) {
+    const resolved = await resolveChain(req.tokenAddress);
+    if (resolved.status === "not_found") throw new ChainNotFoundError();
+    if (resolved.status === "unavailable") throw new SourcesUnavailableError();
+    chain = resolved.chain;
+  }
+  const snapshot = await fetchSources(chain, req.tokenAddress);
+  const { sec, market } = snapshot;
+  if (sec.status === "unavailable" && market.status === "unavailable") {
+    throw new SourcesUnavailableError();
+  }
+
+  // Coverage is computed by the engine that will write the report, so this can
+  // never promise a number the paid deliverable then contradicts.
+  const verdict = await evaluate({ chain, tokenAddress: req.tokenAddress, action: "buy" }, snapshot);
+  const known = (v: unknown) => v !== undefined && v !== null;
+  const fields: Record<string, boolean> = {
+    priceUsd: market.status === "ok" && known(market.priceUsd),
+    liquidityUsd: market.status === "ok" && known(market.liquidityUsd),
+    deepestPoolUsd: market.status === "ok" && known(market.deepestPoolUsd),
+    volume24hUsd: market.status === "ok" && known(market.volume24hUsd),
+    ageDays: market.status === "ok" && known(market.ageDays),
+    holderCount: sec.status === "ok" && known(sec.holderCount),
+    topHolderPct: sec.status === "ok" && known(sec.topHolderPct),
+    taxes: sec.status === "ok" && (known(sec.buyTaxPct) || known(sec.sellTaxPct)),
+    contractControl: sec.status === "ok",
+    heuristicSizeCap: verdict.maxSizeUsd !== null,
+  };
+  const reportAvailable = !(sec.status === "not_found" && market.status === "not_found");
+  return {
+    token: {
+      address: req.tokenAddress,
+      chain,
+      symbol: market.status === "ok" ? market.symbol : undefined,
+    },
+    sources: { goplus: sec.status, dexscreener: market.status },
+    expectedCoverage: verdict.confidence,
+    fieldsAvailable: Object.keys(fields).filter((k) => fields[k]),
+    fieldsUnavailable: Object.keys(fields).filter((k) => !fields[k]),
+    reportAvailable,
+    note: !reportAvailable
+      ? "Neither source has a record of this token. The paid endpoint will refuse it and take no payment."
+      : verdict.confidence < 1
+        ? "Partial coverage. The report will state every unavailable field rather than estimate it."
+        : "Full coverage across all five checks.",
+  };
+}
 
 export interface Dossier {
   title: string;
@@ -91,6 +174,11 @@ export async function buildDossier(req: DossierRequest): Promise<Dossier> {
 
   if (sec.status === "unavailable" && market.status === "unavailable") {
     throw new SourcesUnavailableError();
+  }
+  // An outage is "we could not look"; this is "we looked, and there is nothing".
+  // Only the second means there is no deliverable to charge for.
+  if (sec.status === "not_found" && market.status === "not_found") {
+    throw new TokenNotFoundError(chain, req.tokenAddress);
   }
 
   const verdict = await evaluate({ chain, tokenAddress: req.tokenAddress, action: "buy" }, snapshot);

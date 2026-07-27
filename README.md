@@ -19,6 +19,7 @@ Free sample of a real generated report: https://dossier.rouma.xyz/dossier/sample
 | `/dossier` | GET, POST | 0.5 USD₮0 | Full due-diligence report (`html` default, `json` optional) |
 | `/verdict` | GET, POST | 0.2 USD₮0 | Companion service (agent #7008): the risk decision alone as JSON |
 | `/dossier/recovery` | GET, POST | free | Re-fetch a report you already paid for (`paymentTransaction` or `jobId`) |
+| `/dossier/preflight` | GET, POST | free | Coverage check for a token before you pay |
 | `/dossier/sample` | GET | free | Real sample report, cached |
 | `/` | GET | free | Landing page |
 | `/info` | GET | free | Machine-readable service description |
@@ -32,6 +33,40 @@ POST-body-only service would answer a paying caller with 400.
 `chain` is optional. It is auto-detected from live markets; when an address is deployed
 on several chains the deepest-liquidity deployment is analysed and the report states
 which chain it used and what the alternatives were.
+
+## Knowing what you get before you pay
+
+The payment challenge carries the input contract, so a cold agent can discover
+the required fields before authorising payment:
+
+```
+extensions.outputSchema.input = { type: "http", method: "POST",
+  contentType: "application/json", schema: { required: ["tokenAddress"], … } }
+```
+
+It lives in `extensions` rather than in the `accepts` entries on purpose. Those
+are what the client signs over, and an extra field there risks a verification
+mismatch at the facilitator.
+
+Coverage is a separate question from inputs: a token with no DEX pool has no
+price, liquidity, volume, or size cap, whatever the request looks like. Ask
+first, free:
+
+```bash
+curl "https://dossier.rouma.xyz/dossier/preflight?tokenAddress=0x…&chain=(optional)"
+```
+
+It returns the resolved token and chain, which sources hold it, the expected
+coverage, the exact fields the report will and will not contain, and whether it
+can be produced at all. Coverage comes from the same engine that writes the
+report, so the preflight cannot promise a number the paid deliverable then
+contradicts. It deliberately withholds the verdict, the reasons, the size cap
+and every security flag: it tells you whether the report is worth buying, not
+what it says.
+
+When neither source has a record of an address, the paid endpoint answers 404
+and takes no payment. Settlement only happens on a 2xx, so a token nothing has
+heard of cannot be charged for.
 
 ## Recovery
 
