@@ -151,9 +151,20 @@ app.on(["GET", "POST"], "/dossier/recovery", async (c) => {
     deliveredAt: rec.deliveredAt,
     recoveredAt: new Date().toISOString(),
     contentType: rec.contentType,
-    deliverable: rec.contentType === "application/json" ? JSON.parse(rec.deliverable) : rec.deliverable,
+    deliverable: parseArchived(rec),
   });
 });
+
+function parseArchived(rec: archive.ArchiveRecord): unknown {
+  // A record could be truncated by a disk problem; return it as text rather
+  // than failing a recovery the buyer already paid for.
+  if (rec.contentType !== "application/json") return rec.deliverable;
+  try {
+    return JSON.parse(rec.deliverable);
+  } catch {
+    return rec.deliverable;
+  }
+}
 
 app.get("/health", (c) =>
   c.json({
@@ -336,7 +347,7 @@ if (!config.devSkipPayment && paymentConfigured()) {
     // report is what later lets the payer — and only the payer — recover it.
     const linkSettlement = () => {
       try {
-        const h = (c as any).get("archiveHash");
+        const h = (c as any).get("archiveId");
         const pr = c.res && c.res.headers.get("payment-response");
         if (!h || !pr) return;
         const receipt = JSON.parse(Buffer.from(pr, "base64").toString("utf8"));
@@ -423,15 +434,16 @@ app.on(["GET", "POST"], "/dossier", async (c) => {
     const body = json ? JSON.stringify(dossier) : renderDossierHtml(dossier);
     // Archive before responding, and remember the key so the settlement
     // transaction can be attached once the SDK has settled.
-    const hash = archive.paramsHash(parsed.data as Record<string, unknown>);
+    const id = archive.newId();
     archive.save({
-      paramsSha256: hash,
+      id,
+      paramsSha256: archive.paramsHash(parsed.data as Record<string, unknown>),
       request: parsed.data as Record<string, unknown>,
       contentType: json ? "application/json" : "text/html",
       deliverable: body,
       deliveredAt: new Date().toISOString(),
     });
-    (c as any).set("archiveHash", hash);
+    (c as any).set("archiveId", id);
     return json
       ? c.json(dossier)
       : c.html(body);

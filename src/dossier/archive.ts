@@ -7,12 +7,19 @@
 // have no answer for them. Recovery requires the settlement transaction hash,
 // which only the payer can know, so the archive can never be used to obtain a
 // report without paying for one.
+//
+// Every delivery is its own record. Keying by the request instead would mean a
+// second buyer asking about the same token silently destroyed the first
+// buyer's record — and with it their only route to recovery.
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 export interface ArchiveRecord {
+  /** Unique per delivery; also the filename. */
+  id: string;
+  /** Hash of the semantic request, used only as a secondary proof check. */
   paramsSha256: string;
   request: Record<string, unknown>;
   contentType: string;
@@ -26,6 +33,9 @@ const DIR =
   join(process.env.HOME || process.env.TMPDIR || "/tmp", ".dossier-archive");
 const MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
 const MAX_RECORDS = 5000;
+const PRUNE_EVERY = 25;
+
+let sinceLastPrune = 0;
 
 // The archive is a convenience, never a dependency: if the filesystem is
 // read-only (a serverless target, say) every operation degrades to a no-op and
@@ -42,35 +52,51 @@ function dir(): string | null {
   }
 }
 
-/** Canonical hash of the request parameters that produced a report. */
+export function newId(): string {
+  return randomUUID();
+}
+
+/**
+ * Hash of the semantic request: the token and chain that were analysed.
+ * `format` is excluded on purpose — a buyer proving ownership by resending
+ * their original body should match whether or not they included it, and it
+ * does not change which token was examined.
+ */
 export function paramsHash(params: Record<string, unknown>): string {
   const canonical: Record<string, unknown> = {};
   for (const k of Object.keys(params).sort()) {
+    if (k === "format") continue;
     const v = params[k];
     if (v !== undefined && v !== null && v !== "") canonical[k] = String(v).toLowerCase();
   }
   return createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
 }
 
-function file(hash: string): string | null {
+/** Filenames are ours to choose, but never trust one that came from a caller. */
+function file(id: string): string | null {
   const d = dir();
-  return d ? join(d, hash + ".json") : null;
+  if (!d) return null;
+  if (!/^[a-f0-9-]{8,64}$/i.test(id)) return null;
+  return join(d, id + ".json");
 }
 
 export function save(rec: ArchiveRecord): void {
-  const f = file(rec.paramsSha256);
+  const f = file(rec.id);
   if (!f) return;
   try {
     writeFileSync(f, JSON.stringify(rec), { mode: 0o600 });
-    prune();
+    if (++sinceLastPrune >= PRUNE_EVERY) {
+      sinceLastPrune = 0;
+      prune();
+    }
   } catch {
     /* archiving must never break a delivery */
   }
 }
 
 /** Attach the settlement transaction once the SDK has settled the payment. */
-export function linkTransaction(hash: string, tx: string): void {
-  const f = file(hash);
+export function linkTransaction(id: string, tx: string): void {
+  const f = file(id);
   if (!f) return;
   try {
     if (!existsSync(f)) return;
@@ -82,26 +108,15 @@ export function linkTransaction(hash: string, tx: string): void {
   }
 }
 
-export function byHash(hash: string): ArchiveRecord | null {
-  const f = file(hash);
-  if (!f) return null;
-  try {
-    return existsSync(f) ? (JSON.parse(readFileSync(f, "utf8")) as ArchiveRecord) : null;
-  } catch {
-    return null;
-  }
-}
-
-export function byTransaction(tx: string): ArchiveRecord | null {
+function readAll(): ArchiveRecord[] {
   const d = dir();
-  if (!d) return null;
-  const want = tx.toLowerCase();
+  if (!d) return [];
+  const out: ArchiveRecord[] = [];
   try {
     for (const name of readdirSync(d)) {
       if (!name.endsWith(".json")) continue;
       try {
-        const rec = JSON.parse(readFileSync(join(d, name), "utf8")) as ArchiveRecord;
-        if ((rec.paymentTransaction || "").toLowerCase() === want) return rec;
+        out.push(JSON.parse(readFileSync(join(d, name), "utf8")) as ArchiveRecord);
       } catch {
         /* skip unreadable record */
       }
@@ -109,7 +124,24 @@ export function byTransaction(tx: string): ArchiveRecord | null {
   } catch {
     /* ignore */
   }
+  return out;
+}
+
+export function byTransaction(tx: string): ArchiveRecord | null {
+  const want = tx.toLowerCase();
+  for (const rec of readAll()) {
+    if ((rec.paymentTransaction || "").toLowerCase() === want) return rec;
+  }
   return null;
+}
+
+/** Most recent delivery matching a semantic request hash. */
+export function byHash(hash: string): ArchiveRecord | null {
+  if (!/^[a-f0-9]{64}$/i.test(hash)) return null;
+  const matches = readAll()
+    .filter((r) => r.paramsSha256 === hash)
+    .sort((a, b) => (a.deliveredAt < b.deliveredAt ? 1 : -1));
+  return matches[0] ?? null;
 }
 
 function prune(): void {
