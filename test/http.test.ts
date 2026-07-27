@@ -120,13 +120,15 @@ describe("input validation happens before anything is produced", () => {
 });
 
 describe("nothing is charged for what we cannot report on", () => {
-  test("an address neither source knows is refused with 404", async () => {
+  test("an address with no contract code is refused with 404, and says so", async () => {
     const r = await post("/dossier", { tokenAddress: ADDR.nowhere, chain: "bsc" });
     assert.equal(r.status, 404);
     const j = (await r.json()) as Record<string, unknown>;
-    assert.equal(j.error, "token_not_found");
+    // Reading the chain gives the sharper answer: not "no market found" but
+    // "there is nothing deployed at this address".
+    assert.equal(j.error, "not_a_contract");
     assert.equal(j.charged, false);
-    assert.match(String(j.hint), /preflight/);
+    assert.match(String(j.hint), /no contract code/i);
   });
 
   test("a source outage returns 503 with Retry-After, not a verdict", async () => {
@@ -153,6 +155,22 @@ describe("nothing is charged for what we cannot report on", () => {
 });
 
 describe("coverage preflight", () => {
+  test("names the chain among its sources", async () => {
+    const j = (await (
+      await get(`/dossier/preflight?tokenAddress=${ADDR.usdt0}&chain=xlayer`)
+    ).json()) as Record<string, any>;
+    assert.equal(j.sources.rpc, "ok");
+    assert.ok(j.fieldsAvailable.includes("contractIdentity"));
+  });
+
+  test("an address with no code is flagged as unbuyable before paying", async () => {
+    const j = (await (
+      await get(`/dossier/preflight?tokenAddress=${ADDR.nowhere}&chain=bsc`)
+    ).json()) as Record<string, any>;
+    assert.equal(j.reportAvailable, false);
+    assert.match(j.note, /no contract code/i);
+  });
+
   test("reports coverage without giving away the verdict", async () => {
     const r = await get(`/dossier/preflight?tokenAddress=${ADDR.cake}&chain=bsc`);
     assert.equal(r.status, 200);

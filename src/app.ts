@@ -12,6 +12,7 @@ import {
   preflight,
   ChainNotFoundError,
   TokenNotFoundError,
+  NotAContractError,
 } from "./dossier/report";
 import { renderDossierHtml } from "./dossier/render";
 import * as archive from "./dossier/archive";
@@ -595,8 +596,19 @@ app.on(["GET", "POST"], "/dossier", async (c) => {
     if (e instanceof ChainNotFoundError) {
       return c.json({ error: e.message }, 404);
     }
-    // Non-2xx, so the middleware never settles: an address nothing has heard of
-    // costs the buyer nothing.
+    // Non-2xx, so the middleware never settles. Both of these cost the buyer
+    // nothing; the first is the more useful message when it applies.
+    if (e instanceof NotAContractError) {
+      return c.json(
+        {
+          error: "not_a_contract",
+          message: e.message,
+          charged: false,
+          hint: "That address has no contract code on this chain. Check the address and the chain.",
+        },
+        404,
+      );
+    }
     if (e instanceof TokenNotFoundError) {
       return c.json(
         {

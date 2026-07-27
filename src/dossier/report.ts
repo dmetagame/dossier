@@ -29,6 +29,14 @@ export class ChainNotFoundError extends Error {
  * sentence "we found nothing", which is not what the listing sells. A non-2xx
  * cannot settle, so the buyer keeps their money.
  */
+/** No code at the address: a wallet, or a contract that was never deployed. */
+export class NotAContractError extends Error {
+  constructor(readonly chain: string, readonly address: string) {
+    super(`no contract code at ${address} on ${chain}`);
+    this.name = "NotAContractError";
+  }
+}
+
 export class TokenNotFoundError extends Error {
   constructor(readonly chain: string, readonly address: string) {
     super(`no security record and no market found for ${address} on ${chain}`);
@@ -51,7 +59,7 @@ export type DossierRequest = z.infer<typeof DossierRequest>;
 
 export interface Preflight {
   token: { address: string; chain: string; symbol?: string };
-  sources: { goplus: string; dexscreener: string };
+  sources: { goplus: string; dexscreener: string; rpc: string };
   expectedCoverage: number;
   fieldsAvailable: string[];
   fieldsUnavailable: string[];
@@ -76,7 +84,7 @@ export async function preflight(req: DossierRequest): Promise<Preflight> {
     chain = resolved.chain;
   }
   const snapshot = await fetchSources(chain, req.tokenAddress);
-  const { sec, market } = snapshot;
+  const { sec, market, chain: chainFacts } = snapshot;
   if (sec.status === "unavailable" && market.status === "unavailable") {
     throw new SourcesUnavailableError();
   }
@@ -94,27 +102,49 @@ export async function preflight(req: DossierRequest): Promise<Preflight> {
     holderCount: sec.status === "ok" && known(sec.holderCount),
     topHolderPct: sec.status === "ok" && known(sec.topHolderPct),
     taxes: sec.status === "ok" && (known(sec.buyTaxPct) || known(sec.sellTaxPct)),
-    contractControl: sec.status === "ok",
+    contractControl: sec.status === "ok" || chainFacts.status === "ok",
+    contractIdentity: chainFacts.status === "ok" && chainFacts.isContract,
     heuristicSizeCap: verdict.maxSizeUsd !== null,
   };
-  const reportAvailable = !(sec.status === "not_found" && market.status === "not_found");
+  // No code at the address is a different, sharper answer than "no market".
+  const noContract = chainFacts.status === "ok" && !chainFacts.isContract;
+  const reportAvailable =
+    !noContract && !(sec.status === "not_found" && market.status === "not_found");
   return {
     token: {
       address: req.tokenAddress,
       chain,
-      symbol: market.status === "ok" ? market.symbol : undefined,
+      symbol:
+        (market.status === "ok" ? market.symbol : undefined) ??
+        (chainFacts.status === "ok" ? chainFacts.symbol : undefined),
     },
-    sources: { goplus: sec.status, dexscreener: market.status },
+    sources: { goplus: sec.status, dexscreener: market.status, rpc: chainFacts.status },
     expectedCoverage: verdict.confidence,
     fieldsAvailable: Object.keys(fields).filter((k) => fields[k]),
     fieldsUnavailable: Object.keys(fields).filter((k) => !fields[k]),
     reportAvailable,
-    note: !reportAvailable
+    note: noContract
+      ? "There is no contract code at this address on this chain. The paid endpoint will refuse it and take no payment."
+      : !reportAvailable
       ? "Neither source has a record of this token. The paid endpoint will refuse it and take no payment."
       : verdict.confidence < 1
         ? "Partial coverage. The report will state every unavailable field rather than estimate it."
         : "Full coverage across all five checks.",
   };
+}
+
+export interface ContractFacts {
+  isContract: boolean;
+  name?: string;
+  symbol?: string;
+  decimals?: number;
+  totalSupply?: number;
+  proxyImplementation?: string;
+  proxyAdmin?: string;
+  owner?: string;
+  ownerRenounced?: boolean;
+  /** Heuristic, from the deployed bytecode. Labelled as such in the report. */
+  capabilities?: string[];
 }
 
 export interface Dossier {
@@ -144,6 +174,8 @@ export interface Dossier {
   };
   sources: string[];
   chainResolution: ChainResolutionInfo;
+  /** Read directly from the chain; present whenever an RPC answered. */
+  contract?: ContractFacts;
 }
 
 export async function buildDossier(req: DossierRequest): Promise<Dossier> {
@@ -170,13 +202,20 @@ export async function buildDossier(req: DossierRequest): Promise<Dossier> {
   // print a tax rate in one section while the checks table said the security
   // source had returned nothing.
   const snapshot = await fetchSources(chain, req.tokenAddress);
-  const { sec, market } = snapshot;
+  const { sec, market, chain: chainFacts } = snapshot;
 
   if (sec.status === "unavailable" && market.status === "unavailable") {
     throw new SourcesUnavailableError();
   }
   // An outage is "we could not look"; this is "we looked, and there is nothing".
   // Only the second means there is no deliverable to charge for.
+  //
+  // The chain gives the sharpest version of this: if there is no code at the
+  // address, the buyer sent a wallet or a contract that was never deployed, and
+  // saying so is more useful than "no market found".
+  if (chainFacts.status === "ok" && !chainFacts.isContract) {
+    throw new NotAContractError(chain, req.tokenAddress);
+  }
   if (sec.status === "not_found" && market.status === "not_found") {
     throw new TokenNotFoundError(chain, req.tokenAddress);
   }
@@ -186,14 +225,21 @@ export async function buildDossier(req: DossierRequest): Promise<Dossier> {
   const sources: string[] = [];
   if (sec.status === "ok") sources.push("GoPlus");
   if (market.status === "ok") sources.push("DexScreener");
+  if (chainFacts.status === "ok") sources.push(`${chain} RPC`);
 
   return {
-    title: `Due-Diligence Dossier — ${market.status === "ok" && market.symbol ? market.symbol : req.tokenAddress.slice(0, 8)}`,
+    title: `Due-Diligence Dossier — ${
+      (market.status === "ok" ? market.symbol : undefined) ??
+      (chainFacts.status === "ok" ? chainFacts.symbol || chainFacts.name : undefined) ??
+      req.tokenAddress.slice(0, 8)
+    }`,
     generatedAt: new Date().toISOString(),
     token: {
       chain,
       address: req.tokenAddress,
-      symbol: market.status === "ok" ? market.symbol : undefined,
+      symbol:
+        (market.status === "ok" ? market.symbol : undefined) ??
+        (chainFacts.status === "ok" ? chainFacts.symbol : undefined),
       priceUsd: market.status === "ok" ? market.priceUsd : undefined,
       liquidityUsd: market.status === "ok" ? market.liquidityUsd : undefined,
       deepestPoolUsd: market.status === "ok" ? market.deepestPoolUsd : undefined,
@@ -214,5 +260,20 @@ export async function buildDossier(req: DossierRequest): Promise<Dossier> {
     },
     sources,
     chainResolution,
+    contract:
+      chainFacts.status === "ok"
+        ? {
+            isContract: chainFacts.isContract,
+            name: chainFacts.name,
+            symbol: chainFacts.symbol,
+            decimals: chainFacts.decimals,
+            totalSupply: chainFacts.totalSupply,
+            proxyImplementation: chainFacts.proxyImplementation,
+            proxyAdmin: chainFacts.proxyAdmin,
+            owner: chainFacts.owner,
+            ownerRenounced: chainFacts.ownerRenounced,
+            capabilities: chainFacts.capabilities,
+          }
+        : undefined,
   };
 }

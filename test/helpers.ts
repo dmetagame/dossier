@@ -25,6 +25,13 @@ export const FIXTURES: Record<string, Recorded> = JSON.parse(
   readFileSync(new URL("./fixtures/upstream.json", import.meta.url), "utf8"),
 );
 
+// RPC calls are POSTs whose body identifies the call, so they are keyed by
+// `url|body` and recorded by running the real source behind a wrapper. That
+// guarantees the fixtures match the requests the code actually makes.
+const RPC: Record<string, { status: number; body: unknown }> = JSON.parse(
+  readFileSync(new URL("./fixtures/rpc.json", import.meta.url), "utf8"),
+);
+
 const goplusUrl = (chainId: string, address: string) =>
   `https://api.gopluslabs.io/api/v1/token_security/${chainId}?contract_addresses=${address}`;
 const dexUrl = (address: string) => `https://api.dexscreener.com/latest/dex/tokens/${address}`;
@@ -35,7 +42,7 @@ interface StubOptions {
   /** Fixture names to serve. */
   cases?: string[];
   /** Make one source fail, to exercise the tri-state handling. */
-  fail?: { goplus?: FailureMode; dexscreener?: FailureMode };
+  fail?: { goplus?: FailureMode; dexscreener?: FailureMode; rpc?: FailureMode };
 }
 
 const realFetch = globalThis.fetch;
@@ -51,8 +58,25 @@ export function stubUpstream(opts: StubOptions = {}): () => void {
     map.set(dexUrl(f.address), { ...f.dexscreener, source: "dexscreener" });
   }
 
-  globalThis.fetch = (async (input: RequestInfo | URL) => {
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : String(input);
+
+    if (init?.method === "POST") {
+      if (opts.fail?.rpc === "timeout") throw new Error("simulated rpc timeout");
+      if (opts.fail?.rpc === "500") return new Response("rpc down", { status: 500 });
+      const recorded = RPC[`${url}|${init.body}`];
+      if (!recorded) {
+        throw new Error(
+          `test made an unrecorded RPC call: ${url}\n${String(init.body).slice(0, 200)}\n` +
+            `Re-record with: npx tsx test/capture-fixtures.mts`,
+        );
+      }
+      return new Response(JSON.stringify(recorded.body), {
+        status: recorded.status,
+        headers: { "content-type": "application/json" },
+      });
+    }
+
     const hit = map.get(url);
     if (!hit) {
       throw new Error(
@@ -73,6 +97,19 @@ export function stubUpstream(opts: StubOptions = {}): () => void {
   return () => {
     globalThis.fetch = realFetch;
   };
+}
+
+/**
+ * Runs `fn` with a stub installed and always restores it, so a failing
+ * assertion cannot leave a broken stub installed for the rest of the file.
+ */
+export async function withStub<T>(opts: StubOptions, fn: () => Promise<T> | T): Promise<T> {
+  const restore = stubUpstream(opts);
+  try {
+    return await fn();
+  } finally {
+    restore();
+  }
 }
 
 /** A temp archive directory that cleans itself up. */

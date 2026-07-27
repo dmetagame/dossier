@@ -1,6 +1,7 @@
 import type { Verdict, VerdictRequest, CheckResult } from "./schema";
 import { fetchGoPlus, goplusSupports } from "./sources/goplus";
 import { fetchDexScreener } from "./sources/dexscreener";
+import { fetchChainFacts, rpcSupports, type RpcSnapshot } from "./sources/rpc";
 
 // Thrown when no data source could be reached at all — the caller must
 // surface a 503 so the agent retries, never a charged verdict built on air.
@@ -31,37 +32,45 @@ export class SourcesUnavailableError extends Error {
 export interface SourceSnapshot {
   sec: Awaited<ReturnType<typeof fetchGoPlus>>;
   market: Awaited<ReturnType<typeof fetchDexScreener>>;
+  /** Direct chain reads: what the contract itself says about itself. */
+  chain: RpcSnapshot;
   /** When fetching began, so a caller's latency figure stays honest. */
   startedAt: number;
 }
 
 export async function fetchSources(chain: string, tokenAddress: string): Promise<SourceSnapshot> {
   const startedAt = Date.now();
-  const [sec, market] = await Promise.all([
+  const [sec, market, chainFacts] = await Promise.all([
     goplusSupports(chain) ? fetchGoPlus(chain, tokenAddress) : Promise.resolve({ status: "not_found" } as const),
     fetchDexScreener(chain, tokenAddress),
+    rpcSupports(chain)
+      ? fetchChainFacts(chain, tokenAddress)
+      : Promise.resolve({ status: "unavailable" } as const),
   ]);
-  return { sec, market, startedAt };
+  return { sec, market, chain: chainFacts, startedAt };
 }
 
 export async function evaluate(req: VerdictRequest, prefetched?: SourceSnapshot): Promise<Verdict> {
   const snapshot = prefetched ?? (await fetchSources(req.chain, req.tokenAddress));
-  const { sec, market } = snapshot;
+  const { sec, market, chain: chainFacts } = snapshot;
   const started = snapshot.startedAt;
   const sources: string[] = [];
 
   if (sec.status === "ok") sources.push("goplus");
   if (market.status === "ok") sources.push("dexscreener");
+  if (chainFacts.status === "ok") sources.push("rpc");
 
   // Outage and obscurity are different facts: if nothing answered, we know
-  // nothing about the token and must not pretend otherwise.
+  // nothing about the token and must not pretend otherwise. The chain is not
+  // counted here: it can describe a contract but never a market, so an
+  // RPC-only answer is not enough to price a position on.
   if (sec.status === "unavailable" && market.status === "unavailable") {
     throw new SourcesUnavailableError();
   }
 
   const checks = {
     honeypot: honeypotCheck(sec),
-    contractControl: controlCheck(sec),
+    contractControl: controlCheck(sec, chainFacts),
     liquidity: liquidityCheck(market.status === "ok" ? market : undefined, sec),
     marketActivity: activityCheck(market.status === "ok" ? market : undefined),
     holderConcentration: concentrationCheck(sec),
@@ -162,8 +171,12 @@ function honeypotCheck(sec: Sec): CheckResult {
   };
 }
 
-function controlCheck(sec: Sec): CheckResult {
-  if (sec.status !== "ok") return { status: "unknown", detail: "contract control (no security data)" };
+function controlCheck(sec: Sec, chain: RpcSnapshot): CheckResult {
+  // When the security source has nothing, the chain still does. Reading the
+  // contract directly answers the same question from primary evidence rather
+  // than leaving the check blank, which is what made an X Layer report on
+  // USD₮0 mostly empty.
+  if (sec.status !== "ok") return controlFromChain(chain);
   if (sec.ownerCanChangeBalance)
     return { status: "fail", detail: "Owner can modify holder balances." };
   const powers: string[] = [];
@@ -173,6 +186,34 @@ function controlCheck(sec: Sec): CheckResult {
   if (powers.length >= 2) return { status: "fail", detail: `Contract control risks: ${powers.join(", ")}.` };
   if (powers.length === 1) return { status: "warn", detail: `Contract control risk: ${powers[0]}.` };
   return { status: "pass", detail: "No dangerous owner powers detected." };
+}
+
+/**
+ * Contract control read straight off the chain.
+ *
+ * Weaker than the security source, and labelled as such: an EIP-1967
+ * implementation slot proves upgradeability, but capabilities come from
+ * scanning the dispatch table for selectors, which is evidence rather than
+ * proof. It is still far better than "no data".
+ */
+function controlFromChain(chain: RpcSnapshot): CheckResult {
+  if (chain.status !== "ok") {
+    return { status: "unknown", detail: "contract control (no security data)" };
+  }
+  if (!chain.isContract) {
+    return { status: "fail", detail: "No contract code at this address on this chain." };
+  }
+  const powers: string[] = [];
+  if (chain.proxyImplementation) powers.push("upgradeable proxy");
+  if (chain.capabilities?.includes("mint") && chain.ownerRenounced === false) {
+    powers.push("mint function present, owner not renounced");
+  }
+  if (chain.capabilities?.includes("pause")) powers.push("pausable");
+  if (chain.capabilities?.includes("blacklist")) powers.push("address blacklisting");
+  const note = " (read from the chain; the security source had no record)";
+  if (powers.length >= 2) return { status: "fail", detail: `Contract control risks: ${powers.join(", ")}${note}.` };
+  if (powers.length === 1) return { status: "warn", detail: `Contract control risk: ${powers[0]}${note}.` };
+  return { status: "pass", detail: `No upgrade, pause or blacklist powers found in the deployed bytecode${note}.` };
 }
 
 function liquidityCheck(market: Market | undefined, sec: Sec): CheckResult {

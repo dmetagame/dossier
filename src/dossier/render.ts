@@ -139,6 +139,41 @@ export function renderDossierHtml(d: Dossier, opts: RenderOpts = {}): string {
     <ul class="reasons">${v.reasons.map((r) => `<li>${esc(r)}</li>`).join("")}</ul>
   </section>
 
+  ${
+    d.contract && d.contract.isContract
+      ? `<section>
+    <h2>On-chain identity</h2>
+    <div class="kv">
+      <div><span class="lab">Name</span><span>${esc(d.contract.name ?? "—")}</span></div>
+      <div><span class="lab">Symbol</span><span>${esc(d.contract.symbol ?? "—")}</span></div>
+      <div><span class="lab">Decimals</span><span>${d.contract.decimals ?? "—"}</span></div>
+      <div><span class="lab">Total supply</span><span>${
+        d.contract.totalSupply !== undefined
+          ? Math.round(d.contract.totalSupply).toLocaleString("en-US")
+          : "—"
+      }</span></div>
+      <div><span class="lab">Owner</span><span class="addr">${
+        d.contract.ownerRenounced
+          ? "renounced"
+          : d.contract.owner
+            ? esc(d.contract.owner)
+            : "not exposed"
+      }</span></div>
+      <div><span class="lab">Proxy implementation</span><span class="addr">${
+        d.contract.proxyImplementation ? esc(d.contract.proxyImplementation) : "not a proxy"
+      }</span></div>
+    </div>
+    ${
+      d.contract.capabilities?.length
+        ? `<div class="chainnote">Functions found in the deployed bytecode:
+           <strong>${esc(d.contract.capabilities.join(", "))}</strong>. Detected by scanning the
+           contract's dispatch table, so treat this as evidence rather than proof.</div>`
+        : ""
+    }
+  </section>`
+      : ""
+  }
+
   <section>
     <h2>Contract &amp; distribution</h2>
     <div class="kv">

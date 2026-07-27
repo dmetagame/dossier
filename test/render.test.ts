@@ -129,6 +129,31 @@ describe("wording holds the product's claims", () => {
     assert.ok(html.includes("ethereum"));
   });
 
+  test("chain-read facts are shown and labelled as evidence, not proof", () => {
+    const html = renderDossierHtml(
+      base({
+        contract: {
+          isContract: true,
+          name: "USD₮0",
+          symbol: "USD₮0",
+          decimals: 6,
+          totalSupply: 112_526_175,
+          proxyImplementation: "0x1ec7df9e74be05cb5a456aca2dc1ac2cec9ab6a3",
+          owner: "0x4dff9b5b0143e642a3f63a5bcf2d1c328e600bf8",
+          capabilities: ["mint", "ownable"],
+        },
+      } as never),
+    );
+    assert.ok(html.includes("On-chain identity"));
+    assert.ok(html.includes("112,526,175"));
+    assert.ok(html.includes("0x1ec7df9e74be05cb5a456aca2dc1ac2cec9ab6a3"));
+    assert.ok(html.replace(/\s+/g, " ").includes("evidence rather than proof"));
+  });
+
+  test("a report without chain facts simply omits that section", () => {
+    assert.equal(renderDossierHtml(base()).includes("On-chain identity"), false);
+  });
+
   test("the sample banner appears only when asked for", () => {
     assert.equal(renderDossierHtml(base()).includes("class=\"banner\""), false);
     assert.ok(renderDossierHtml(base(), { banner: "Sample report" }).includes("Sample report"));

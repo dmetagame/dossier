@@ -4,7 +4,7 @@
 
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { stubUpstream, ADDR } from "./helpers";
+import { stubUpstream, withStub, ADDR } from "./helpers";
 import { evaluate, fetchSources, SourcesUnavailableError } from "../src/verdict/engine";
 
 let restore: () => void;
@@ -31,7 +31,7 @@ describe("deterministic scoring", () => {
     const v = await evaluate({ chain: "bsc", tokenAddress: ADDR.cake, action: "buy" });
     assert.equal(v.confidence, 1);
     assert.equal(Object.values(v.checks).filter((c) => c.status === "unknown").length, 0);
-    assert.deepEqual(v.meta.sources.sort(), ["dexscreener", "goplus"]);
+    assert.deepEqual(v.meta.sources.sort(), ["dexscreener", "goplus", "rpc"]);
   });
 
   test("the size cap comes off the deepest pool, never the sum", async () => {
@@ -76,24 +76,38 @@ describe("partial coverage is disclosed, not filled in", () => {
 describe("an outage is never treated as knowledge", () => {
   test("both sources down throws rather than returning a verdict", async () => {
     restore();
-    const r2 = stubUpstream({ fail: { goplus: "timeout", dexscreener: "timeout" } });
-    await assert.rejects(
-      () => evaluate({ chain: "bsc", tokenAddress: ADDR.cake, action: "buy" }),
-      SourcesUnavailableError,
+    await withStub({ fail: { goplus: "timeout", dexscreener: "timeout", rpc: "timeout" } }, () =>
+      assert.rejects(
+        () => evaluate({ chain: "bsc", tokenAddress: ADDR.cake, action: "buy" }),
+        SourcesUnavailableError,
+      ),
     );
-    r2();
     restore = stubUpstream();
   });
 
-  test("one source down yields unknown checks, not passing ones", async () => {
+  test("a failed source is never credited, and its checks stay unknown", async () => {
     restore();
-    const r2 = stubUpstream({ fail: { goplus: "500" } });
-    const v = await evaluate({ chain: "bsc", tokenAddress: ADDR.cake, action: "buy" });
-    assert.equal(v.checks.honeypot.status, "unknown");
-    assert.equal(v.checks.contractControl.status, "unknown");
-    assert.ok(!v.meta.sources.includes("goplus"), "a failed source must not be credited");
-    assert.ok(v.confidence < 1);
-    r2();
+    await withStub({ fail: { goplus: "500", rpc: "500" } }, async () => {
+      const v = await evaluate({ chain: "bsc", tokenAddress: ADDR.cake, action: "buy" });
+      assert.equal(v.checks.honeypot.status, "unknown");
+      assert.equal(v.checks.contractControl.status, "unknown");
+      assert.ok(!v.meta.sources.includes("goplus"));
+      assert.ok(!v.meta.sources.includes("rpc"));
+      assert.ok(v.confidence < 1);
+    });
+    restore = stubUpstream();
+  });
+
+  test("with the security source down, the chain still answers contract control", async () => {
+    // The point of reading the chain directly: a check that used to go blank
+    // is now answered from primary evidence.
+    restore();
+    await withStub({ fail: { goplus: "500" } }, async () => {
+      const v = await evaluate({ chain: "bsc", tokenAddress: ADDR.cake, action: "buy" });
+      assert.notEqual(v.checks.contractControl.status, "unknown");
+      assert.match(v.checks.contractControl.detail, /read from the chain/);
+      assert.ok(v.meta.sources.includes("rpc"));
+    });
     restore = stubUpstream();
   });
 });
@@ -104,6 +118,12 @@ describe("a token nothing has heard of", () => {
     assert.equal(v.verdict, "abort");
     assert.equal(v.maxSizeUsd, null);
     assert.ok(v.reasons.some((r) => /untradeable/i.test(r)));
+  });
+
+  test("the chain says plainly that there is no contract there", async () => {
+    const v = await evaluate({ chain: "bsc", tokenAddress: ADDR.nowhere, action: "buy" });
+    assert.equal(v.checks.contractControl.status, "fail");
+    assert.match(v.checks.contractControl.detail, /no contract code/i);
   });
 });
 
