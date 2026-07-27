@@ -7,28 +7,30 @@ size". It now says "a heuristic size cap", and gained two things it had been mis
 the report reads the chain directly, and that every report is signed so a buyer can verify
 it independently. 494 of 500 characters.
 
-**Service description: BLOCKED.** The API refuses it:
+**Service description: BLOCKED, and closed as such (2026-07-28).** Both routes refuse it.
+
+The CLI cannot express the edit: the API returns
 
 ```
 Wallet API error (code=81001): service in use, only name/description can be modified: 36013
 ```
 
-and the CLI will not build a `--service` payload without `serviceType`, `fee` and
-`endpoint`, which are exactly the fields the API rejects for an in-use service. So the
-service description still reads "safe position size". Try the OKX web portal, which may
-allow a description-only edit that the CLI cannot express. Do not delete and recreate the
-service to work around it: that would discard the service id, and with it the sales and
-review history attached to it.
+for any payload touching `serviceType`, `fee` or `endpoint`, and the CLI will not build a
+`--service` payload without all three. The OKX web portal refuses it too, which means the
+lock is server-side rather than a CLI limitation. There is no path from our side.
 
-Ready-to-paste replacement (488 chars, fits the limit):
+**Decision: leave it.** The residue is one field. The service description still reads "safe
+position size" while the report, the landing page, the README, `/info`, the agent
+description and the daemon's message to buyers all say "heuristic size cap". A buyer who
+reads the listing and then opens the report sees the report's wording, which is the
+conservative one.
 
-> Produces a complete, formatted due-diligence report on a token for an agent or analyst.
-> Covers the risk decision, a heuristic size cap, security flags, liquidity, market
-> activity, holder concentration, and the contract's on-chain identity. Every report is
-> signed, so the buyer can verify it. The finished report is returned directly in the paid
-> response.
-> 1. Token contract address 2. Optional: chain name, detected automatically when
-> unambiguous 3. Optional: output format, report or data
+Rejected on purpose: deleting and recreating the service to force new copy. That discards
+service id 36013 and the sales and review history attached to it, which is a real loss in
+exchange for a wording change.
+
+**Retry trigger, if you ever want it:** try again if OKX ever stops flagging the service as
+in use, or if support can clear the lock. Not worth chasing.
 
 **Cost of the edit, as warned.** The agent went from approvalStatus 4 "Listed" to 3,
 "Listing under review", statusLabel "not listed". While in that state it is absent from
