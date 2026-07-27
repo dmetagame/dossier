@@ -99,6 +99,21 @@ function row(k, v) {
   return '<div class="f"><span>' + k + "</span><span class=\"mono\">" + (v == null ? "—" : String(v)) + "</span></div>";
 }
 $("#go").addEventListener("click", run);
+
+// A verification can be linked to: ?attestation=<base64url of the attestation
+// JSON>. The check still runs here, in this browser, on the bytes in the URL.
+// Nothing is fetched from us to decide the answer.
+(function fromUrl() {
+  const p = new URLSearchParams(location.search).get("attestation");
+  if (!p) return;
+  try {
+    const json = new TextDecoder().decode(b64u(p));
+    $("#input").value = JSON.stringify(JSON.parse(json), null, 2);
+    run();
+  } catch (e) {
+    out.innerHTML = line(false, "The attestation in this link could not be decoded.");
+  }
+})();
 $("#fetchkey").addEventListener("click", async () => {
   const r = await fetch("/.well-known/dossier-signing-key.json");
   const j = await r.json();
@@ -165,7 +180,8 @@ p{color:var(--muted)}
 <h1>Verify a report</h1>
 <p class="lede">Paste a report's attestation, or the whole JSON report. The check runs entirely in
 this page: the payload is re-hashed and the signature verified against a public key you can fetch
-yourself. Nothing is uploaded, and you need no wallet and no account.</p>
+yourself. Nothing is uploaded, and you need no wallet and no account. A verification can also be
+linked to directly, with the attestation carried in the URL.</p>
 
 <label for="input">Attestation or JSON report</label>
 <textarea id="input" spellcheck="false" placeholder='{"payload":{…},"payloadSha256":"…","signature":"…"}'></textarea>
