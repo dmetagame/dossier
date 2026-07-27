@@ -5,3 +5,5 @@ dist/
 .vercel
 nohup.out
 api/index.js
+__pycache__/
+*.pyc

@@ -59,6 +59,13 @@ export interface Decision {
   limit: number;
   remaining: number;
   retryAfterSec: number;
+  /**
+   * How far past the budget this request is: 0 or less while within it, 1 for
+   * the first request over. Lets the caller log the moment a client starts
+   * being blocked, and every hundredth block after that, instead of either
+   * one line per blocked request or — as before — nothing at all.
+   */
+  overBy: number;
 }
 
 export function check(path: string, key: string, now = Date.now()): Decision {
@@ -76,7 +83,17 @@ export function check(path: string, key: string, now = Date.now()): Decision {
     limit: limit.max,
     remaining: Math.max(0, limit.max - c.count),
     retryAfterSec: Math.max(1, Math.ceil((c.resetAt - now) / 1000)),
+    overBy: c.count - limit.max,
   };
+}
+
+/**
+ * Whether this particular block is worth a log line. The first one tells us a
+ * client started hitting the wall; every hundredth after that shows how hard,
+ * without letting a sustained flood also flood the journal.
+ */
+export function worthLogging(d: Decision): boolean {
+  return d.overBy === 1 || (d.overBy > 0 && d.overBy % 100 === 0);
 }
 
 function evict(now: number): void {

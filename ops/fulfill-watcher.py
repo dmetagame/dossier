@@ -130,16 +130,21 @@ def resolve_token(title):
     return None, None
 
 
-def fetch(addr, chain, fmt):
+def fetch(addr, chain, fmt, job=None):
     key = open(KEY_FILE).read().strip()
     body = {"tokenAddress": addr, "format": fmt}
     if chain:
         body["chain"] = chain
-    r = run(["curl", "-s", "-X", "POST", ENDPOINT,
-             "-H", "x-internal-key: " + key,
-             "-H", "content-type: application/json",
-             "-d", json.dumps(body)], timeout=120)
-    return r.stdout
+    cmd = ["curl", "-s", "-X", "POST", ENDPOINT,
+           "-H", "x-internal-key: " + key,
+           "-H", "content-type: application/json"]
+    # Only the copy the buyer actually receives carries the job id, so recovery
+    # returns the report that was sent rather than the JSON we fetch first to
+    # decide whether there is a report worth sending at all.
+    if job:
+        cmd += ["-H", "x-job-id: " + job]
+    cmd += ["-d", json.dumps(body)]
+    return run(cmd, timeout=120).stdout
 
 
 def has_deliverable(job):
@@ -219,7 +224,7 @@ def deliver(job, buyer, addr, chain):
         log("  service error:", raw[:160])
         return False
 
-    html = fetch(addr, chain, "html")
+    html = fetch(addr, chain, "html", job)
     sym = (data.get("token") or {}).get("symbol") or "token"
     safe_sym = re.sub(r"[^A-Za-z0-9_-]", "", str(sym)) or "token"
     path = "/tmp/dossier-%s-%s.html" % (safe_sym, job[:10])
@@ -257,6 +262,9 @@ def deliver(job, buyer, addr, chain):
                  "--agent-id <yourAgentId> --digest <digest> --salt <salt> "
                  "--nonce <nonce> --secret <secret>")
         L.append("")
+    L.append("LOST THIS REPORT? Re-fetch the exact copy sent to you, free:")
+    L.append('  POST %s/recovery  body {"jobId":"%s"}' % (ENDPOINT, job))
+    L.append("")
     L.append("OR fetch it yourself (x402 replay):")
     L.append('  POST %s  body {"tokenAddress":"%s"%s}' % (
         ENDPOINT, addr, (',"chain":"%s"' % tok.get("chain")) if tok.get("chain") else ""))

@@ -18,7 +18,7 @@ Free sample of a real generated report: https://dossier.rouma.xyz/dossier/sample
 |---|---|---|---|
 | `/dossier` | GET, POST | 0.5 USD₮0 | Full due-diligence report (`html` default, `json` optional) |
 | `/verdict` | GET, POST | 0.2 USD₮0 | Companion service (agent #7008): the risk decision alone as JSON |
-| `/dossier/recovery` | GET, POST | free | Re-fetch a report you already paid for |
+| `/dossier/recovery` | GET, POST | free | Re-fetch a report you already paid for (`paymentTransaction` or `jobId`) |
 | `/dossier/sample` | GET | free | Real sample report, cached |
 | `/` | GET | free | Landing page |
 | `/info` | GET | free | Machine-readable service description |
@@ -40,18 +40,36 @@ the connection drops after settlement, the file is overwritten. Every delivered 
 is archived (90 days, 5000 records, pruned) and can be re-fetched:
 
 ```bash
+# paid over x402
 curl "https://dossier.rouma.xyz/dossier/recovery?paymentTransaction=0x…"
+# bought as a marketplace task
+curl "https://dossier.rouma.xyz/dossier/recovery?jobId=0x…"
 ```
 
 It returns the archived bytes, identical to what was delivered, with the request,
-delivery timestamp and settlement transaction attached. Recovery **requires the
-settlement transaction hash**, which only the payer knows; a request-parameters hash is
-deliberately refused on its own, because those parameters are guessable for any popular
-token and accepting them would hand a paid report to someone who never bought one.
-Sending the original request as well is checked and must match.
+delivery timestamp, and settlement transaction or job id attached.
+
+Recovery **requires one of those two proofs**. A request-parameters hash is deliberately
+refused on its own, because those parameters are guessable for any popular token and
+accepting them would hand a paid report to someone who never bought one. Sending the
+original request as well is checked and must match.
+
+The job id exists because a task-level buyer never signs an x402 payment: our fulfilment
+daemon delivers their report into the job channel, so there is no settlement transaction
+to key recovery on, and without this they were the one class of buyer who could not
+re-fetch. The daemon stamps the job id on the copy it sends, and the service accepts that
+header only from the daemon — otherwise a buyer could stamp someone else's job id onto
+their own record and shadow the real deliverable.
+
+Neither proof is a secret in the cryptographic sense: a determined observer could read a
+transfer to the payout address off-chain. This is a guard against casual free reports,
+not a confidentiality boundary, and it is proportionate — the reports are built from free
+public data, a full sample is published, and an attacker only ever reaches a report on a
+token somebody else chose.
 
 Each delivery is archived under its own id, so two buyers asking about the same token
-cannot evict each other's record.
+cannot evict each other's record. A job delivered more than once resolves to the most
+recent copy, which is the one the buyer actually received.
 
 ## Payment (x402 v2)
 

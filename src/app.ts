@@ -35,15 +35,42 @@ app.use(async (c, next) => {
   const key = ratelimit.clientKey(c.req.raw.headers);
   const d = ratelimit.check(path, key);
   if (!d.limited) return next();
-  if (ratelimit.mode() === "observe") {
+  const observing = ratelimit.mode() === "observe";
+  // Enforcing silently would mean a throttled buyer, or a throttled OKX
+  // validator, leaves no trace at all — the one thing we would need to know.
+  if (ratelimit.worthLogging(d)) {
     console.warn(
-      `[ratelimit] would limit ${path} for ${key} (${d.limit}/min exceeded) — observe mode, allowing`,
+      `[ratelimit] ${observing ? "would block" : "blocked"} ${path} for ${key} ` +
+        `(${d.limit}/min exceeded, ${d.overBy} over)`,
     );
-    return next();
   }
+  if (observing) return next();
   c.header("Retry-After", String(d.retryAfterSec));
   return c.json({ error: "rate_limited", message: `Too many requests for ${path}. Retry shortly.` }, 429);
 });
+
+// Our own fulfilment daemon identifies itself with a shared secret. Resolved
+// once, here, so the payment bypass and the job-id capture below cannot drift
+// apart in what they consider an internal call.
+app.use(async (c, next) => {
+  if (config.internalKey && internalKeyMatches(c.req.header("x-internal-key"))) {
+    (c as any).set("internal", true);
+  }
+  return next();
+});
+
+/**
+ * Marketplace job this delivery belongs to, when our daemon is the caller.
+ *
+ * Trusted only from the daemon: a buyer who could stamp someone else's job id
+ * onto their own record would shadow that job's real deliverable in the index,
+ * and the rightful buyer would recover the wrong report.
+ */
+function internalJobId(c: any): string | undefined {
+  if (!c.get("internal")) return undefined;
+  const j = String(c.req.header("x-job-id") || "").trim();
+  return /^0x[a-f0-9]{64}$/i.test(j) ? j : undefined;
+}
 
 // Human landing page at the root; the same information stays machine-readable
 // at /info for agents and crawlers that want structure rather than markup.
@@ -117,34 +144,37 @@ app.get("/dossier/sample", async (c) => {
 });
 
 // Recovery: a buyer who lost the paid response can fetch it again. Free —
-// they have already paid — but it requires the settlement transaction hash,
-// which only the payer can know, so this can never yield a report to someone
-// who did not buy one. Supplying the original parameters (or their hash) is
+// they have already paid — but it requires something they hold only because
+// they bought: the settlement transaction for an x402 call, or the marketplace
+// job id for a task-level purchase, whose reports our daemon delivers with no
+// transaction to key on. Supplying the original parameters (or their hash) is
 // accepted as a second check and returns the same archived bytes.
 app.on(["GET", "POST"], "/dossier/recovery", async (c) => {
   const p = await readParams(c);
   const tx = String(p.paymentTransaction || p.transaction || "").trim();
+  const jobId = String(p.jobId || p.job || "").trim();
   const givenHash = String(p.requestParamsSha256 || p.requestBodySha256 || "").trim();
   let originalBody = p.originalBody as Record<string, unknown> | undefined;
   if (typeof originalBody === "string") {
     try { originalBody = JSON.parse(originalBody); } catch { originalBody = undefined; }
   }
 
-  // The settlement transaction is required, and deliberately so. The request
+  // One of the two proofs is required, and deliberately so. The request
   // parameters hash to a value anyone could derive for a popular token, so
   // accepting that alone would hand a paid report to someone who never bought
-  // one. Only the payer knows the transaction.
-  if (!tx) {
+  // one.
+  if (!tx && !jobId) {
     return c.json(
       {
         error: "missing_proof_of_purchase",
         message:
           "Send paymentTransaction: the settlement transaction hash from your paid call, " +
           "found in the PAYMENT-RESPONSE header of the response you received. " +
+          "If you bought through a marketplace task instead, send jobId. " +
           "originalBody or requestParamsSha256 may be sent as an additional check.",
         usage: {
-          post: 'POST /dossier/recovery {"paymentTransaction":"0x…"}',
-          get: "GET /dossier/recovery?paymentTransaction=0x…",
+          post: 'POST /dossier/recovery {"paymentTransaction":"0x…"}  or  {"jobId":"0x…"}',
+          get: "GET /dossier/recovery?paymentTransaction=0x…  or  ?jobId=0x…",
         },
       },
       400,
@@ -152,15 +182,17 @@ app.on(["GET", "POST"], "/dossier/recovery", async (c) => {
   }
 
   const hash = givenHash || (originalBody ? archive.paramsHash(originalBody) : "");
-  const rec = archive.byTransaction(tx);
+  // The transaction is the stronger proof, so it decides when both are sent;
+  // falling back to the job id could otherwise answer a mismatched pair.
+  const rec = tx ? archive.byTransaction(tx) : archive.byJobId(jobId);
 
   if (!rec) {
     return c.json(
       {
         error: "not_found_in_archive",
         message:
-          "No delivered report matches that transaction or request. If the paid call never " +
-          "reached this service, no report was produced and no payment was settled.",
+          "No delivered report matches that transaction, job, or request. If the paid call " +
+          "never reached this service, no report was produced and no payment was settled.",
         archiveWindowDays: 90,
       },
       404,
@@ -179,6 +211,7 @@ app.on(["GET", "POST"], "/dossier/recovery", async (c) => {
     service: "Token Due-Diligence Report",
     agentId: 7012,
     paymentTransaction: rec.paymentTransaction || null,
+    jobId: rec.jobId || null,
     requestParamsSha256: rec.paramsSha256,
     request: rec.request,
     deliveredAt: rec.deliveredAt,
@@ -367,7 +400,7 @@ if (!config.devSkipPayment && paymentConfigured()) {
     // A2A fulfillment bypass: our own daemon delivers reports into the task
     // channel after the buyer already paid at the task level, so its fetches
     // must not hit the x402 gate again. Guarded by a non-empty shared secret.
-    if (config.internalKey && internalKeyMatches(c.req.header("x-internal-key"))) {
+    if ((c as any).get("internal")) {
       return next();
     }
     let handlerStarted = false;
@@ -468,6 +501,7 @@ app.on(["GET", "POST"], "/dossier", async (c) => {
     // Archive before responding, and remember the key so the settlement
     // transaction can be attached once the SDK has settled.
     const id = archive.newId();
+    const jobId = internalJobId(c);
     archive.save({
       id,
       paramsSha256: archive.paramsHash(parsed.data as Record<string, unknown>),
@@ -475,6 +509,7 @@ app.on(["GET", "POST"], "/dossier", async (c) => {
       contentType: json ? "application/json" : "text/html",
       deliverable: body,
       deliveredAt: new Date().toISOString(),
+      ...(jobId ? { jobId } : {}),
     });
     (c as any).set("archiveId", id);
     return json

@@ -4,9 +4,15 @@
 // A paid response can be lost for reasons that have nothing to do with us: the
 // client crashes, the connection drops after settlement, the file is
 // overwritten. Without this the buyer has paid and the artefact is gone, and we
-// have no answer for them. Recovery requires the settlement transaction hash,
-// which only the payer can know, so the archive can never be used to obtain a
-// report without paying for one.
+// have no answer for them.
+//
+// Recovery is keyed on something the buyer holds because they bought: the
+// settlement transaction for an x402 call, or the marketplace job id for a
+// task-level purchase. Neither is a secret in the cryptographic sense — a
+// determined observer could read a transfer to our payout address off-chain —
+// so this is a guard against casual free reports, not a confidentiality
+// boundary. It costs an attacker real effort to obtain a report on a token
+// somebody else chose, when a full free sample is published anyway.
 //
 // Every delivery is its own record. Keying by the request instead would mean a
 // second buyer asking about the same token silently destroyed the first
@@ -26,6 +32,12 @@ export interface ArchiveRecord {
   deliverable: string;
   deliveredAt: string;
   paymentTransaction?: string;
+  /**
+   * Marketplace job this was delivered into, for buyers who paid at the task
+   * level instead of over x402. Those deliveries settle no transaction, so
+   * without this they had no proof to recover against.
+   */
+  jobId?: string;
 }
 
 const DIR =
@@ -85,6 +97,9 @@ export function save(rec: ArchiveRecord): void {
   if (!f) return;
   try {
     writeFileSync(f, JSON.stringify(rec), { mode: 0o600 });
+    // Keep a live index current rather than discarding it: a delivery saved
+    // after the index was built must still be recoverable immediately.
+    if (index && rec.jobId) setJob(index, rec.jobId, rec, rec.id + ".json");
     if (++sinceLastPrune >= PRUNE_EVERY) {
       sinceLastPrune = 0;
       prune();
@@ -103,7 +118,7 @@ export function linkTransaction(id: string, tx: string): void {
     const rec = JSON.parse(readFileSync(f, "utf8")) as ArchiveRecord;
     rec.paymentTransaction = tx;
     writeFileSync(f, JSON.stringify(rec), { mode: 0o600 });
-    if (txIndex) txIndex.set(tx.toLowerCase(), id + ".json");
+    if (index) index.tx.set(tx.toLowerCase(), id + ".json");
   } catch {
     /* ignore */
   }
@@ -128,22 +143,54 @@ function readAll(): ArchiveRecord[] {
   return out;
 }
 
-// Transaction -> filename index. Without it every recovery request parsed the
+// Proof -> filename indexes. Without them every recovery request parsed the
 // whole archive: harmless at 17 records, but 289ms of CPU and 22MB of disk read
 // per request once the archive reaches its 5000-record cap — which turns an
-// unauthenticated free endpoint into an amplifier. Built once, then maintained.
-let txIndex: Map<string, string> | null = null;
+// unauthenticated free endpoint into an amplifier. Built once in a single scan,
+// then maintained. Both proofs are indexed together because a directory walk is
+// the expensive part; splitting them would double it.
+interface Index {
+  tx: Map<string, string>;
+  job: Map<string, string>;
+}
+let index: Index | null = null;
 
-function buildIndex(): Map<string, string> {
-  const idx = new Map<string, string>();
+/**
+ * Point the job index at this delivery unless a newer one is already there.
+ * A job can be delivered more than once — a re-run after a failed send — and
+ * the buyer should get what was last sent to them, not the first attempt.
+ */
+function setJob(idx: Index, jobId: string, rec: ArchiveRecord, name: string): void {
+  const key = jobId.toLowerCase();
+  const cur = idx.job.get(key);
+  if (cur && cur !== name) {
+    const other = readByName(cur);
+    if (other && other.deliveredAt > rec.deliveredAt) return;
+  }
+  idx.job.set(key, name);
+}
+
+function buildIndex(): Index {
+  const idx: Index = { tx: new Map(), job: new Map() };
   const d = dir();
   if (!d) return idx;
+  // Chosen job records are held here during the walk so a duplicate job id is
+  // resolved in memory rather than by re-reading the file it points at.
+  const jobRec = new Map<string, ArchiveRecord>();
   try {
     for (const name of readdirSync(d)) {
       if (!name.endsWith(".json")) continue;
       try {
         const rec = JSON.parse(readFileSync(join(d, name), "utf8")) as ArchiveRecord;
-        if (rec.paymentTransaction) idx.set(rec.paymentTransaction.toLowerCase(), name);
+        if (rec.paymentTransaction) idx.tx.set(rec.paymentTransaction.toLowerCase(), name);
+        if (rec.jobId) {
+          const key = rec.jobId.toLowerCase();
+          const cur = jobRec.get(key);
+          if (!cur || rec.deliveredAt > cur.deliveredAt) {
+            jobRec.set(key, rec);
+            idx.job.set(key, name);
+          }
+        }
       } catch {
         /* skip unreadable record */
       }
@@ -164,29 +211,45 @@ function readByName(name: string): ArchiveRecord | null {
   }
 }
 
-export function byTransaction(tx: string): ArchiveRecord | null {
-  const want = tx.toLowerCase();
-  if (!txIndex) txIndex = buildIndex();
+function lookup(
+  want: string,
+  pick: (i: Index) => Map<string, string>,
+  value: (r: ArchiveRecord) => string,
+): ArchiveRecord | null {
+  if (!index) index = buildIndex();
+  // Trust the index only as far as the record confirms it; a stale entry must
+  // never return the wrong buyer's report.
+  const confirm = (name: string | undefined): ArchiveRecord | null => {
+    if (!name) return null;
+    const rec = readByName(name);
+    return rec && value(rec).toLowerCase() === want ? rec : null;
+  };
+  const hit = pick(index).get(want);
+  if (!hit) return null; // a miss stays O(1): rebuilding on misses is the amplifier
+  return confirm(hit) ?? ((index = buildIndex()), confirm(pick(index).get(want)));
+}
 
-  const hit = txIndex.get(want);
-  if (hit) {
-    const rec = readByName(hit);
-    // Trust the index only as far as the record confirms it; a stale entry
-    // must never return the wrong buyer's report.
-    if (rec && (rec.paymentTransaction || "").toLowerCase() === want) return rec;
-    txIndex = buildIndex();
-    const retry = txIndex.get(want);
-    if (retry) {
-      const again = readByName(retry);
-      if (again && (again.paymentTransaction || "").toLowerCase() === want) return again;
-    }
-  }
-  return null;
+export function byTransaction(tx: string): ArchiveRecord | null {
+  return lookup(
+    tx.toLowerCase(),
+    (i) => i.tx,
+    (r) => r.paymentTransaction || "",
+  );
+}
+
+/** Recovery for a buyer who paid at the task level, where there is no tx. */
+export function byJobId(jobId: string): ArchiveRecord | null {
+  if (!/^0x[a-f0-9]{64}$/i.test(jobId)) return null;
+  return lookup(
+    jobId.toLowerCase(),
+    (i) => i.job,
+    (r) => r.jobId || "",
+  );
 }
 
 /** Drop the cached index; used by tests and after bulk changes on disk. */
 export function resetIndex(): void {
-  txIndex = null;
+  index = null;
 }
 
 /** Most recent delivery matching a semantic request hash. */
@@ -213,7 +276,7 @@ function prune(): void {
     for (const f of files) if (now - f.mtime > MAX_AGE_MS) { unlinkSync(f.p); removed++; }
     const left = files.filter((f) => now - f.mtime <= MAX_AGE_MS).sort((a, b) => a.mtime - b.mtime);
     for (let i = 0; i < left.length - MAX_RECORDS; i++) { unlinkSync(left[i]!.p); removed++; }
-    if (removed) txIndex = null; // rebuilt on next lookup
+    if (removed) index = null; // rebuilt on next lookup
   } catch {
     /* ignore */
   }
