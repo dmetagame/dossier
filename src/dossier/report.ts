@@ -1,7 +1,6 @@
 import { z } from "zod";
-import { fetchGoPlus, goplusSupports } from "../verdict/sources/goplus";
-import { fetchDexScreener, resolveChain } from "../verdict/sources/dexscreener";
-import { evaluate, SourcesUnavailableError } from "../verdict/engine";
+import { resolveChain } from "../verdict/sources/dexscreener";
+import { evaluate, fetchSources, SourcesUnavailableError } from "../verdict/engine";
 import { ChainName, SUPPORTED_CHAINS } from "../verdict/schema";
 
 export { SourcesUnavailableError };
@@ -83,17 +82,18 @@ export async function buildDossier(req: DossierRequest): Promise<Dossier> {
     };
   }
 
-  const [sec, market, verdict] = await Promise.all([
-    goplusSupports(chain)
-      ? fetchGoPlus(chain, req.tokenAddress)
-      : Promise.resolve({ status: "not_found" } as const),
-    fetchDexScreener(chain, req.tokenAddress),
-    evaluate({ chain, tokenAddress: req.tokenAddress, action: "buy" }),
-  ]);
+  // One fetch, shared with the engine. The report's own figures and the risk
+  // checks must describe the same snapshot: fetching separately let a document
+  // print a tax rate in one section while the checks table said the security
+  // source had returned nothing.
+  const snapshot = await fetchSources(chain, req.tokenAddress);
+  const { sec, market } = snapshot;
 
   if (sec.status === "unavailable" && market.status === "unavailable") {
     throw new SourcesUnavailableError();
   }
+
+  const verdict = await evaluate({ chain, tokenAddress: req.tokenAddress, action: "buy" }, snapshot);
 
   const sources: string[] = [];
   if (sec.status === "ok") sources.push("GoPlus");

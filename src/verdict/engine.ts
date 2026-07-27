@@ -17,14 +17,39 @@ export class SourcesUnavailableError extends Error {
 // layer can later sharpen `reasons`, but the verdict itself stays rule-driven
 // so it is reproducible and benchmarkable against known-rug / known-legit sets.
 
-export async function evaluate(req: VerdictRequest): Promise<Verdict> {
-  const started = Date.now();
+/**
+ * One round of source fetching, shared by everything that needs it.
+ *
+ * Exported so a caller that also needs the raw source data — the report
+ * builder, which prints the contract and distribution figures — can fetch once
+ * and hand the same snapshot to `evaluate`. Fetching twice meant the report's
+ * view and the verdict's view were independent: when one call succeeded and the
+ * other was rate-limited, a single document claimed GoPlus as a source while
+ * its own risk checks read "no security data". It also doubled our load on the
+ * free APIs that produce the rate-limiting in the first place.
+ */
+export interface SourceSnapshot {
+  sec: Awaited<ReturnType<typeof fetchGoPlus>>;
+  market: Awaited<ReturnType<typeof fetchDexScreener>>;
+  /** When fetching began, so a caller's latency figure stays honest. */
+  startedAt: number;
+}
+
+export async function fetchSources(chain: string, tokenAddress: string): Promise<SourceSnapshot> {
+  const startedAt = Date.now();
+  const [sec, market] = await Promise.all([
+    goplusSupports(chain) ? fetchGoPlus(chain, tokenAddress) : Promise.resolve({ status: "not_found" } as const),
+    fetchDexScreener(chain, tokenAddress),
+  ]);
+  return { sec, market, startedAt };
+}
+
+export async function evaluate(req: VerdictRequest, prefetched?: SourceSnapshot): Promise<Verdict> {
+  const snapshot = prefetched ?? (await fetchSources(req.chain, req.tokenAddress));
+  const { sec, market } = snapshot;
+  const started = snapshot.startedAt;
   const sources: string[] = [];
 
-  const [sec, market] = await Promise.all([
-    goplusSupports(req.chain) ? fetchGoPlus(req.chain, req.tokenAddress) : Promise.resolve({ status: "not_found" } as const),
-    fetchDexScreener(req.chain, req.tokenAddress),
-  ]);
   if (sec.status === "ok") sources.push("goplus");
   if (market.status === "ok") sources.push("dexscreener");
 
