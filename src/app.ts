@@ -488,6 +488,14 @@ if (!config.devSkipPayment && paymentConfigured()) {
         ),
       },
     resourceServer,
+    undefined,
+    undefined,
+    // Do NOT sync with the facilitator at module load. That sync runs outside
+    // any request, so when the facilitator rejects our credentials the promise
+    // rejects unhandled and Node exits — which is how a 401 from OKX took the
+    // whole site down, free pages included, in a restart loop. Deferring it
+    // into the request puts the failure somewhere we can catch and answer 503.
+    false,
   );
   // Cold-start resilience: on a fresh serverless instance the SDK's first
   // facilitator sync can transiently fail and rethrow (→ 500). Retry once
@@ -532,9 +540,25 @@ if (!config.devSkipPayment && paymentConfigured()) {
     } catch (e) {
       if (handlerStarted) throw e;
       await new Promise((r) => setTimeout(r, 500));
-      const res = await pay(c, next);
-      linkSettlement();
-      return res;
+      try {
+        const res = await pay(c, next);
+        linkSettlement();
+        return res;
+      } catch (again) {
+        // The payment layer is unreachable or is refusing our credentials.
+        // Go dark on the paid routes rather than 500, and above all stay
+        // alive: the free surface has nothing to do with the facilitator.
+        // 503 is non-2xx, so nothing can settle on this path either.
+        console.error(
+          "[x402] payment layer unavailable:",
+          (again as Error)?.message?.slice(0, 200) ?? again,
+        );
+        c.header("Retry-After", "60");
+        return c.json(
+          { error: "payment layer temporarily unavailable — no payment was taken, retry shortly" },
+          503,
+        );
+      }
     }
   });
 }
