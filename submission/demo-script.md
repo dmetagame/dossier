@@ -1,43 +1,64 @@
-# 90-second demo script — Dossier (primary, OKX.AI Genesis, Track #1)
+# Demo video — Dossier
 
-Goal: show a single paid call turning into a finished, shareable business asset.
-Record screen at 1280x720+, no dead air. Keep it under 90 seconds.
+Updated 2026-07-27. **The videos are already produced.** This file is no longer a shot
+list to film; it is the record of what exists and what is left to do.
 
-## Shot list
+## What exists
 
-**0:00–0:12 — the problem**
-On camera / voiceover over a messy screen with 4 tabs open (a scanner, a DEX chart, a
-holders page, a block explorer):
-"To vet one token you're stitching together four dashboards. An agent can't do that.
-It needs one call that returns a finished report."
+Both are 1920x1080, 30fps, exactly 90.00 seconds, **silent**, in `~/Downloads`:
 
-**0:12–0:30 — the call**
-Terminal. Show the request, one input only:
-`curl -X POST https://dossier.rouma.xyz/dossier -d '{"tokenAddress":"0x..."}'`
-Say: "One input. It even finds the chain itself." First response is HTTP 402. "It's a
-paid service. First call returns a payment challenge, priced in USD₮0 on X Layer,
-standard x402."
+| File | Style | Notes |
+|---|---|---|
+| `dossier-demo-screencast-90s.mp4` | Live product screencast | **Recommended.** Matches the pattern of the reference demo: full-screen browser, real pages scrolling, a real terminal session, ending on our OKX.AI listing showing ★5.0 and the reviews. 5.9 MB |
+| `dossier-demo-90s.mp4` | Designed deck | Slide-style with the same real data. 11.1 MB |
 
-**0:30–0:50 — payment + delivery**
-Show the agent paying and the request replaying (OKX SDK / a wallet with USD₮0). The
-response is the report. Cut to the rendered HTML dossier in a browser:
-"One call, one finished document — risk verdict up top, safe position size, security
-flags, liquidity, holders, all from live data."
+Voice-over scripts, timed to each cut, also in `~/Downloads`:
 
-**0:50–1:10 — the asset**
-Scroll the report slowly: the verdict badge, the snapshot grid, the risk-check table,
-key findings, contract & distribution. Then hit Print → Save as PDF to show it's a real,
-shareable file. "It's an executive-ready asset an agent produced autonomously and
-got paid for."
+- `dossier-screencast-voiceover.md` — for the screencast cut, ~180 words
+- `dossier-demo-voiceover.md` — for the deck cut, ~215 words
 
-**1:10–1:20 — the marketplace + close**
-Show the OKX.AI listing card for Dossier (agent #7012). Say: "Dossier is live on OKX.AI.
-Agents pay per call on X Layer and get back a report they'd otherwise spend an hour
-compiling." End card: name, endpoint, #OKXAI. Hard stop by 1:20 — the rule is max 90
-seconds and trimming or upload re-encoding must never push past it.
+## What is left
 
-## Notes
-- If the wallet isn't funded with USD₮0, use the `format:"json"` path or the OKX
-  `payment quote` output to show the payment step, then show a pre-generated report.
-- Funding ~$2 of USD₮0 on X Layer to the payout wallet lets you show a real settle —
-  much stronger. Do this before recording if time allows.
+1. Record the voice-over against the screencast cut. About 20 minutes.
+2. Mix it under the video. There is no audio track to replace; both files are silent.
+3. Upload, then paste the link into `form-answers.md` and the submission post.
+
+## Everything on screen is real
+
+Nothing was mocked. The recording used a live purchase: transaction
+`0xdb8086ddf2dfeb2aa8c86ef7cb4b17e82a1f11272765d95186ead276d57f25a8`, 0.50 USD₮0 settled
+on X Layer, and the report shown is the document that came back from that payment. The
+recovery hashes shown are the real sha256 of the paid bytes and the recovered bytes. The
+listing page at the end is our actual OKX.AI page.
+
+## Screencast beat map
+
+| Time | On screen |
+|---|---|
+| 0:00 – 0:11.6 | Live hero, six real animation states |
+| 0:11.6 – 0:24.2 | Landing page scrolling: what one call returns, the curl example |
+| 0:24.2 – 0:39.8 | The free sample report, scrolling |
+| 0:39.8 – 1:06.4 | Terminal: preflight, quote, pay, recovery |
+| 1:06.4 – 1:30 | OKX.AI listing: stats, service, reviews |
+
+## Recording notes
+
+- 48kHz mono. Start the first word at 0:05; the opening silence is deliberate and matches
+  the reference demo.
+- Say "USDT-zero" and read the agent id as "seven zero one two".
+- Do not film a live purchase yourself unless the credentials are known good on the day.
+  The cut already contains one.
+
+## If you re-cut it
+
+The generators are throwaway but reproducible: they read captured artifacts and rebuild
+the video with ffmpeg. Swapping the token or reordering scenes is a small edit and a
+two-minute rebuild. They were left in the session scratchpad rather than the repo, because
+a video build pipeline is not something this service should carry.
+
+## One thing to know before recording
+
+The sample report on screen says **caution**, not proceed, because GoPlus does not report
+CAKE's trading taxes and the contract is mintable by an active owner. That was chosen
+deliberately. A due-diligence tool that says "caution, and here is exactly why" argues its
+own case better than one where everything is green.

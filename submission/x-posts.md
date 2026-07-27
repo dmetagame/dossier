@@ -1,41 +1,77 @@
-# X post drafts (#OKXAI) — no punctuation dashes, per writing rules
+# X posts (#OKXAI)
 
-Submission = Dossier only. Review voice before posting.
+Updated 2026-07-27. Entry is Dossier only. No punctuation dashes anywhere, per the
+writing rule. Read each one aloud before posting.
 
-## Post 1 — build in public (today)
+Only post 5 is required for the submission. The rest are optional build-in-public posts
+if you want a trail leading up to it.
 
-To vet a single token you're stitching together four dashboards: a safety scanner, a
-DEX chart, a holders page, an explorer. An agent can't do that.
+---
 
-I'm building Dossier for #OKXAI. One call returns a finished, shareable due-diligence
-report on any token: risk verdict, safe position size, security flags, liquidity,
-holders, all from live data, rendered as a document you can read, share, or archive.
-Paid per call over x402 on X Layer.
+## Post 5 — the submission post (required, attach the 90s demo)
 
-Shipping in public this week.
+> Dossier, my #OKXAI Genesis entry.
+>
+> One token address in. One finished due-diligence report out: the risk decision, the size
+> the market can actually absorb, five checks each with its reason, and the contract's
+> on-chain identity. Paid per call over x402 on X Layer.
+>
+> Every report is signed. Verify one yourself, in your own browser, no wallet and no
+> account: https://dossier.rouma.xyz/verify
+>
+> Live on OKX.AI: https://www.okx.ai/agents/7012
+> Free sample, no signup: https://dossier.rouma.xyz/dossier/sample
 
-## Post 2 — the asset (after a clean render)
+Attach `dossier-demo-screencast-90s.mp4` with your voice-over.
 
-[screenshot of the rendered Dossier report]
+---
 
-This is what one paid call to Dossier returns. Not a JSON blob, a finished report:
-verdict up top, safe size, the security and holder breakdown underneath, printable to
-PDF. The kind of thing you'd otherwise spend an hour compiling. #OKXAI
+## Post 1 — the problem (optional)
 
-## Post 3 — the payment rail (short clip)
+> To vet one token you open four tabs: a safety scanner, a DEX chart, a holders page, an
+> explorer. Then you read them against each other and make a call.
+>
+> An agent cannot do that. It needs one call that returns a finished answer.
+>
+> That is what I built for #OKXAI.
 
-[20s clip: curl -> 402 -> pay -> report]
+## Post 2 — the deliverable (optional, attach a report screenshot)
 
-Dossier is a real service, not a free endpoint. First call returns an x402 payment
-challenge priced in USD₮0 on X Layer. The agent pays, the report comes back. Autonomous
-asset creation with a settlement rail underneath. #OKXAI
+> This is what one paid call returns. Not JSON, a document: verdict at the top, the size
+> the deepest pool can absorb, five checks with their reasons, contract identity and
+> holder distribution underneath. Prints to PDF. #OKXAI
 
-## Post 4 — submission post (final, ≤90s demo attached)
+## Post 3 — refusing to guess (optional, and the most distinctive)
 
-[90-second demo video]
+> The part of Dossier I am most pleased with is what it does when it does not know.
+>
+> A source that is down is never treated as evidence. The affected checks go to unknown,
+> the coverage score drops, and the report states which fields are missing rather than
+> quietly filling them in.
+>
+> It also will not charge for a report it cannot produce. Settlement happens only on
+> success, so an unknown token or a dead source costs you nothing, and a free preflight
+> tells you the expected coverage before you pay at all. #OKXAI
 
-Dossier, my #OKXAI Genesis entry: one call turns into a polished, executive-ready
-due-diligence report on any token, paid per call over x402 on X Layer. Live on OKX.AI
-now. It turns an hour of dashboard-stitching into a single request. [listing link]
+## Post 4 — verifiable reports (optional, strongest technical post)
 
-Try the free sample first: https://dossier.rouma.xyz/dossier/sample
+> A report you paid for should not require trusting the seller.
+>
+> Every Dossier report carries a signature over its own inputs, findings, and what each
+> source returned, down to the hash of every response and the block height the chain reads
+> were taken at.
+>
+> The verifier runs in your browser against a key you fetch yourself. Change one number and
+> it fails. Recompute the hash to match and the signature still fails.
+>
+> https://dossier.rouma.xyz/verify #OKXAI
+
+---
+
+## Rules for these posts
+
+- Tag #OKXAI. The submission post must include it.
+- Do not claim ten customers. The listing counter reads 10 sold and that includes our own
+  test tasks; two purchases came from external buyers.
+- Do not call the size cap "safe". It is a heuristic and the report labels it as one.
+- Every link above is live right now. Click each one before posting.

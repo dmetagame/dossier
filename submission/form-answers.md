@@ -1,33 +1,123 @@
-# Google form / submission answers — OKX.AI Genesis
+# Submission answers — OKX.AI Genesis Hackathon
 
-Primary: Dossier (agent #7012). Fill these into the submission form.
+Entry: **Dossier**, agent **#7012**, live and listed on OKX.AI.
+Updated 2026-07-27, after the external review and the work that followed it.
 
-- **ASP name:** Dossier
-- **Agent ID:** 7012 (on-chain, X Layer)
-- **Prize categories to target:** Finance Copilot (primary), Best Product (secondary)
-- **Build direction:** Professional Asset Creation (OKX priority ASP direction #1)
-- **Service:** Token Due-Diligence Report (A2MCP, 0.5 USD₮0 per call)
-- **Endpoint:** https://dossier.rouma.xyz/dossier
-- **X post link:** [fill in after posting the submission post]
+## Identity
 
-**One-line pitch:**
-Dossier turns a single request into a polished, executive-ready due-diligence report on
-any token, paid per call over x402 on X Layer.
+| Field | Value |
+|---|---|
+| ASP name | Dossier |
+| Agent ID | 7012 (on-chain, X Layer) |
+| Listing | https://www.okx.ai/agents/7012 |
+| Service | Token Due-Diligence Report (A2MCP) |
+| Price | 0.5 USD₮0 per call, x402 on X Layer (eip155:196) |
+| Endpoint | https://dossier.rouma.xyz/dossier |
+| Site | https://dossier.rouma.xyz |
+| Status | Listed, eligible for task recommendations, online |
+| Marketplace record | ★5.0, 100% positive, 10 sold, 2 written reviews |
+| X post | [fill in after posting] |
+| Demo video | [fill in after upload] |
+| Build direction | Professional Asset Creation (OKX priority ASP direction 1) |
+| Categories to target | Best Product (primary), Revenue Rocket (secondary) |
 
-**What it does (short):**
-An agent or analyst sends a chain and a token address. Dossier compiles live security,
-liquidity, market-activity, and holder-distribution data into one shareable document,
-with a clear risk decision, the safe position size, and the key findings at the top. It
-replaces an hour of stitching together several dashboards with one call. The deliverable
-is a self-contained report that reads, shares, and prints to PDF, plus a JSON form for
-machine use.
+## One-line pitch
 
-**Why it fits the track:**
-It is single-request asset creation: one prompt in, one finished, executive-ready report
-out. Deterministic and built from live data, so results are verifiable and reproducible.
+Dossier turns one token address into a finished, executive-ready due-diligence report,
+paid per call over x402 on X Layer, with a signature anyone can verify.
 
-**Payment:** x402 on X Layer, settled in USD₮0 via the OKX facilitator SDK. OKX
-x402-check validates the endpoint (valid, 0.5 USD₮0, eip155:196).
+## What it does
 
-**Free sample:** https://dossier.rouma.xyz/dossier/sample shows a real generated
-report before paying.
+An agent or an analyst sends a contract address. Dossier returns a complete document
+rather than a data dump: the risk decision at the top, the position size the market can
+actually absorb, five risk checks each with its reason, the on-chain identity of the
+contract, and the market and holder picture underneath. It reads, shares, and prints to
+PDF. `format: "json"` returns the same content structured for machines.
+
+It replaces an hour of stitching together a safety scanner, a DEX chart, a holders page
+and a block explorer with a single paid call an agent can make on its own.
+
+## Why it fits the track
+
+Single request in, one finished asset out. The analysis is deterministic with no language
+model anywhere, so the same token and the same data produce the same report every time,
+and any report can be checked afterwards against its signature.
+
+## What makes it different
+
+**It refuses to guess.** Sources are tri-state: `ok`, `not_found`, `unavailable`. An API
+outage is never recorded as knowledge. When a source cannot answer, the affected checks
+are marked unknown, the coverage score drops, and the report states which fields are
+missing instead of filling them in.
+
+**It will not charge for what it cannot deliver.** Settlement happens only on a 2xx. A bad
+request, an unknown token, an address with no contract code, or a source outage each
+return a non-2xx and take no payment. A free preflight tells a buyer the expected coverage
+and the exact fields the report will contain, before they pay anything.
+
+**A cold agent can discover how to call it before paying.** The x402 challenge carries the
+input contract, so a buying agent reads the required fields out of the challenge rather
+than discovering them from a 400 after the money has moved.
+
+**Reports are signed and independently verifiable.** Every report carries a canonical hash
+of its inputs, findings and per-source observations, an Ed25519 signature over that hash,
+the chain id and block height the on-chain reads were taken at, and for each source when
+it was read plus a sha256 of its response. The verifier at /verify runs in the reader's own
+browser against a key published at a well-known URL, so verifying requires no wallet, no
+account, and no trust in us.
+
+**Three sources, including the chain itself.** GoPlus for security, DexScreener for
+markets, and direct JSON-RPC reads for contract identity, supply, proxy implementation,
+owner and bytecode capabilities. That third source is why a token with no DEX pool, such
+as X Layer's own USD₮0, still produces a report that names it rather than an anonymous hex
+string, and correctly flags it as an upgradeable proxy.
+
+**Buyers can get their report back.** Recovery returns the exact bytes that were delivered,
+keyed to the settlement transaction, or to the marketplace job id for task-level buyers who
+never sign an x402 payment themselves.
+
+## Free surface, no signup
+
+| Route | What it gives you |
+|---|---|
+| `/dossier/sample` | A real report, generated on request |
+| `/dossier/preflight` | Expected coverage and exact fields, before paying |
+| `/verify` | Verify any report in your own browser |
+| `/.well-known/dossier-signing-key.json` | The public key to pin |
+| `/info` | Machine-readable service description |
+
+## Engineering
+
+Deterministic engine, five checks, tri-state sources. 112 automated tests that replay
+recorded upstream responses and fail on any unexpected network call, plus CI on every push
+running typecheck, the suite, a build, a check that generated assets match their sources,
+and a smoke test of the built bundle. Runs on its own host behind automatic TLS, deployed
+as a single file.
+
+## Independent review
+
+An outside reviewer bought the service end to end through the marketplace, audited it, and
+sent detailed findings. Every technical item was fixed the same day: the input contract now
+rides in the payment challenge, the canonical resource URL is https, the coverage score is
+labelled as coverage rather than confidence, the size cap is labelled a heuristic with its
+formula stated, deliverables carry a filename, a free coverage preflight exists, unknown
+addresses are refused before payment, X Layer coverage improved by reading the chain
+directly, and reports are now signed with a public verifier.
+
+Their review, left on the listing:
+
+> Clear, polished due-diligence report with a conservative verdict and explicit unknowns
+> instead of fabricated data. The self-contained HTML was immediately usable, and the paid
+> replay recovery returned the complete deliverable. A strong foundation for agent-ready
+> token research.
+
+---
+
+## Notes to self, not for the form
+
+- "10 sold" is the marketplace counter and includes our own test tasks. Two of those
+  purchases came from external buyers. If asked about traction directly, say two external
+  buyers and be straight about it.
+- Rotate the OKX API credentials once the deadline passes. They went through a chat
+  transcript on 21 July and again on 27 July.
+- The companion agent Verdict (#7008) is parked and is not part of this entry.

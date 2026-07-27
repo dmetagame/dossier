@@ -1,29 +1,60 @@
-# OKX.AI listing copy (drafted to survive their QA rules)
+# OKX.AI listing copy
 
-Constraints honored: agent name is a brand, 3 to 25 chars. Service name is a noun
-phrase, 5 to 30 chars, no price. Service description is two parts on separate lines,
-part 1 is capability and audience, part 2 is required inputs, no links, no tech-stack
-names, no disclaimers, no example prompts. Fee is digits only, USDT implied.
+Updated 2026-07-27. **This file previously described Verdict (#7008), which is parked and
+is not the entry.** It now records what is actually live for Dossier (#7012), so the copy
+on the marketplace and the copy here cannot drift apart.
 
-## ASP identity
+Listing constraints that were honoured: agent name is a brand, 3 to 25 characters. Service
+name is a noun phrase, 5 to 30 characters, no price in it. Service description is two
+parts, part 1 capability and audience, part 2 the required inputs. No links, no tech-stack
+names, no disclaimers, no example prompts. Fee is digits only.
 
-- **Name:** Verdict
-- **Description (≤500):** Verdict is a pre-trade risk decision service for the agent
-  economy. Before an agent or trader commits funds to a token, Verdict checks whether
-  the token can be sold, whether the contract owner holds dangerous powers, how deep
-  the liquidity is, how active the market is, and how concentrated the holders are,
-  all on live data. It then returns a single actionable decision: proceed, caution,
-  or abort, together with a safe position size and a confidence score.
-- **Avatar:** required, square image. TODO: generate a simple gavel/checkmark mark.
+## Live now
 
-## Service
+| Field | Value |
+|---|---|
+| Agent | Dossier, #7012 |
+| Status | Listed, eligible for task recommendations, online |
+| Service | Token Due-Diligence Report |
+| Type | API service (A2MCP) |
+| Fee | 0.5 |
+| Endpoint | https://dossier.rouma.xyz/dossier |
+| Payout wallet | 0x51c25782af63381056cd1c3c59c0544628d67697 |
+| Record | ★5.0, 100% positive, 10 sold, 2 reviews |
+| Public page | https://www.okx.ai/agents/7012 |
 
-- **Service name:** Pre-Trade Token Verdict
-- **Description part 1:** Tells an AI agent or trader whether a token is safe to
-  trade right now. Returns a clear verdict of proceed, caution, or abort, a safe
-  position size in USD, a confidence score, and the decisive reasons.
-- **Description part 2:** 1. Chain name 2. Token contract address 3. Optional:
-  intended action and position size in USD
-- **Type:** API service (A2MCP)
-- **Fee:** 0.2
-- **Endpoint:** https://verdict-pi.vercel.app/verdict
+## Agent description, as listed
+
+> Dossier transforms a single request into a polished, executive-ready due diligence report
+> for any token. It consolidates live data on security, liquidity, market activity, and
+> holder distribution into one shareable document, highlighting a clear risk assessment,
+> safe position size, and key findings at the top. Instead of piecing together multiple
+> dashboards, an agent or analyst receives a complete report in one call.
+
+## Service description, as listed
+
+**Part 1.** Generates a complete, formatted due diligence report on a token for an agent or
+analyst. The report includes risk assessment, recommended safe position size, security
+alerts, liquidity, market activity, and holder concentration, all compiled into a single
+shareable document. The final report is delivered directly in the paid response, allowing
+the caller to receive it from the service endpoint within the same request.
+
+**Part 2.** 1. Token contract address 2. Optional: chain name, auto-detected when
+unambiguous 3. Optional: output format, either report or data
+
+## If the copy is ever updated
+
+Two things in the live text are now understated, because they postdate it:
+
+- The report also carries the contract's **on-chain identity**: name, symbol, decimals,
+  total supply, proxy implementation, owner, and the capabilities found in its bytecode.
+  That is what lets a token with no DEX pool still produce a useful report.
+- Every report is **signed**, and can be verified by the buyer in their own browser
+  against a published key.
+
+Both are worth adding if the listing is edited. Note that the **fee field is locked while
+the service is in use**, so a price change is not available; the description can still be
+updated through `onchainos agent update`.
+
+Do not describe the size cap as "safe" in any new copy. The report labels it a heuristic
+size cap and states its formula, and the listing text should not contradict the product.
