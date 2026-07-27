@@ -10,6 +10,7 @@ import { DossierRequest, buildDossier, ChainNotFoundError } from "./dossier/repo
 import { renderDossierHtml } from "./dossier/render";
 import * as archive from "./dossier/archive";
 import { renderSiteHtml } from "./site";
+import * as ratelimit from "./ratelimit";
 
 // Constant-time comparison for the payment-bypass secret. A `===` on a secret
 // is a habit worth not having, even where a remote timing attack over TLS is
@@ -23,6 +24,26 @@ function internalKeyMatches(given: string | undefined): boolean {
 }
 
 export const app = new Hono();
+
+// Rate limiting for the free surface only. Registered before the routes but
+// after nothing else, so it cannot affect the paid paths: those are excluded by
+// name below. Runs in observe mode until real traffic confirms the budgets.
+const FREE_LIMITED = new Set(["/dossier/recovery", "/dossier/sample", "/", "/info", "/health"]);
+app.use(async (c, next) => {
+  const path = c.req.path;
+  if (!FREE_LIMITED.has(path)) return next();
+  const key = ratelimit.clientKey(c.req.raw.headers);
+  const d = ratelimit.check(path, key);
+  if (!d.limited) return next();
+  if (ratelimit.mode() === "observe") {
+    console.warn(
+      `[ratelimit] would limit ${path} for ${key} (${d.limit}/min exceeded) — observe mode, allowing`,
+    );
+    return next();
+  }
+  c.header("Retry-After", String(d.retryAfterSec));
+  return c.json({ error: "rate_limited", message: `Too many requests for ${path}. Retry shortly.` }, 429);
+});
 
 // Human landing page at the root; the same information stays machine-readable
 // at /info for agents and crawlers that want structure rather than markup.
