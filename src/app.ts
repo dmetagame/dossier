@@ -7,6 +7,7 @@ import { VerdictRequest, SUPPORTED_CHAINS } from "./verdict/schema";
 import { evaluate, SourcesUnavailableError } from "./verdict/engine";
 import { DossierRequest, buildDossier, ChainNotFoundError } from "./dossier/report";
 import { renderDossierHtml } from "./dossier/render";
+import * as archive from "./dossier/archive";
 import { renderSiteHtml } from "./site";
 
 export const app = new Hono();
@@ -80,6 +81,78 @@ app.get("/dossier/sample", async (c) => {
     }
   }
   return c.html(sampleCache.html);
+});
+
+// Recovery: a buyer who lost the paid response can fetch it again. Free —
+// they have already paid — but it requires the settlement transaction hash,
+// which only the payer can know, so this can never yield a report to someone
+// who did not buy one. Supplying the original parameters (or their hash) is
+// accepted as a second check and returns the same archived bytes.
+app.on(["GET", "POST"], "/dossier/recovery", async (c) => {
+  const p = await readParams(c);
+  const tx = String(p.paymentTransaction || p.transaction || "").trim();
+  const givenHash = String(p.requestParamsSha256 || p.requestBodySha256 || "").trim();
+  let originalBody = p.originalBody as Record<string, unknown> | undefined;
+  if (typeof originalBody === "string") {
+    try { originalBody = JSON.parse(originalBody); } catch { originalBody = undefined; }
+  }
+
+  // The settlement transaction is required, and deliberately so. The request
+  // parameters hash to a value anyone could derive for a popular token, so
+  // accepting that alone would hand a paid report to someone who never bought
+  // one. Only the payer knows the transaction.
+  if (!tx) {
+    return c.json(
+      {
+        error: "missing_proof_of_purchase",
+        message:
+          "Send paymentTransaction: the settlement transaction hash from your paid call, " +
+          "found in the PAYMENT-RESPONSE header of the response you received. " +
+          "originalBody or requestParamsSha256 may be sent as an additional check.",
+        usage: {
+          post: 'POST /dossier/recovery {"paymentTransaction":"0x…"}',
+          get: "GET /dossier/recovery?paymentTransaction=0x…",
+        },
+      },
+      400,
+    );
+  }
+
+  const hash = givenHash || (originalBody ? archive.paramsHash(originalBody) : "");
+  const rec = archive.byTransaction(tx);
+
+  if (!rec) {
+    return c.json(
+      {
+        error: "not_found_in_archive",
+        message:
+          "No delivered report matches that transaction or request. If the paid call never " +
+          "reached this service, no report was produced and no payment was settled.",
+        archiveWindowDays: 90,
+      },
+      404,
+    );
+  }
+  // If the caller also supplied the request, it must be the one that was paid for.
+  if (hash && rec.paramsSha256 !== hash) {
+    return c.json(
+      { error: "proof_mismatch", message: "That transaction did not pay for those request parameters." },
+      403,
+    );
+  }
+
+  return c.json({
+    status: "recovered",
+    service: "Token Due-Diligence Report",
+    agentId: 7012,
+    paymentTransaction: rec.paymentTransaction || null,
+    requestParamsSha256: rec.paramsSha256,
+    request: rec.request,
+    deliveredAt: rec.deliveredAt,
+    recoveredAt: new Date().toISOString(),
+    contentType: rec.contentType,
+    deliverable: rec.contentType === "application/json" ? JSON.parse(rec.deliverable) : rec.deliverable,
+  });
 });
 
 app.get("/health", (c) =>
@@ -258,12 +331,30 @@ if (!config.devSkipPayment && paymentConfigured()) {
       handlerStarted = true;
       await next();
     };
+    // The SDK settles after the handler returns and puts the receipt in the
+    // PAYMENT-RESPONSE header. Attaching that transaction to the archived
+    // report is what later lets the payer — and only the payer — recover it.
+    const linkSettlement = () => {
+      try {
+        const h = (c as any).get("archiveHash");
+        const pr = c.res && c.res.headers.get("payment-response");
+        if (!h || !pr) return;
+        const receipt = JSON.parse(Buffer.from(pr, "base64").toString("utf8"));
+        if (receipt && receipt.transaction) archive.linkTransaction(h, String(receipt.transaction));
+      } catch {
+        /* recovery is best effort and must never disturb the response */
+      }
+    };
     try {
-      return await pay(c, trackedNext);
+      await pay(c, trackedNext);
+      linkSettlement();
+      return;
     } catch (e) {
       if (handlerStarted) throw e;
       await new Promise((r) => setTimeout(r, 500));
-      return await pay(c, next);
+      await pay(c, next);
+      linkSettlement();
+      return;
     }
   });
 }
@@ -325,8 +416,22 @@ app.on(["GET", "POST"], "/dossier", async (c) => {
   }
   try {
     const dossier = await buildDossier(parsed.data);
-    if (parsed.data.format === "json") return c.json(dossier);
-    return c.html(renderDossierHtml(dossier));
+    const json = parsed.data.format === "json";
+    const body = json ? JSON.stringify(dossier) : renderDossierHtml(dossier);
+    // Archive before responding, and remember the key so the settlement
+    // transaction can be attached once the SDK has settled.
+    const hash = archive.paramsHash(parsed.data as Record<string, unknown>);
+    archive.save({
+      paramsSha256: hash,
+      request: parsed.data as Record<string, unknown>,
+      contentType: json ? "application/json" : "text/html",
+      deliverable: body,
+      deliveredAt: new Date().toISOString(),
+    });
+    (c as any).set("archiveHash", hash);
+    return json
+      ? c.json(dossier)
+      : c.html(body);
   } catch (e) {
     // Non-2xx responses are never settled, so none of these charge the buyer.
     if (e instanceof ChainNotFoundError) {
