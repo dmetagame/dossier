@@ -329,6 +329,34 @@ if (!config.devSkipPayment && paymentConfigured()) {
     required: ["tokenAddress"],
     additionalProperties: false,
   } as const;
+  // The input contract, published *inside* the payment challenge rather than
+  // only in the body of the 402.
+  //
+  // An external reviewer paid 0.50 USD₮0 through the OKX marketplace client and
+  // got a 400 back, because the client reads the required inputs from the
+  // challenge, saw none, and replayed without `tokenAddress`. The body said what
+  // to send; nothing that mattered read the body. A cold agent has to be able to
+  // discover the inputs before it authorises payment.
+  //
+  // This is declared as an `extensions` entry, which the SDK places at the top
+  // level of the challenge, alongside `resource`. It deliberately does not touch
+  // the `accepts` entries: those are what the client signs over, and adding
+  // fields there risks a verification mismatch at the facilitator.
+  const httpInputSchema = (input: unknown, outputMimeType: string, outputDescription: string) => ({
+    outputSchema: {
+      input: {
+        type: "http",
+        method: "POST",
+        contentType: "application/json",
+        // Query-string replay works too, but a JSON body is the shape every
+        // client handles identically, so it is the one we advertise.
+        bodyType: "json",
+        schema: input,
+      },
+      output: { mimeType: outputMimeType, description: outputDescription },
+    },
+  });
+
   const unpaidBody = (
     name: string,
     description: string,
@@ -357,8 +385,14 @@ if (!config.devSkipPayment && paymentConfigured()) {
             `${m} /verdict`,
             {
               accepts: verdictAccepts,
+              resource: `${config.publicOrigin}/verdict`,
               description: verdictDescription,
               mimeType: "application/json",
+              extensions: httpInputSchema(
+                verdictInputSchema,
+                "application/json",
+                "Decision object: verdict, maxSizeUsd, confidence, reasons, per-check results.",
+              ),
               unpaidResponseBody: unpaidBody(
                 "Pre-Trade Token Verdict",
                 verdictDescription,
@@ -374,8 +408,14 @@ if (!config.devSkipPayment && paymentConfigured()) {
             `${m} /dossier`,
             {
               accepts: dossierAccepts,
+              resource: `${config.publicOrigin}/dossier`,
               description: dossierDescription,
               mimeType: "text/html",
+              extensions: httpInputSchema(
+                dossierInputSchema,
+                "text/html",
+                "Self-contained due-diligence report document; format:json returns the same data as JSON.",
+              ),
               unpaidResponseBody: unpaidBody(
                 "Token Due-Diligence Report",
                 dossierDescription,
@@ -453,6 +493,13 @@ async function readParams(c: any): Promise<Record<string, unknown>> {
   return { ...query, ...(body as Record<string, unknown>) };
 }
 
+/** e.g. dossier-uni-ethereum-20260727.html — safe on every filesystem. */
+function downloadName(d: { token: { symbol?: string; chain: string; address: string } }, json: boolean): string {
+  const label = (d.token.symbol || d.token.address.slice(0, 10)).replace(/[^A-Za-z0-9._-]/g, "");
+  const day = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+  return `dossier-${label.toLowerCase()}-${d.token.chain}-${day}.${json ? "json" : "html"}`;
+}
+
 const invalid = (c: any, issues: unknown) =>
   c.json(
     {
@@ -512,6 +559,10 @@ app.on(["GET", "POST"], "/dossier", async (c) => {
       ...(jobId ? { jobId } : {}),
     });
     (c as any).set("archiveId", id);
+    // Name the artefact. Without this the marketplace saved an HTML report as a
+    // .txt file, and a buyer's first sight of the deliverable was a text blob.
+    // `inline` so browsers still render it; the filename is only used on save.
+    c.header("Content-Disposition", `inline; filename="${downloadName(dossier, json)}"`);
     return json
       ? c.json(dossier)
       : c.html(body);

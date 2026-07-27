@@ -108,7 +108,7 @@ export function renderDossierHtml(d: Dossier, opts: RenderOpts = {}): string {
     </div>
     <div class="badge" style="background:${vc}">
       <div class="v">${esc(v.verdict)}</div>
-      <div class="c">confidence ${(v.confidence * 100).toFixed(0)}%</div>
+      <div class="c">data coverage ${(v.confidence * 100).toFixed(0)}%</div>
     </div>
   </header>
 
@@ -121,14 +121,17 @@ export function renderDossierHtml(d: Dossier, opts: RenderOpts = {}): string {
       <div class="cell"><div class="k">24h Volume</div><div class="val">${money(d.token.volume24hUsd)}</div></div>
       <div class="cell"><div class="k">Pair age</div><div class="val">${d.token.ageDays !== undefined ? d.token.ageDays + "d" : "—"}</div></div>
       <div class="cell"><div class="k">Holders</div><div class="val">${d.token.holderCount?.toLocaleString("en-US") ?? "—"}</div></div>
-      <div class="cell"><div class="k">Safe max size</div><div class="val">${v.maxSizeUsd !== null ? money(v.maxSizeUsd) : "—"}</div>
-        <div class="k" style="margin-top:4px;text-transform:none;letter-spacing:0">1% of the deepest pool</div></div>
+      <div class="cell"><div class="k">Heuristic size cap</div><div class="val">${v.maxSizeUsd !== null ? money(v.maxSizeUsd) : "—"}</div>
+        <div class="k" style="margin-top:4px;text-transform:none;letter-spacing:0">1% of the deepest pool, halved on caution. A rule of thumb, not a slippage guarantee.</div></div>
     </div>
   </section>
 
   <section>
     <h2>Risk checks</h2>
     <table>${rows}</table>
+    <div class="k" style="margin-top:8px;text-transform:none;letter-spacing:0">
+      Data coverage is the share of these five checks answered by live data, not a probability
+      that the token is safe. The risk decision is the verdict above.</div>
   </section>
 
   <section>

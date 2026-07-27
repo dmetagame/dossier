@@ -27,6 +27,11 @@ export const config = {
   // Shared secret for the ASP-side A2A daemon: lets our own job-fulfillment
   // sessions fetch reports without paying our own x402 gate. Never a buyer path.
   internalKey: process.env.INTERNAL_KEY ?? "",
+  // Canonical public origin, advertised as the resource URL in the payment
+  // challenge. Behind Caddy the request arrives over plain HTTP, so a URL
+  // derived from it advertises `http://` even though buyers reach us over TLS,
+  // and a security-conscious client is right to refuse that downgrade.
+  publicOrigin: (process.env.PUBLIC_ORIGIN ?? "https://dossier.rouma.xyz").replace(/\/+$/, ""),
 } as const;
 
 export function paymentConfigured(): boolean {
