@@ -116,11 +116,13 @@ export function renderDossierHtml(d: Dossier, opts: RenderOpts = {}): string {
     <h2>Snapshot</h2>
     <div class="grid">
       <div class="cell"><div class="k">Price</div><div class="val">${price(d.token.priceUsd)}</div></div>
-      <div class="cell"><div class="k">Liquidity</div><div class="val">${money(d.token.liquidityUsd)}</div></div>
+      <div class="cell"><div class="k">Liquidity (all pools)</div><div class="val">${money(d.token.liquidityUsd)}</div></div>
+      <div class="cell"><div class="k">Deepest pool</div><div class="val">${money(d.token.deepestPoolUsd)}</div></div>
       <div class="cell"><div class="k">24h Volume</div><div class="val">${money(d.token.volume24hUsd)}</div></div>
       <div class="cell"><div class="k">Pair age</div><div class="val">${d.token.ageDays !== undefined ? d.token.ageDays + "d" : "—"}</div></div>
       <div class="cell"><div class="k">Holders</div><div class="val">${d.token.holderCount?.toLocaleString("en-US") ?? "—"}</div></div>
-      <div class="cell"><div class="k">Safe max size</div><div class="val">${v.maxSizeUsd !== null ? money(v.maxSizeUsd) : "—"}</div></div>
+      <div class="cell"><div class="k">Safe max size</div><div class="val">${v.maxSizeUsd !== null ? money(v.maxSizeUsd) : "—"}</div>
+        <div class="k" style="margin-top:4px;text-transform:none;letter-spacing:0">1% of the deepest pool</div></div>
     </div>
   </section>
 

@@ -44,6 +44,7 @@ export interface Dossier {
     symbol?: string;
     priceUsd?: number;
     liquidityUsd?: number;
+    deepestPoolUsd?: number;
     volume24hUsd?: number;
     ageDays?: number;
     holderCount?: number;
@@ -107,6 +108,7 @@ export async function buildDossier(req: DossierRequest): Promise<Dossier> {
       symbol: market.status === "ok" ? market.symbol : undefined,
       priceUsd: market.status === "ok" ? market.priceUsd : undefined,
       liquidityUsd: market.status === "ok" ? market.liquidityUsd : undefined,
+      deepestPoolUsd: market.status === "ok" ? market.deepestPoolUsd : undefined,
       volume24hUsd: market.status === "ok" ? market.volume24hUsd : undefined,
       ageDays: market.status === "ok" && market.ageDays ? Number(market.ageDays.toFixed(1)) : undefined,
       holderCount: sec.status === "ok" ? sec.holderCount : undefined,

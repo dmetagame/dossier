@@ -40,6 +40,7 @@ export interface Verdict {
     symbol?: string;
     priceUsd?: number;
     liquidityUsd?: number;
+    deepestPoolUsd?: number;
     volume24hUsd?: number;
     ageDays?: number;
   };

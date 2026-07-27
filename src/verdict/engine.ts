@@ -60,11 +60,19 @@ export async function evaluate(req: VerdictRequest): Promise<Verdict> {
   else verdict = "proceed";
   // A clean sheet with full coverage is the only "proceed".
 
-  // Size cap: never more than 1% of pooled liquidity for a buy, halved when
-  // cautioned; null when aborting or when liquidity is unknown.
+  // Size cap: never more than 1% of the liquidity an exit actually trades
+  // against, halved when cautioned; null when aborting or unknown.
+  //
+  // That means the deepest single pool, not the sum of every pool. Summing is
+  // what a token's marketing page does; a seller hits one venue. On a token
+  // split across thirty pools the aggregate figure was suggesting roughly four
+  // times what the deepest pool could absorb — an overstatement in the one
+  // direction that costs the buyer money.
   let maxSizeUsd: number | null = null;
-  if (verdict !== "abort" && market.status === "ok" && market.liquidityUsd) {
-    maxSizeUsd = Math.floor(market.liquidityUsd * 0.01);
+  const exitLiquidity =
+    market.status === "ok" ? (market.deepestPoolUsd ?? market.liquidityUsd) : undefined;
+  if (verdict !== "abort" && exitLiquidity) {
+    maxSizeUsd = Math.floor(exitLiquidity * 0.01);
     if (verdict === "caution") maxSizeUsd = Math.floor(maxSizeUsd / 2);
     if (req.amountUsd && req.amountUsd < maxSizeUsd) maxSizeUsd = req.amountUsd;
   }
@@ -96,6 +104,7 @@ export async function evaluate(req: VerdictRequest): Promise<Verdict> {
       symbol: market.status === "ok" ? market.symbol : undefined,
       priceUsd: market.status === "ok" ? market.priceUsd : undefined,
       liquidityUsd: market.status === "ok" ? market.liquidityUsd : undefined,
+      deepestPoolUsd: market.status === "ok" ? market.deepestPoolUsd : undefined,
       volume24hUsd: market.status === "ok" ? market.volume24hUsd : undefined,
       ageDays: market.status === "ok" && market.ageDays ? Number(market.ageDays.toFixed(1)) : undefined,
     },

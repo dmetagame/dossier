@@ -62,7 +62,10 @@ export interface MarketSnapshot {
   status: SourceStatus;
   symbol?: string;
   priceUsd?: number;
+  /** Pooled liquidity summed across the token's markets on this chain. */
   liquidityUsd?: number;
+  /** Liquidity of the single deepest pool — what an exit actually trades against. */
+  deepestPoolUsd?: number;
   volume24hUsd?: number;
   txns24h?: number;
   ageDays?: number;
@@ -132,6 +135,7 @@ export async function fetchDexScreener(chain: string, address: string): Promise<
     symbol,
     priceUsd,
     liquidityUsd,
+    deepestPoolUsd: Math.max(...active.map((p) => p.liquidity?.usd ?? 0), 0) || undefined,
     volume24hUsd,
     txns24h,
     ageDays: deepest.pairCreatedAt ? (Date.now() - deepest.pairCreatedAt) / 86_400_000 : undefined,

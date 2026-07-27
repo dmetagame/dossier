@@ -103,6 +103,7 @@ export function linkTransaction(id: string, tx: string): void {
     const rec = JSON.parse(readFileSync(f, "utf8")) as ArchiveRecord;
     rec.paymentTransaction = tx;
     writeFileSync(f, JSON.stringify(rec), { mode: 0o600 });
+    if (txIndex) txIndex.set(tx.toLowerCase(), id + ".json");
   } catch {
     /* ignore */
   }
@@ -127,12 +128,65 @@ function readAll(): ArchiveRecord[] {
   return out;
 }
 
+// Transaction -> filename index. Without it every recovery request parsed the
+// whole archive: harmless at 17 records, but 289ms of CPU and 22MB of disk read
+// per request once the archive reaches its 5000-record cap — which turns an
+// unauthenticated free endpoint into an amplifier. Built once, then maintained.
+let txIndex: Map<string, string> | null = null;
+
+function buildIndex(): Map<string, string> {
+  const idx = new Map<string, string>();
+  const d = dir();
+  if (!d) return idx;
+  try {
+    for (const name of readdirSync(d)) {
+      if (!name.endsWith(".json")) continue;
+      try {
+        const rec = JSON.parse(readFileSync(join(d, name), "utf8")) as ArchiveRecord;
+        if (rec.paymentTransaction) idx.set(rec.paymentTransaction.toLowerCase(), name);
+      } catch {
+        /* skip unreadable record */
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  return idx;
+}
+
+function readByName(name: string): ArchiveRecord | null {
+  const d = dir();
+  if (!d) return null;
+  try {
+    return JSON.parse(readFileSync(join(d, name), "utf8")) as ArchiveRecord;
+  } catch {
+    return null;
+  }
+}
+
 export function byTransaction(tx: string): ArchiveRecord | null {
   const want = tx.toLowerCase();
-  for (const rec of readAll()) {
-    if ((rec.paymentTransaction || "").toLowerCase() === want) return rec;
+  if (!txIndex) txIndex = buildIndex();
+
+  const hit = txIndex.get(want);
+  if (hit) {
+    const rec = readByName(hit);
+    // Trust the index only as far as the record confirms it; a stale entry
+    // must never return the wrong buyer's report.
+    if (rec && (rec.paymentTransaction || "").toLowerCase() === want) return rec;
+    txIndex = buildIndex();
+    const retry = txIndex.get(want);
+    if (retry) {
+      const again = readByName(retry);
+      if (again && (again.paymentTransaction || "").toLowerCase() === want) return again;
+    }
   }
   return null;
+}
+
+/** Drop the cached index; used by tests and after bulk changes on disk. */
+export function resetIndex(): void {
+  txIndex = null;
 }
 
 /** Most recent delivery matching a semantic request hash. */
@@ -155,9 +209,11 @@ function prune(): void {
         const p = join(d, n);
         return { p, mtime: statSync(p).mtimeMs };
       });
-    for (const f of files) if (now - f.mtime > MAX_AGE_MS) unlinkSync(f.p);
+    let removed = 0;
+    for (const f of files) if (now - f.mtime > MAX_AGE_MS) { unlinkSync(f.p); removed++; }
     const left = files.filter((f) => now - f.mtime <= MAX_AGE_MS).sort((a, b) => a.mtime - b.mtime);
-    for (let i = 0; i < left.length - MAX_RECORDS; i++) unlinkSync(left[i]!.p);
+    for (let i = 0; i < left.length - MAX_RECORDS; i++) { unlinkSync(left[i]!.p); removed++; }
+    if (removed) txIndex = null; // rebuilt on next lookup
   } catch {
     /* ignore */
   }
