@@ -8,10 +8,12 @@
     "dev": "tsx watch src/server.ts",
     "start": "tsx src/server.ts",
     "typecheck": "tsc --noEmit",
-    "build:api": "pnpm build:client && esbuild src/vercel.ts --bundle --platform=node --target=node20 --format=esm --loader:.woff2=base64 --outfile=api/index.js",
+    "build:api": "pnpm build:client && esbuild src/vercel.ts --bundle --platform=node --target=node20 --format=esm --outfile=api/index.js",
     "deploy:prod": "pnpm build:api && npx vercel@latest deploy --prod --yes",
-    "build:client": "node scripts/build-client.mjs",
-    "build:server": "pnpm build:client && esbuild src/server.ts --bundle --platform=node --target=node20 --format=esm --loader:.woff2=base64 --outfile=dist/server.mjs"
+    "build:client": "node scripts/build-assets.mjs && node scripts/build-client.mjs",
+    "build:server": "pnpm build:client && esbuild src/server.ts --bundle --platform=node --target=node20 --format=esm --outfile=dist/server.mjs",
+    "build:assets": "node scripts/build-assets.mjs",
+    "test": "DEV_SKIP_PAYMENT=1 tsx --test test/*.test.ts"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.7",

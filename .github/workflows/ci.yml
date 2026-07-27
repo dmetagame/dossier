@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      # The tests replay recorded upstream responses and fail on any
+      # unexpected network call, so CI never depends on GoPlus or DexScreener
+      # being up, or on a token's live liquidity.
+      - name: Test
+        run: pnpm test
+
+      - name: Build the server bundle
+        run: pnpm build:server
+
+      # A generated file that differs from its source means someone edited the
+      # output, or forgot to rebuild before committing.
+      - name: Generated assets are up to date
+        run: |
+          pnpm build:assets && pnpm build:client
+          if ! git diff --quiet -- src/generated; then
+            echo "src/generated is stale. Run 'pnpm build:client' and commit."
+            git --no-pager diff --stat -- src/generated
+            exit 1
+          fi
+
+      # The report is a document people print and share. It must never grow a
+      # dependency on anything outside itself.
+      - name: The report stays self-contained
+        run: |
+          if grep -n 'gsap\|lenis\|@font-face\|<script' src/dossier/render.ts; then
+            echo 'The report renderer must not load scripts or webfonts.'
+            exit 1
+          fi
+
+      - name: Smoke the built bundle
+        env:
+          DEV_SKIP_PAYMENT: "1"
+          PORT: "8799"
+        run: |
+          node dist/server.mjs &
+          for i in $(seq 1 30); do
+            if curl -fsS "http://127.0.0.1:8799/health" >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          curl -fsS "http://127.0.0.1:8799/health" >/dev/null
+          curl -fsS "http://127.0.0.1:8799/" | grep -q 'hero-viz'
+          font=$(curl -fsS "http://127.0.0.1:8799/" | grep -o '/f/[a-z-]*-[a-f0-9]*\.woff2' | head -1)
+          curl -fsS "http://127.0.0.1:8799$font" >/dev/null
+          echo "built bundle serves the landing page and its fonts"

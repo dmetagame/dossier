@@ -18,6 +18,11 @@ import * as archive from "./dossier/archive";
 import { renderSiteHtml } from "./site";
 import { fontByPath } from "./fonts";
 import * as ratelimit from "./ratelimit";
+import {
+  dossierInputSchema,
+  verdictInputSchema,
+  httpInputSchema,
+} from "./x402-contract";
 
 // Constant-time comparison for the payment-bypass secret. A `===` on a secret
 // is a habit worth not having, even where a remote timing attack over TLS is
@@ -352,71 +357,6 @@ if (!config.devSkipPayment && paymentConfigured()) {
   // (which the SDK otherwise leaves as `{}`). A caller that has never seen this
   // service — a marketplace validator, a buying agent — can discover exactly
   // what to send and what it will get back without paying first.
-  const chainEnum = [...SUPPORTED_CHAINS];
-  const tokenAddressSchema = {
-    type: "string",
-    pattern: "^0x[a-fA-F0-9]{40}$",
-    description: "EVM token contract address.",
-  } as const;
-  const chainSchema = {
-    type: "string",
-    enum: chainEnum,
-    description:
-      "Optional. Auto-detected from live markets; when the address is deployed on several chains the deepest-liquidity deployment is analysed and the report states which chain was used.",
-  } as const;
-  const dossierInputSchema = {
-    type: "object",
-    properties: {
-      tokenAddress: tokenAddressSchema,
-      chain: chainSchema,
-      format: {
-        type: "string",
-        enum: ["html", "json"],
-        default: "html",
-        description: "html returns the rendered report document; json returns the same data structured.",
-      },
-    },
-    required: ["tokenAddress"],
-    additionalProperties: false,
-  } as const;
-  const verdictInputSchema = {
-    type: "object",
-    properties: {
-      tokenAddress: tokenAddressSchema,
-      chain: chainSchema,
-      amountUsd: { type: "number", description: "Optional intended position size in USD." },
-    },
-    required: ["tokenAddress"],
-    additionalProperties: false,
-  } as const;
-  // The input contract, published *inside* the payment challenge rather than
-  // only in the body of the 402.
-  //
-  // An external reviewer paid 0.50 USD₮0 through the OKX marketplace client and
-  // got a 400 back, because the client reads the required inputs from the
-  // challenge, saw none, and replayed without `tokenAddress`. The body said what
-  // to send; nothing that mattered read the body. A cold agent has to be able to
-  // discover the inputs before it authorises payment.
-  //
-  // This is declared as an `extensions` entry, which the SDK places at the top
-  // level of the challenge, alongside `resource`. It deliberately does not touch
-  // the `accepts` entries: those are what the client signs over, and adding
-  // fields there risks a verification mismatch at the facilitator.
-  const httpInputSchema = (input: unknown, outputMimeType: string, outputDescription: string) => ({
-    outputSchema: {
-      input: {
-        type: "http",
-        method: "POST",
-        contentType: "application/json",
-        // Query-string replay works too, but a JSON body is the shape every
-        // client handles identically, so it is the one we advertise.
-        bodyType: "json",
-        schema: input,
-      },
-      output: { mimeType: outputMimeType, description: outputDescription },
-    },
-  });
-
   const unpaidBody = (
     name: string,
     description: string,

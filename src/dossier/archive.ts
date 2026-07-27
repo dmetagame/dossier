@@ -40,9 +40,16 @@ export interface ArchiveRecord {
   jobId?: string;
 }
 
-const DIR =
-  process.env.ARCHIVE_DIR ||
-  join(process.env.HOME || process.env.TMPDIR || "/tmp", ".dossier-archive");
+// Resolved on use, not at module load. Reading it at load time made the
+// module's behaviour depend on import order, which is a trap: ESM hoists
+// imports above assignments, so a caller that sets ARCHIVE_DIR before its
+// `import` line still got the default, silently, and wrote somewhere else.
+function configuredDir(): string {
+  return (
+    process.env.ARCHIVE_DIR ||
+    join(process.env.HOME || process.env.TMPDIR || "/tmp", ".dossier-archive")
+  );
+}
 const MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
 const MAX_RECORDS = 5000;
 const PRUNE_EVERY = 25;
@@ -52,14 +59,15 @@ let sinceLastPrune = 0;
 // The archive is a convenience, never a dependency: if the filesystem is
 // read-only (a serverless target, say) every operation degrades to a no-op and
 // the paid response is unaffected.
-let usable = true;
+let unusable: string | null = null;
 function dir(): string | null {
-  if (!usable) return null;
+  const d = configuredDir();
+  if (unusable === d) return null;
   try {
-    if (!existsSync(DIR)) mkdirSync(DIR, { recursive: true, mode: 0o700 });
-    return DIR;
+    if (!existsSync(d)) mkdirSync(d, { recursive: true, mode: 0o700 });
+    return d;
   } catch {
-    usable = false;
+    unusable = d;
     return null;
   }
 }

@@ -147,11 +147,38 @@ requires the env vars in `.env.example` (set on the deploy host, never committed
 ## Test
 
 ```bash
-NODE_OPTIONS=--dns-result-order=ipv4first pnpm tsx scripts/benchmark.ts
+pnpm test        # 86 tests, no network
+pnpm typecheck
 ```
 
-Established tokens (CAKE, UNI, LINK, AAVE, PEPE) must never `abort`; live-sampled
-thin/fresh tokens must never `proceed`. Current run: 13/13.
+The suite replays upstream responses recorded in `test/fixtures/upstream.json`,
+and the stub **throws on any request the fixtures do not cover**, so a test can
+never quietly start depending on live data and then fail because a token's
+liquidity moved. Re-record deliberately with `node test/capture-fixtures.mjs`.
+
+What it holds the service to:
+
+- **Determinism** — the same token and the same data produce a byte-identical verdict.
+- **Tri-state sources** — an outage is never treated as knowledge. One source down
+  yields `unknown` checks and a lower coverage score, never a passing one; both down
+  raises rather than returning a verdict.
+- **Nothing is charged for what we cannot report on** — every refusal path is non-2xx,
+  which is what makes it unchargeable.
+- **Cold-agent discovery** — the payment challenge names `tokenAddress` as required,
+  constrains it, lists the supported chains, and advertises an https resource.
+- **Recovery** — the settlement transaction returns byte-identical bytes; a request
+  hash alone is refused; a deleted record returns null rather than a stale index hit.
+- **The report is self-contained** — no scripts, no webfonts, no external assets, and
+  hostile values cannot inject markup.
+- **The limiter** — never touches a paid path, cannot be evaded by a spoofed
+  `X-Forwarded-For`, and leaves a log line when it blocks someone.
+
+`scripts/benchmark.ts` is separate and does hit live APIs: established tokens
+(CAKE, UNI, LINK, AAVE, PEPE) must never `abort`, live-sampled thin tokens must
+never `proceed`. Run it by hand, not in CI.
+
+CI (`.github/workflows/ci.yml`) runs typecheck, the suite, a build, a check that
+`src/generated` matches its sources, and a smoke test of the built bundle.
 
 ## Deploy
 
@@ -162,20 +189,22 @@ facilitator handshake was unreliable from that runtime.
 ```bash
 git pull
 npx esbuild src/server.ts --bundle --platform=node --target=node20 \
-  --format=esm --loader:.woff2=base64 --outfile=dist/server.mjs
+  --format=esm --outfile=dist/server.mjs
 sudo systemctl restart dossier
 ```
 
-`--loader:.woff2=base64` is required: the landing page self-hosts three webfont
-subsets, embedded in the bundle and served from memory by `/f/*`, because the
-deploy is a single file with no static-asset directory.
+The landing page's fonts and its GSAP/Lenis bundle are emitted as ordinary
+TypeScript into `src/generated/` by `scripts/build-assets.mjs` and
+`scripts/build-client.mjs`, and both are committed. That is deliberate: an
+esbuild-only loader for `.woff2` would work in the bundle and break `pnpm dev`,
+`pnpm start` and the test runner, which is exactly what happened once. Generated
+TypeScript works everywhere with no loader configuration, and it keeps the
+command above working on a host that has not installed the client-side
+devDependencies.
 
-The landing page's GSAP/Lenis bundle is built separately by
-`scripts/build-client.mjs` into `src/generated/hero-bundle.ts`, which is
-committed. That keeps the command above working on a host that has not installed
-the client-side devDependencies. If you change anything under `src/client/`, run
-`pnpm build:server` instead, which rebuilds the client bundle first and cannot
-ship a stale one.
+If you change anything under `src/client/` or `src/assets/`, run
+`pnpm build:server`, which regenerates both first and so cannot ship a stale
+bundle. CI fails if `src/generated` does not match its sources.
 
 Verify the new code is actually in the bundle before restarting — a silent build
 failure otherwise leaves the previous version serving:

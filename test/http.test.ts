@@ -1,0 +1,250 @@
+// The HTTP contract a buyer and an OKX validator actually see.
+//
+// Runs with DEV_SKIP_PAYMENT=1 (set by `pnpm test`), so the paid routes are
+// reachable without facilitator credentials. The one thing that cannot be
+// exercised here is the signed 402 challenge itself, which needs live OKX
+// credentials; its published shape is covered by x402-contract.test.ts.
+
+import { test, describe, before, after } from "node:test";
+import assert from "node:assert/strict";
+import { stubUpstream, tempArchive, ADDR } from "./helpers";
+import { app } from "../src/app";
+import * as archive from "../src/dossier/archive";
+
+const { dir, cleanup } = tempArchive();
+process.env.ARCHIVE_DIR = dir;
+
+let restore: () => void;
+before(() => {
+  restore = stubUpstream();
+});
+after(() => {
+  restore();
+  cleanup();
+});
+
+const get = (path: string) => app.request(path);
+const post = (path: string, body?: unknown) =>
+  app.request(path, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+
+describe("the free surface", () => {
+  test("the landing page renders and carries the hero", async () => {
+    const r = await get("/");
+    assert.equal(r.status, 200);
+    const html = await r.text();
+    assert.ok(html.includes("hero-viz"));
+    assert.ok(html.includes('id="use"'), "the publicly linked anchor must exist");
+  });
+
+  test("the landing page is the only place motion loads", async () => {
+    const html = await (await get("/")).text();
+    assert.ok(html.includes("<script"));
+    const sample = await (await get("/dossier/sample")).text();
+    assert.equal(/gsap|lenis/i.test(sample), false, "a printable report loads no animation");
+    assert.equal(sample.includes("/f/"), false, "and no webfonts");
+  });
+
+  test("/info describes every route a machine needs", async () => {
+    const j = (await (await get("/info")).json()) as { endpoints: { path: string }[] };
+    const paths = j.endpoints.map((e) => e.path);
+    for (const p of ["/dossier", "/dossier/sample", "/dossier/preflight"]) {
+      assert.ok(paths.includes(p), `${p} missing from /info`);
+    }
+  });
+
+  test("/health reports whether payment is configured", async () => {
+    const j = (await (await get("/health")).json()) as Record<string, unknown>;
+    assert.equal(j.ok, true);
+    assert.ok("paymentConfigured" in j);
+  });
+
+  test("fonts are served from our own origin with a long cache", async () => {
+    const html = await (await get("/")).text();
+    const path = html.match(/\/f\/[a-z-]+-[a-f0-9]{8}\.woff2/)?.[0];
+    assert.ok(path, "the page should reference hashed font paths");
+    const r = await get(path!);
+    assert.equal(r.status, 200);
+    assert.equal(r.headers.get("content-type"), "font/woff2");
+    assert.match(r.headers.get("cache-control") ?? "", /immutable/);
+  });
+
+  test("an unknown font path 404s rather than reading the disk", async () => {
+    assert.equal((await get("/f/../../etc/passwd")).status, 404);
+    assert.equal((await get("/f/nope-00000000.woff2")).status, 404);
+  });
+});
+
+describe("input validation happens before anything is produced", () => {
+  test("a missing tokenAddress is rejected with usable guidance", async () => {
+    const r = await post("/dossier", {});
+    assert.equal(r.status, 400);
+    const j = (await r.json()) as Record<string, any>;
+    assert.ok(j.hint.includes("tokenAddress"));
+    assert.ok(j.examples.post && j.examples.get, "tell the caller both shapes");
+    assert.equal(j.freeSample, "/dossier/sample");
+  });
+
+  test("a malformed address is rejected", async () => {
+    assert.equal((await post("/dossier", { tokenAddress: "nope" })).status, 400);
+  });
+
+  test("an unsupported chain is rejected", async () => {
+    assert.equal((await post("/dossier", { tokenAddress: ADDR.cake, chain: "bnb" })).status, 400);
+  });
+
+  test("parameters are accepted as a body or a query string, on either method", async () => {
+    // Buyers' x402 clients replay differently; refusing one shape means a paid
+    // caller gets a 400 and no report.
+    for (const r of [
+      await post("/dossier", { tokenAddress: ADDR.cake, chain: "bsc" }),
+      await get(`/dossier?tokenAddress=${ADDR.cake}&chain=bsc`),
+      await post(`/dossier?tokenAddress=${ADDR.cake}&chain=bsc`),
+    ]) {
+      assert.equal(r.status, 200);
+    }
+  });
+
+  test("the body wins when both are present", async () => {
+    const r = await app.request(`/dossier?tokenAddress=${ADDR.uni}&chain=ethereum&format=json`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ tokenAddress: ADDR.cake, chain: "bsc", format: "json" }),
+    });
+    const j = (await r.json()) as { token: { address: string } };
+    assert.equal(j.token.address.toLowerCase(), ADDR.cake);
+  });
+});
+
+describe("nothing is charged for what we cannot report on", () => {
+  test("an address neither source knows is refused with 404", async () => {
+    const r = await post("/dossier", { tokenAddress: ADDR.nowhere, chain: "bsc" });
+    assert.equal(r.status, 404);
+    const j = (await r.json()) as Record<string, unknown>;
+    assert.equal(j.error, "token_not_found");
+    assert.equal(j.charged, false);
+    assert.match(String(j.hint), /preflight/);
+  });
+
+  test("a source outage returns 503 with Retry-After, not a verdict", async () => {
+    restore();
+    const r2 = stubUpstream({ fail: { goplus: "timeout", dexscreener: "timeout" } });
+    const r = await post("/dossier", { tokenAddress: ADDR.cake, chain: "bsc" });
+    assert.equal(r.status, 503);
+    assert.equal(r.headers.get("retry-after"), "30");
+    r2();
+    restore = stubUpstream();
+  });
+
+  test("every refusal is non-2xx, which is what makes it unchargeable", async () => {
+    // The SDK settles only when the handler returns < 400. These are the paths
+    // a buyer can reach with a bad or unanswerable request.
+    for (const r of [
+      await post("/dossier", {}),
+      await post("/dossier", { tokenAddress: "nope" }),
+      await post("/dossier", { tokenAddress: ADDR.nowhere, chain: "bsc" }),
+    ]) {
+      assert.ok(r.status >= 400, `expected a non-2xx, got ${r.status}`);
+    }
+  });
+});
+
+describe("coverage preflight", () => {
+  test("reports coverage without giving away the verdict", async () => {
+    const r = await get(`/dossier/preflight?tokenAddress=${ADDR.cake}&chain=bsc`);
+    assert.equal(r.status, 200);
+    const j = (await r.json()) as Record<string, unknown>;
+    assert.equal(j.expectedCoverage, 1);
+    assert.equal(j.reportAvailable, true);
+    for (const leaked of ["verdict", "riskVerdict", "reasons", "maxSizeUsd", "checks", "security"]) {
+      assert.ok(!(leaked in j), `preflight must not expose ${leaked}`);
+    }
+    assert.equal(/honeypot|proxy|renounce/i.test(JSON.stringify(j)), false);
+  });
+
+  test("partial coverage names the fields that will be missing", async () => {
+    const j = (await (
+      await get(`/dossier/preflight?tokenAddress=${ADDR.usdt0}&chain=xlayer`)
+    ).json()) as Record<string, any>;
+    assert.ok(j.expectedCoverage < 1);
+    assert.ok(j.fieldsUnavailable.includes("liquidityUsd"));
+    assert.ok(j.fieldsUnavailable.includes("priceUsd"));
+    assert.match(j.note, /Partial coverage/);
+  });
+
+  test("it agrees with what the paid call then charges for", async () => {
+    const pf = (await (
+      await get(`/dossier/preflight?tokenAddress=${ADDR.cake}&chain=bsc`)
+    ).json()) as Record<string, any>;
+    const report = (await (
+      await post("/dossier", { tokenAddress: ADDR.cake, chain: "bsc", format: "json" })
+    ).json()) as { riskVerdict: { confidence: number } };
+    assert.equal(pf.expectedCoverage, report.riskVerdict.confidence);
+  });
+
+  test("bad input is rejected the same way as the paid route", async () => {
+    assert.equal((await get("/dossier/preflight")).status, 400);
+    assert.equal((await get("/dossier/preflight?tokenAddress=nope")).status, 400);
+  });
+});
+
+describe("recovery", () => {
+  test("neither proof means 400, and no report", async () => {
+    const r = await post("/dossier/recovery", {});
+    assert.equal(r.status, 400);
+    const j = (await r.json()) as Record<string, unknown>;
+    assert.equal(j.error, "missing_proof_of_purchase");
+    assert.equal("deliverable" in j, false);
+  });
+
+  test("a request hash alone is refused, because anyone can derive it", async () => {
+    const hash = archive.paramsHash({ tokenAddress: ADDR.cake, chain: "bsc" });
+    const r = await post("/dossier/recovery", { requestParamsSha256: hash });
+    assert.equal(r.status, 400);
+  });
+
+  test("the settlement transaction returns the exact bytes delivered", async () => {
+    const delivered = await (
+      await post("/dossier", { tokenAddress: ADDR.cake, chain: "bsc" })
+    ).text();
+    // In dev-skip mode the SDK never settles, so link the transaction the way
+    // the payment middleware would.
+    const newest = archive.byHash(archive.paramsHash({ tokenAddress: ADDR.cake, chain: "bsc" }));
+    assert.ok(newest, "the delivery should have been archived");
+    archive.linkTransaction(newest!.id, "0xRECOVERTEST");
+    const j = (await (
+      await get("/dossier/recovery?transaction=0xRECOVERTEST")
+    ).json()) as Record<string, any>;
+    assert.equal(j.status, "recovered");
+    assert.equal(j.deliverable, delivered, "byte-identical to what was delivered");
+    assert.equal(j.agentId, 7012);
+  });
+
+  test("a transaction we never issued returns 404", async () => {
+    assert.equal((await get("/dossier/recovery?transaction=0xdead")).status, 404);
+    assert.equal((await get("/dossier/recovery?jobId=notajob")).status, 404);
+  });
+
+  test("mismatched parameters alongside a valid proof are refused", async () => {
+    const r = await post("/dossier/recovery", {
+      transaction: "0xRECOVERTEST",
+      originalBody: { tokenAddress: ADDR.uni },
+    });
+    assert.equal(r.status, 403);
+  });
+});
+
+describe("deliverables are named", () => {
+  test("the response carries a filename a buyer can save", async () => {
+    const r = await post("/dossier", { tokenAddress: ADDR.cake, chain: "bsc" });
+    assert.match(r.headers.get("content-disposition") ?? "", /filename="dossier-.*\.html"/);
+  });
+
+  test("json format is named .json", async () => {
+    const r = await post("/dossier", { tokenAddress: ADDR.cake, chain: "bsc", format: "json" });
+    assert.match(r.headers.get("content-disposition") ?? "", /\.json"/);
+  });
+});
