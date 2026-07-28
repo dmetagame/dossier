@@ -20,6 +20,7 @@ import { fontByPath } from "./fonts";
 import { publicKey, SCHEMA_VERSION, METHODOLOGY_VERSION } from "./attest";
 import { renderVerifyHtml } from "./verify-page";
 import * as ratelimit from "./ratelimit";
+import * as reqlog from "./reqlog";
 import { dossierInputSchema, httpInputSchema } from "./x402-contract";
 
 // Constant-time comparison for the payment-bypass secret. A `===` on a secret
@@ -48,6 +49,39 @@ let paymentLayer: PaymentLayer = "connecting";
 export function paymentLayerState(): PaymentLayer {
   return paymentLayer;
 }
+
+// One structured line per request, mounted first so it measures the whole chain
+// including the payment middleware. It never throws and never touches the
+// response: a log that can break a paid delivery is worse than no log.
+app.use(async (c, next) => {
+  const started = Date.now();
+  try {
+    await next();
+  } finally {
+    try {
+      if (!reqlog.isNoise(c.req.path)) {
+        const paid = Boolean(c.req.header("payment-signature"));
+        const line: reqlog.ReqLine = {
+          m: c.req.method,
+          p: c.req.path,
+          s: c.res?.status ?? 0,
+          ms: Date.now() - started,
+          ...(paid ? { paid: true } : {}),
+          // Present only when the SDK actually settled. Its absence next to
+          // `paid:true` is the proof that a failed call charged nobody.
+          ...reqlog.decodeReceipt(c.res?.headers?.get("payment-response")),
+          ...((c as any).get("logToken") ? { token: (c as any).get("logToken") } : {}),
+          ...((c as any).get("logChain") ? { chain: (c as any).get("logChain") } : {}),
+          ...((c as any).get("archiveId") ? { report: (c as any).get("archiveId") } : {}),
+          ...((c as any).get("logJob") ? { job: (c as any).get("logJob") } : {}),
+        };
+        console.log(reqlog.format(line));
+      }
+    } catch {
+      /* logging must never disturb a response */
+    }
+  }
+});
 
 // Rate limiting for the free surface only. Registered before the routes but
 // after nothing else, so it cannot affect the paid paths: those are excluded by
@@ -575,6 +609,13 @@ app.on(["GET", "POST"], "/dossier", async (c) => {
   if (!parsed.success) {
     return invalid(c, parsed.error.issues);
   }
+  // Recorded before the work starts, so a request that goes on to fail still
+  // says which token it was for. A failed paid call is exactly the one we later
+  // have to explain, and "they asked for X and got a 404" is the whole answer.
+  (c as any).set("logToken", parsed.data.tokenAddress);
+  if (parsed.data.chain) (c as any).set("logChain", parsed.data.chain);
+  const loggedJob = internalJobId(c);
+  if (loggedJob) (c as any).set("logJob", loggedJob);
   try {
     const dossier = await buildDossier(parsed.data);
     const json = parsed.data.format === "json";
@@ -582,7 +623,7 @@ app.on(["GET", "POST"], "/dossier", async (c) => {
     // Archive before responding, and remember the key so the settlement
     // transaction can be attached once the SDK has settled.
     const id = archive.newId();
-    const jobId = internalJobId(c);
+    const jobId = loggedJob;
     archive.save({
       id,
       paramsSha256: archive.paramsHash(parsed.data as Record<string, unknown>),
