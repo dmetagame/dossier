@@ -2,7 +2,10 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    # This repo's branch is `main`. It said `master` until 2026-07-28, which meant
+    # no push ever triggered CI: every green run came from a PR or a manual
+    # dispatch, and a direct push to main went unverified.
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
