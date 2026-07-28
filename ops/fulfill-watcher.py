@@ -23,7 +23,21 @@ HOME = os.path.expanduser("~")
 KEY_FILE = os.path.join(HOME, ".okx-agent-task", "internal-key.txt")
 STATE_FILE = os.path.join(HOME, ".okx-agent-task", "fulfill-watcher-state.json")
 # How long to let the buyer's own paid replay land before messaging them.
-ASK_GRACE_SECONDS = 900
+#
+# This guards a real race: the replay runs seconds after the task is created, and
+# a buyer it served needs no message from us. The log shows it earning its keep,
+# with several jobs entering the hold and never needing to be asked.
+#
+# It was 900s, which at a 120s tick meant a buyer who genuinely needed a question
+# waited about eight ticks to be asked anything. 240s still covers the race twice
+# over, since a replay lands in seconds, not minutes. When it does misfire the
+# message opens by telling an already-served buyer to ignore it.
+ASK_GRACE_SECONDS = 240
+# How long before nudging a buyer who never answered. Repeating the same question
+# every tick would be spam; leaving it a full day meant a stalled job sat idle
+# through a working day. Four nudges a day on a job the buyer is waiting on is
+# the balance.
+REASK_SECONDS = 21600
 ONCHAINOS = os.path.join(HOME, ".local", "bin", "onchainos")
 OKXA2A = os.path.join(HOME, ".npm-global", "bin", "okx-a2a")
 SUPPORTED_CHAINS = {"ethereum", "bsc", "base", "arbitrum", "polygon", "xlayer"}
@@ -462,8 +476,8 @@ def main():
             if time.time() - first_seen < ASK_GRACE_SECONDS:
                 continue
             if st.get("asked"):
-                # Re-ask at most once a day rather than every two minutes.
-                if time.time() - st.get("asked_at", 0) > 86400:
+                # Nudge on an interval rather than every tick.
+                if time.time() - st.get("asked_at", 0) > REASK_SECONDS:
                     ask_for_token(job, buyer, title, alts)
                     state[job] = {**st, "asked": True, "asked_at": time.time()}
                     save_state(state)
