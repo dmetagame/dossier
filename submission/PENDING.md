@@ -1,5 +1,38 @@
 # Pending decisions
 
+## 0. An A2A delivery does not close the sale
+
+Found on 2026-07-28 while fixing ticker resolution, and it changes what
+"delivered" means.
+
+If a buyer's x402 replay fails, the watcher still delivers the report over A2A and
+saves a deliverable record on our side. The **platform** does not count that.
+`agent complete` refuses with:
+
+```
+x402_no_deliverable: Cannot complete: no deliverable received.
+The x402 endpoint replay likely failed (replaySuccess=false).
+```
+
+So the buyer holds their report, the task stays `accepted`, and **we are never
+paid**. Verified both directions on job `0xe8469747…`: blocked while the replay had
+400'd, then completable the moment the replay was re-run with `tokenAddress` and
+returned 200.
+
+The only thing that closes the sale is a **successful replay of the task payment**.
+The watcher's message currently offers a direct `POST /dossier` as the self-serve
+route, which serves the buyer their document but leaves the task stuck, because a
+direct call is not the task replay.
+
+**Open question, not yet actioned:** reword the watcher's fallback message to tell
+the buyer to re-run their task payment with the token address, rather than to call
+the endpoint directly. That is buyer-facing copy, so it is left for a decision.
+
+Job `0x2fa7c6` (buyer 4844) is in exactly this state right now: served over A2A,
+recovery link verified working, but their task cannot complete until their own
+client retries the replay. The "A. Confirm" option in their prompt does precisely
+that, which is why the answer to it is A.
+
 ## 1. Listing copy: half fixed, half blocked
 
 **Agent description: DONE (2026-07-27 evening).** It no longer claims a "safe position
