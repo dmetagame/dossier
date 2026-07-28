@@ -69,7 +69,10 @@ jobs:
           url = c["resource"]["url"]
           assert url.startswith("https://"), f"resource url is not https: {url}"
           assert a["network"] == "eip155:196", f"wrong network: {a['network']}"
-          assert a["amount"] == "500000", f"price changed: {a['amount']}"
+          # 10000 = 0.01 USD₮0 at 6 decimals. Dropped from 500000 on 2026-07-28.
+          # This must match the listing fee on OKX service 36013, or a marketplace
+          # buyer's task budget will not cover the challenge.
+          assert a["amount"] == "10000", f"price changed: {a['amount']}"
           assert a["payTo"].lower() == "0x51c25782af63381056cd1c3c59c0544628d67697", "payout address changed"
           schema = c["extensions"]["outputSchema"]["input"]["schema"]
           assert schema["required"] == ["tokenAddress"], "the input contract lost its required field"

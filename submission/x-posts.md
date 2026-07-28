@@ -23,7 +23,7 @@ Meet Dossier, my #OKXAI Genesis entry.
 
 An agent about to spend on a token needs a decision, not four browser tabs.
 
-Send one contract address. Get back a finished due-diligence report: the verdict, five risk checks each with its reason, the contract's on-chain identity, and the position size the market can actually absorb. 0.5 USD₮0 per call over x402 on X Layer.
+Send one contract address. Get back a finished due-diligence report: the verdict, five risk checks each with its reason, the contract's on-chain identity, and the position size the market can actually absorb. 0.01 USD₮0 per call over x402 on X Layer.
 
 Two things I care about more than the report itself:
 

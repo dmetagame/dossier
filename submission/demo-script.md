@@ -33,6 +33,18 @@ reference demo was paced.
 | 1:14.8 | OKX.AI listing: stats, service, reviews | |
 | 1:21.2 | | "Dossier. Live on OKX dot AI as agent seven zero one two." |
 
+## The narration quotes the old price
+
+On **2026-07-28** the price dropped from 0.50 to 0.01 USD₮0. The cue at 0:57 says "Fifty
+cents on X Layer", and the purchase shown on screen settled 0.50, so the finished video now
+quotes a price we no longer charge.
+
+Nothing else in it went stale: the flow, the challenge, the signature check and the listing
+are all unchanged. Re-voicing is one line (see below), but it means re-rendering and
+re-uploading a video that is already submitted, and the figure is lower than what the video
+claims rather than higher, so no viewer is misled into expecting a better deal than exists.
+Left as is on purpose. Re-cut it only if the submission is reopened for other reasons.
+
 ## Everything on screen is real
 
 Captured from production on the day. The purchase shown is transaction

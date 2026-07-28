@@ -8,8 +8,11 @@ export const config = {
   // Price per verdict call as a human USD string ("$0.20"). The SDK maps this
   // to USD₮0 (the official settlement stablecoin on X Layer) automatically.
   price: process.env.PRICE ?? "$0.20",
-  // Dossier is a richer artifact (a full formatted report), priced above a verdict.
-  dossierPrice: process.env.DOSSIER_PRICE ?? "$0.50",
+  // Dropped from $0.50 to $0.01 on 2026-07-28. The listing fee on OKX (service
+  // 36013) must be kept in step with this: a marketplace task is funded from the
+  // listing fee, so a listing cheaper than this value leaves the buyer's budget
+  // short of the challenge and the purchase cannot settle at all.
+  dossierPrice: process.env.DOSSIER_PRICE ?? "$0.01",
   // ASP payout address (the OKX-registered wallet). Empty until we have it from
   // `onchainos wallet` — the middleware is not mounted while this is empty, so a
   // misconfigured deploy serves nothing rather than quoting a bad recipient.

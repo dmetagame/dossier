@@ -44,8 +44,21 @@ preceded approval last time. Nothing to do but wait for it to clear.
 
 **Cleared 2026-07-28.** Agent 7012 is back to approvalDisplayStatus 4, "Listed, eligible for
 task recommendations", statusLabel active. `www.okx.ai/agents/7012` returns 200 and the paid
-route still answers 402. The outage from the description edit lasted under a day. The
-service description still carries the old "safe position size" wording, as decided above.
+route still answers 402. The outage from the description edit lasted under a day.
+
+**Reopened and resolved the same day.** With the team's go-ahead, the service description and
+the fee were both changed on 2026-07-28. Both went through in a single `agent update`, so the
+listing pays only one review cycle rather than two.
+
+The earlier "service in use, only name/description can be modified: 36013" wall was not a
+pricing lock at all. It was the local A2A environment: `onchainos` gates every write behind
+`okx-a2a doctor`, the daemon was not running and the CLI was a version behind, and the failure
+surfaced as a confusing server-side message. Starting the daemon and upgrading to 0.1.10
+cleared it, and the fee changed on the first attempt afterwards. Worth remembering: if a write
+to the listing is refused for a reason that makes no sense, check `okx-a2a doctor` first.
+
+Service 36013 kept its id, so the 12 sales and the 4.67 rating carried over. The listing is
+back at approvalStatus 3 pending review, which is the expected cost of any edit.
 
 ## 2. Rotate the OKX API credentials
 

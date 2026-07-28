@@ -190,7 +190,9 @@ app.get("/dossier/sample", async (c) => {
       sampleCache = {
         html: renderDossierHtml(dossier, {
           banner:
-            "Sample report (free). Every paid call to POST /dossier returns this document for the token you choose. 0.5 USD₮0 per call over x402 on X Layer · OKX.AI agent #7012.",
+            // Derived from config rather than written out, so a price change
+            // cannot leave the sample advertising a figure we no longer charge.
+            `Sample report (free). Every paid call to POST /dossier returns this document for the token you choose. ${config.dossierPrice.replace(/^\$/, "")} USD₮0 per call over x402 on X Layer · OKX.AI agent #7012.`,
         }),
         at: Date.now(),
       };
@@ -207,7 +209,7 @@ app.get("/dossier/sample", async (c) => {
 });
 
 // Coverage preflight, free: what the paid report will and will not contain for
-// this token, so nobody pays 0.50 to discover that a token has no market data.
+// this token, so nobody pays to discover that a token has no market data.
 // It returns coverage and field availability only, never the verdict or any
 // security flag — otherwise the free route would replace the paid one.
 app.on(["GET", "POST"], "/dossier/preflight", async (c) => {

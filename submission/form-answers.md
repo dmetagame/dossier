@@ -11,7 +11,7 @@ Updated 2026-07-27, after the external review and the work that followed it.
 | Agent ID | 7012 (on-chain, X Layer) |
 | Listing | https://www.okx.ai/agents/7012 |
 | Service | Token Due-Diligence Report (A2MCP) |
-| Price | 0.5 USD₮0 per call, x402 on X Layer (eip155:196) |
+| Price | 0.01 USD₮0 per call, x402 on X Layer (eip155:196) |
 | Endpoint | https://dossier.rouma.xyz/dossier |
 | Site | https://dossier.rouma.xyz |
 | Status | Listed, eligible for task recommendations, online |

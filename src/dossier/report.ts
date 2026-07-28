@@ -83,7 +83,7 @@ export interface Preflight {
  *
  * Deliberately withholds the answer: coverage and field availability only, never
  * the verdict, the reasons, the size cap, or any security flag. It tells you
- * whether the report is worth 0.50, not what it says — otherwise the free
+ * whether the report is worth buying, not what it says — otherwise the free
  * endpoint would replace the paid one.
  */
 export async function preflight(req: DossierRequest): Promise<Preflight> {

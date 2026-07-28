@@ -16,7 +16,7 @@ Free sample of a real generated report: https://dossier.rouma.xyz/dossier/sample
 
 | Route | Method | Price | What it does |
 |---|---|---|---|
-| `/dossier` | GET, POST | 0.5 USD₮0 | Full due-diligence report (`html` default, `json` optional) |
+| `/dossier` | GET, POST | 0.01 USD₮0 | Full due-diligence report (`html` default, `json` optional) |
 | `/dossier/recovery` | GET, POST | free | Re-fetch a report you already paid for (`paymentTransaction` or `jobId`) |
 | `/dossier/preflight` | GET, POST | free | Coverage check for a token before you pay |
 | `/dossier/sample` | GET | free | Real sample report, cached |

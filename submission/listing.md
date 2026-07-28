@@ -17,7 +17,7 @@ names, no disclaimers, no example prompts. Fee is digits only.
 | Status | Listed, eligible for task recommendations, online |
 | Service | Token Due-Diligence Report |
 | Type | API service (A2MCP) |
-| Fee | 0.5 |
+| Fee | 0.01 |
 | Endpoint | https://dossier.rouma.xyz/dossier |
 | Payout wallet | 0x51c25782af63381056cd1c3c59c0544628d67697 |
 | Record | ★5.0, 100% positive, 10 sold, 2 reviews |
