@@ -42,6 +42,11 @@ URL can still pay and be served.
 The review remark reads "AI quality review suggested pass", which is the same signal that
 preceded approval last time. Nothing to do but wait for it to clear.
 
+**Cleared 2026-07-28.** Agent 7012 is back to approvalDisplayStatus 4, "Listed, eligible for
+task recommendations", statusLabel active. `www.okx.ai/agents/7012` returns 200 and the paid
+route still answers 402. The outage from the description edit lasted under a day. The
+service description still carries the old "safe position size" wording, as decided above.
+
 ## 2. Rotate the OKX API credentials
 
 They went through a chat transcript on 21 July and again on 27 July. The 21 July set was
