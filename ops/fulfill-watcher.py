@@ -391,9 +391,19 @@ def deliver(job, buyer, addr, chain, from_ticker=False):
     L.append("LOST THIS REPORT? Re-fetch the exact copy sent to you, free:")
     L.append('  POST %s/recovery  body {"jobId":"%s"}' % (ENDPOINT, job))
     L.append("")
-    L.append("OR fetch it yourself (x402 replay):")
-    L.append('  POST %s  body {"tokenAddress":"%s"%s}' % (
-        ENDPOINT, addr, (',"chain":"%s"' % tok.get("chain")) if tok.get("chain") else ""))
+    # This message is delivered over A2A, which the marketplace does not count as
+    # a deliverable: `complete` refuses with x402_no_deliverable while the buyer's
+    # own replay is still failing, so the task cannot be closed and neither side
+    # settles. Only re-running the task payment fixes that, so say so plainly
+    # rather than offering a bare endpoint call that leaves the job stuck.
+    L.append("TO CLOSE THIS TASK: re-run your x402 task payment with the token")
+    L.append("address below. The marketplace only records a deliverable when your")
+    L.append("own replay returns 200, so until it does, this task cannot be")
+    L.append("completed even though you are holding the report.")
+    L.append('  body {"tokenAddress":"%s"%s}' % (
+        addr, (',"chain":"%s"' % tok.get("chain")) if tok.get("chain") else ""))
+    L.append("")
+    L.append("Endpoint, if you want the document outside the task: POST %s" % ENDPOINT)
 
     ok = send_message(job, buyer, "\n".join(L))
     run([ONCHAINOS, "agent", "task-deliverable-save", "--job-id", job, "--role", "asp",
