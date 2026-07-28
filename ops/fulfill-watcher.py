@@ -34,6 +34,27 @@ STOPWORDS = {
     "due", "diligence", "on", "for", "the", "a", "an", "check", "quick", "risk",
     "report", "before", "i", "buy", "token", "analysis", "please", "of", "my",
 }
+# Canonical X Layer contracts, keyed by the ticker a buyer would actually type.
+#
+# Why this exists: resolve_token() resolves tickers through DexScreener, whose
+# X Layer coverage is thin. USD₮0 — this chain's settlement stablecoin, and the
+# asset we are paid in — has no DexScreener market at all, so a buyer who wrote
+# "USDT0" rather than an address got "I could not identify the token" and waited.
+# That happened to a real buyer on 2026-07-28.
+#
+# Consulted only after DexScreener has answered and found nothing, never when it
+# errored, so it can neither override a resolution that already works nor fire
+# blindly during a DexScreener outage.
+XLAYER_RPC = os.environ.get("XLAYER_RPC", "https://rpc.xlayer.tech")
+XLAYER_TOKENS = {
+    "usdt0": "0x779ded0c9e1022225f8e0630b35a9b54be713736",
+    "wokb":  "0xe538905cf8410324e03a5a23c1c177a474d59b2b",
+    "okb":   "0xe538905cf8410324e03a5a23c1c177a474d59b2b",
+    "usdc":  "0x74b7f16337b8972027f6196a17a631ac6de26d22",
+    "weth":  "0x5a77f1443d16ee5761d310e38b62f77f726bc71c",
+    "wbtc":  "0xea034fb02eb1808c2cc3adbc15f447b93cbe08e1",
+    "dai":   "0xc5015b9d9161dca7e18e32f6f25c4ad850731fd4",
+}
 
 
 def log(*a):
@@ -95,6 +116,55 @@ def money(n):
         return "n/a"
 
 
+def norm_sym(s):
+    """Fold a ticker to a comparable key, so 'USD₮0' and 'usdt0' are one token."""
+    return re.sub(r"[^a-z0-9]", "", (s or "").lower().replace("₮", "t"))
+
+
+def decode_abi_string(hexs):
+    """Decode an ABI-encoded string return, tolerating bytes32-style symbols."""
+    if not hexs or hexs == "0x":
+        return None
+    try:
+        raw = bytes.fromhex(hexs[2:])
+    except ValueError:
+        return None
+    if len(raw) == 32:                     # older tokens return a padded bytes32
+        return raw.rstrip(b"\0").decode("utf-8", "replace") or None
+    if len(raw) < 64:
+        return None
+    length = int.from_bytes(raw[32:64], "big")
+    if length > len(raw) - 64:
+        return None
+    return raw[64:64 + length].decode("utf-8", "replace")
+
+
+def xlayer_lookup(word):
+    """Resolve a ticker to a canonical X Layer contract, verified against chain.
+
+    The table is never trusted on its own: symbol() is read from the contract and
+    must fold to the ticker that was asked for. A wrong or stale entry therefore
+    fails closed — we go back to asking the buyer — rather than producing a
+    confident report on the wrong asset, which is this service's worst failure.
+    """
+    addr = XLAYER_TOKENS.get(norm_sym(word))
+    if not addr:
+        return None, None
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "eth_call",
+                       "params": [{"to": addr, "data": "0x95d89b41"}, "latest"]})
+    r = run(["curl", "-s", "--max-time", "15", "-X", "POST", XLAYER_RPC,
+             "-H", "content-type: application/json", "-d", body])
+    try:
+        onchain = decode_abi_string(json.loads(r.stdout).get("result"))
+    except Exception:
+        return None, None
+    if norm_sym(onchain) != norm_sym(word):
+        log("  xlayer table maps %s to %s but the chain reports %r; not guessing"
+            % (word, addr, onchain))
+        return None, None
+    return addr, "xlayer"
+
+
 def resolve_token(title):
     """0x address in the title wins; otherwise resolve a symbol via DexScreener.
 
@@ -111,6 +181,10 @@ def resolve_token(title):
         return m.group(0), None, []
     words = [w.strip(".,:;!?()[]'\"") for w in (title or "").split()]
     cands = [w for w in words if w and w.lower() not in STOPWORDS and len(w) <= 12]
+    # Whether DexScreener actually answered. An outage must not be mistaken for
+    # "this ticker trades nowhere", or the X Layer fallback below would fire for
+    # tickers whose real home is another chain.
+    searched_ok = False
     for w in cands:
         r = run(["curl", "-s", "--max-time", "15",
                  "https://api.dexscreener.com/latest/dex/search?q=" + w])
@@ -118,6 +192,7 @@ def resolve_token(title):
             pairs = json.loads(r.stdout).get("pairs") or []
         except Exception:
             continue
+        searched_ok = True
         # Aggregate per token, not per pool. Comparing single pools ranked a
         # 3M-dollar impostor pool above Uniswap's UNI, whose depth is spread
         # across many pairs, and delivered a report on the wrong asset.
@@ -148,6 +223,16 @@ def resolve_token(title):
             log("  ticker %s is ambiguous across %d tokens; asking rather than guessing" % (w, len(ranked)))
             return None, None, alts
         return addr, chain, []
+    # DexScreener answered and knows nothing that trades under this ticker. That
+    # is the normal shape for an X Layer-native asset, so check our own chain
+    # before falling back to asking the buyer a question they should not need.
+    if searched_ok:
+        for w in cands:
+            addr, chain = xlayer_lookup(w)
+            if addr:
+                log("  %s is not on DexScreener; resolved to the canonical"
+                    " X Layer contract %s" % (w, addr))
+                return addr, chain, []
     return None, None, []
 
 
