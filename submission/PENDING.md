@@ -60,6 +60,24 @@ to the listing is refused for a reason that makes no sense, check `okx-a2a docto
 Service 36013 kept its id, so the 12 sales and the 4.67 rating carried over. The listing is
 back at approvalStatus 3 pending review, which is the expected cost of any edit.
 
+### Do not leave a second A2A daemon running
+
+Starting the local daemon to get the listing write through created a second actor for agent
+7012, because **EC2 already runs one**. Both then spawned their own handler for the same job,
+which on a real buyer's job would mean two agents answering in one channel. The local daemon
+has been stopped and its autostart disabled.
+
+The rule: EC2 is the only daemon that serves 7012. If a listing write from the laptop is
+refused, start the local daemon, do the write, then stop it again:
+
+```
+okx-a2a daemon start && onchainos agent update ... && okx-a2a daemon stop
+```
+
+EC2's own daemon had no autostart and the `ubuntu` user had no systemd lingering, so a reboot
+would have taken buyer A2A communication down silently while the HTTP endpoint stayed up.
+Both are now enabled.
+
 ## 2. Rotate the OKX API credentials
 
 They went through a chat transcript on 21 July and again on 27 July. The 21 July set was
