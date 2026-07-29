@@ -79,6 +79,29 @@ jobs:
           print("  challenge ok:", a["amount"], a["network"], "| required:", schema["required"])
           PY
 
+      - name: The challenge still fits in a proxy's header buffer
+        run: |
+          set -euo pipefail
+          # The challenge is a base64 response header. A proxy that caps headers
+          # (4KB is common) turns an oversized one into a 502 on every 402, so the
+          # paid route fails closed for everyone with no warning beforehand. The
+          # unit test guards the schema we author; this guards what actually goes
+          # out, including anything the SDK adds.
+          bytes=$(wc -c < hdr.b64 | tr -d ' ')
+          echo "  PAYMENT-REQUIRED value: ${bytes}B"
+          if [ "$bytes" -gt 3072 ]; then
+            echo "::error::challenge header is ${bytes}B, past the 3072B budget: a 4KB proxy will 502 every 402"
+            exit 1
+          fi
+          # An if, not `[ ... ] && echo`: under `set -e` that idiom returns
+          # non-zero when the test is false, which fails the step for the
+          # healthy case. This workflow has been bitten by a shell subtlety once
+          # already, when a heredoc and a pipe both consumed stdin.
+          if [ "$bytes" -gt 2560 ]; then
+            echo "::warning::challenge header is ${bytes}B, approaching the 3072B budget"
+          fi
+          echo "  within budget"
+
       - name: Reports are still signed with the published key
         run: |
           set -euo pipefail

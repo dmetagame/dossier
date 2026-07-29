@@ -6,7 +6,11 @@
 
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { dossierInputSchema, httpInputSchema } from "../src/x402-contract";
+import {
+  dossierInputSchema,
+  httpInputSchema,
+  EXTENSIONS_BUDGET_BYTES,
+} from "../src/x402-contract";
 import { SUPPORTED_CHAINS } from "../src/engine/schema";
 import { config } from "../src/config";
 
@@ -79,5 +83,49 @@ describe("the canonical resource URL", () => {
     // slash where the path begins.
     const joined = `${config.publicOrigin}/dossier`;
     assert.equal(joined.split("//").length - 1, 1, joined);
+  });
+});
+
+// The challenge rides in a response *header*, so this schema is not free the way
+// a body is. A proxy that caps headers turns an oversized challenge into a 502 on
+// every 402 rather than truncating a field, so the paid route fails closed for
+// everyone at once, with no warning as it approaches the limit.
+describe("the challenge stays small enough to survive a proxy", () => {
+  const extensions = httpInputSchema(
+    dossierInputSchema,
+    "text/html",
+    "A rendered due-diligence report.",
+  );
+  const json = JSON.stringify(extensions);
+  const onWire = Buffer.from(json, "utf8").toString("base64").length;
+
+  test("extensions fit the budget", () => {
+    assert.ok(
+      json.length <= EXTENSIONS_BUDGET_BYTES,
+      `extensions are ${json.length}B, over the ${EXTENSIONS_BUDGET_BYTES}B budget. ` +
+        `Move detail into the 402 body, which has no ceiling, rather than raising this.`,
+    );
+  });
+
+  test("base64 inflation is accounted for, not forgotten", () => {
+    // Encoding costs a third on top. Budgeting the JSON and forgetting the
+    // encoding is how a schema that looks safe arrives oversized.
+    assert.ok(onWire >= json.length, "base64 never shrinks the payload");
+    assert.ok(
+      onWire <= 4096,
+      `extensions alone reach ${onWire}B encoded, which leaves no room for the ` +
+        `rest of the challenge under a 4KB proxy limit`,
+    );
+  });
+
+  test("the descriptive prose has not crept into the header", () => {
+    // Descriptions earn their place, but they are the part that grows without
+    // anyone noticing. If they ever dominate, they belong in the body.
+    const described = JSON.stringify(dossierInputSchema).match(/"description":"[^"]*"/g) ?? [];
+    const prose = described.join("").length;
+    assert.ok(
+      prose < json.length * 0.75,
+      `prose is ${prose}B of a ${json.length}B contract; move it to the 402 body`,
+    );
   });
 });
