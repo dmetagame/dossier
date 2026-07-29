@@ -1,5 +1,36 @@
 # Pending decisions
 
+## 0a. Listing rejected on copy, rewritten and resubmitted (2026-07-29)
+
+OKX rejected 7012 with approvalStatus 6: *"missing a complete description, parameter
+details, and usage examples."*
+
+The service record has no parameters or examples field, so all three have to live inside
+`serviceDescription`, which caps at 500 characters. The shape that passes was read off an
+approved listing rather than guessed: Tilla (agent 6961, approvalStatus 4) writes 484 and
+491 character descriptions in three parts.
+
+1. what it does, and the price
+2. `Provide:` each parameter, with name, type, and whether it is required
+3. `Example:` a concrete call and what comes back
+
+Ours now follows it, at 494 characters. Service id 36013 survived, so the 15 sales and the
+4.67 rating carried over.
+
+**An update alone did not resubmit this time.** Previous edits pushed the listing straight
+into review, but from a rejected state it stayed at 6 until an explicit
+`onchainos agent activate --agent-id 7012 --preferred-language en-US`. That returned
+`submitApproval: approvalStatus 2`, and the listing now reads "Listing under review". The
+old reject text stays on the record until a new review completes; it is not a second
+rejection.
+
+**The agent-level description was left alone on purpose.** Tilla's approved one is 281
+characters of plain narrative with no parameters and no examples, so that detail belongs to
+the service record, not the profile. Ours already matches that shape.
+
+The endpoint is unaffected throughout: `/dossier` answers 402, `paymentLayer` is ready, and
+anyone holding the URL can still buy. Only public discovery is dark.
+
 ## 0. An A2A delivery does not close the sale
 
 Found on 2026-07-28 while fixing ticker resolution, and it changes what
