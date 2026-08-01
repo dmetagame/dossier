@@ -17,6 +17,7 @@ import { renderDossierHtml } from "./dossier/render";
 import * as archive from "./dossier/archive";
 import { renderSiteHtml } from "./site";
 import { fontByPath } from "./fonts";
+import { AVATAR_B64 } from "./generated/avatar-data";
 import { publicKey, SCHEMA_VERSION, METHODOLOGY_VERSION } from "./attest";
 import { renderVerifyHtml } from "./verify-page";
 import * as ratelimit from "./ratelimit";
@@ -154,6 +155,21 @@ app.get("/f/:file", (c) => {
   c.header("Content-Type", "font/woff2");
   c.header("Cache-Control", "public, max-age=31536000, immutable");
   return c.body(new Uint8Array(f.body));
+});
+
+// The listing avatar. `agent update --picture` takes a URL rather than an
+// upload, so the marketplace needs somewhere to fetch this from; serving it here
+// keeps it on an origin we control instead of a third-party image host.
+//
+// Deliberately not content-hashed, unlike the fonts: a profile picture URL is
+// handed to OKX once and stored, so it has to stay valid across deploys. Cached
+// for a day rather than forever, so replacing the image does not require a new
+// URL and another listing edit.
+const AVATAR = Buffer.from(AVATAR_B64, "base64");
+app.get("/avatar.png", (c) => {
+  c.header("Content-Type", "image/png");
+  c.header("Cache-Control", "public, max-age=86400");
+  return c.body(new Uint8Array(AVATAR));
 });
 
 // The signing key, published so a report can be checked against a key fetched
