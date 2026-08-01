@@ -431,10 +431,48 @@ if (!config.devSkipPayment && paymentConfigured()) {
       error: "Payment required",
       service: name,
       description,
+      price: `${config.dossierPrice} per call, x402 on X Layer (${config.network})`,
       method: "GET or POST",
       parameters: "JSON body on POST, or query string on GET or POST",
       input,
       output: { mimeType: outputMimeType, description: outputDescription },
+      // Worked examples, not just a schema. A reviewer or a cold agent that
+      // cannot pay still needs to see what a real call looks like and what it
+      // returns; a schema alone answers neither. The body has no size ceiling,
+      // unlike the challenge header, so this is the right place for them.
+      examples: [
+        {
+          description: "Minimal call: the contract address is the only required field.",
+          request: { tokenAddress: "0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82" },
+          curl:
+            `curl -X POST ${config.publicOrigin}/dossier ` +
+            `-H 'content-type: application/json' ` +
+            `-d '{"tokenAddress":"0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82"}'`,
+          returns: "The rendered report document (text/html).",
+        },
+        {
+          description: "Name the chain explicitly and take the data as JSON.",
+          request: {
+            tokenAddress: "0x514910771af9ca656af840dff83e8264ecf986ca",
+            chain: "ethereum",
+            format: "json",
+          },
+          curl:
+            `curl -X POST ${config.publicOrigin}/dossier ` +
+            `-H 'content-type: application/json' ` +
+            `-d '{"tokenAddress":"0x514910771af9ca656af840dff83e8264ecf986ca","chain":"ethereum","format":"json"}'`,
+          returns:
+            "JSON with riskVerdict (verdict, reasons, confidence, maxSizeUsd), token, checks, sources and a signed attestation.",
+        },
+      ],
+      // Everything here answers without payment, so the service can be judged
+      // before anyone is asked to trust it with money.
+      try_before_paying: {
+        sample_report: `${config.publicOrigin}/dossier/sample`,
+        coverage_preflight: `${config.publicOrigin}/dossier/preflight`,
+        verify_a_report: `${config.publicOrigin}/verify`,
+        service_info: `${config.publicOrigin}/info`,
+      },
     },
   });
   // Every method that can reach a paid path is gated, not just POST: x402
