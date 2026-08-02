@@ -405,17 +405,22 @@ def deliver(job, buyer, addr, chain, from_ticker=False):
     L.append("LOST THIS REPORT? Re-fetch the exact copy sent to you, free:")
     L.append('  POST %s/recovery  body {"jobId":"%s"}' % (ENDPOINT, job))
     L.append("")
-    # This message is delivered over A2A, which the marketplace does not count as
-    # a deliverable: `complete` refuses with x402_no_deliverable while the buyer's
-    # own replay is still failing, so the task cannot be closed and neither side
-    # settles. Only re-running the task payment fixes that, so say so plainly
-    # rather than offering a bare endpoint call that leaves the job stuck.
-    L.append("TO CLOSE THIS TASK: re-run your x402 task payment with the token")
-    L.append("address below. The marketplace only records a deliverable when your")
-    L.append("own replay returns 200, so until it does, this task cannot be")
-    L.append("completed even though you are holding the report.")
-    L.append('  body {"tokenAddress":"%s"%s}' % (
-        addr, (',"chain":"%s"' % tok.get("chain")) if tok.get("chain") else ""))
+    # NOTHING HERE MAY ASK A BUYER FOR MONEY.
+    #
+    # This block used to say "TO CLOSE THIS TASK: re-run your x402 task payment".
+    # It was written for one stalled buyer whose replay had failed, but it sat
+    # unconditionally in the delivery message, so every buyer received it —
+    # including buyers who had already paid successfully. For them the claim was
+    # simply false, and an automated message demanding a second payment is
+    # indistinguishable from a scam. It earned a 3-star review on 2026-08-02
+    # saying exactly that, and it deserved to.
+    #
+    # The watcher cannot tell from here whether a given buyer's payment settled,
+    # so it must not assert anything about their payment state. A stuck task is a
+    # small problem; looking like a fraud is not. Anyone genuinely stuck is
+    # handled case by case, by a human, off this path.
+    L.append("You owe nothing further for this report. This message never asks")
+    L.append("for payment.")
     L.append("")
     L.append("Endpoint, if you want the document outside the task: POST %s" % ENDPOINT)
 
