@@ -59,6 +59,39 @@ STOPWORDS = {
 # Consulted only after DexScreener has answered and found nothing, never when it
 # errored, so it can neither override a resolution that already works nor fire
 # blindly during a DexScreener outage.
+# Canonical mainnet deployments for majors, keyed by ticker.
+#
+# Why this exists: on 2026-08-02 a buyer asked for a WBTC report and received one
+# on Base WBTC instead of Ethereum's. DexScreener's search for "WBTC" returns
+# exactly one candidate above our liquidity floor — Base, at ~$0.6M — and omits
+# Ethereum's entirely, despite it being orders of magnitude deeper. TICKER_DOMINANCE
+# only compares candidates against each other, so with a single result it never
+# fires and the wrong asset went out with full confidence. That earned a 1-star
+# review, and it was deserved.
+#
+# The lesson is that one search result is not evidence of unambiguity: absence
+# from DexScreener is not absence from the chain. For a bare major ticker, the
+# canonical mainnet deployment is what a buyer means unless they say otherwise,
+# so it is resolved from here rather than from whatever the search happens to
+# surface. Every address is checked against symbol() on its own chain before use.
+CANONICAL_TOKENS = {
+    "wbtc": ("ethereum", "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599"),
+    "weth": ("ethereum", "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
+    "usdc": ("ethereum", "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+    "usdt": ("ethereum", "0xdAC17F958D2ee523a2206206994597C13D831ec7"),
+    "dai":  ("ethereum", "0x6B175474E89094C44Da98b954EedeAC495271d0F"),
+    "link": ("ethereum", "0x514910771AF9Ca656af840dff83E8264EcF986CA"),
+    "uni":  ("ethereum", "0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984"),
+    "aave": ("ethereum", "0x7Fc66500c84A76Ad7e9c93437bFc5Ac33E2DDaE9"),
+}
+CHAIN_RPC = {
+    "ethereum": "https://ethereum-rpc.publicnode.com",
+    "bsc": "https://bsc-rpc.publicnode.com",
+    "base": "https://base-rpc.publicnode.com",
+    "arbitrum": "https://arbitrum-one-rpc.publicnode.com",
+    "polygon": "https://polygon-bor-rpc.publicnode.com",
+    "xlayer": "https://rpc.xlayer.tech",
+}
 XLAYER_RPC = os.environ.get("XLAYER_RPC", "https://rpc.xlayer.tech")
 XLAYER_TOKENS = {
     "usdt0": "0x779ded0c9e1022225f8e0630b35a9b54be713736",
@@ -153,6 +186,40 @@ def decode_abi_string(hexs):
     return raw[64:64 + length].decode("utf-8", "replace")
 
 
+def symbol_on_chain(chain, addr):
+    """Read symbol() for a token, on its own chain. None if it cannot be read."""
+    rpc = CHAIN_RPC.get(chain)
+    if not rpc:
+        return None
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "eth_call",
+                       "params": [{"to": addr, "data": "0x95d89b41"}, "latest"]})
+    r = run(["curl", "-s", "--max-time", "15", "-X", "POST", rpc,
+             "-H", "content-type: application/json", "-d", body])
+    try:
+        return decode_abi_string(json.loads(r.stdout).get("result"))
+    except Exception:
+        return None
+
+
+def canonical_lookup(word):
+    """Resolve a major ticker to its canonical mainnet deployment, chain-verified.
+
+    Fails closed exactly like xlayer_lookup: if the chain does not agree that the
+    address carries this symbol, we return nothing and fall through to asking,
+    rather than shipping a confident report on an asset nobody asked about.
+    """
+    hit = CANONICAL_TOKENS.get(norm_sym(word))
+    if not hit:
+        return None, None
+    chain, addr = hit
+    onchain = symbol_on_chain(chain, addr)
+    if norm_sym(onchain) != norm_sym(word):
+        log("  canonical table maps %s to %s on %s but the chain reports %r; not guessing"
+            % (word, addr, chain, onchain))
+        return None, None
+    return addr, chain
+
+
 def xlayer_lookup(word):
     """Resolve a ticker to a canonical X Layer contract, verified against chain.
 
@@ -195,6 +262,17 @@ def resolve_token(title):
         return m.group(0), None, []
     words = [w.strip(".,:;!?()[]'\"") for w in (title or "").split()]
     cands = [w for w in words if w and w.lower() not in STOPWORDS and len(w) <= 12]
+    # Majors resolve from the canonical table first, before DexScreener gets a
+    # say. Its search is not exhaustive: for WBTC it returns only a small Base
+    # deployment and omits Ethereum's entirely, and a lone result never trips the
+    # dominance check, so the search alone will confidently hand back the wrong
+    # chain. A named major means the canonical deployment unless the buyer says
+    # otherwise, and they can always say otherwise with an explicit address.
+    for w in cands:
+        addr, chain = canonical_lookup(w)
+        if addr:
+            log("  %s resolved to its canonical %s deployment %s" % (w, chain, addr))
+            return addr, chain, []
     # Whether DexScreener actually answered. An outage must not be mistaken for
     # "this ticker trades nowhere", or the X Layer fallback below would fire for
     # tickers whose real home is another chain.
