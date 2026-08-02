@@ -311,11 +311,11 @@ app.on(["GET", "POST"], "/dossier/recovery", async (c) => {
         message:
           "Send paymentTransaction: the settlement transaction hash from your paid call, " +
           "found in the PAYMENT-RESPONSE header of the response you received. " +
-          "If you bought through a marketplace task instead, send jobId. " +
-          "originalBody or requestParamsSha256 may be sent as an additional check.",
+          "If you bought through a marketplace task instead, send jobId together with " +
+          "originalBody or requestParamsSha256.",
         usage: {
-          post: 'POST /dossier/recovery {"paymentTransaction":"0x…"}  or  {"jobId":"0x…"}',
-          get: "GET /dossier/recovery?paymentTransaction=0x…  or  ?jobId=0x…",
+          post: 'POST /dossier/recovery {"paymentTransaction":"0x…"}  or  {"jobId":"0x…","originalBody":{"tokenAddress":"0x…"}}',
+          get: "GET /dossier/recovery?paymentTransaction=0x…  or  ?jobId=0x…&requestParamsSha256=…",
         },
       },
       400,
@@ -323,6 +323,39 @@ app.on(["GET", "POST"], "/dossier/recovery", async (c) => {
   }
 
   const hash = givenHash || (originalBody ? archive.paramsHash(originalBody) : "");
+
+  // A job id is not proof of purchase. The public marketplace hands them out:
+  // `task-search` returns other agents' job ids, so anyone can enumerate them,
+  // replay them here, and read reports they never paid for. A settlement
+  // transaction is different, since it is not in that search and reaches only
+  // the buyer, in their PAYMENT-RESPONSE header.
+  //
+  // So a job id has to be accompanied by something the buyer knows and an
+  // enumerator does not: what they actually asked about. Our own delivery
+  // message carries the contract and chain in the same text that points here,
+  // so a genuine buyer is already holding it.
+  //
+  // This is a bar, not a wall — the parameters remain guessable for a popular
+  // token, which is why a per-report recovery code is the follow-up. It closes
+  // the enumeration path today, for every record, with no migration.
+  if (!tx && !hash) {
+    return c.json(
+      {
+        error: "insufficient_proof_of_purchase",
+        message:
+          "A jobId on its own is not proof of purchase: job ids are publicly enumerable. " +
+          "Send it together with originalBody (the request you paid for) or " +
+          "requestParamsSha256, or send paymentTransaction instead, which needs nothing else. " +
+          "The contract address and chain are printed in the report and in the delivery " +
+          "message that pointed you here.",
+        usage: {
+          post: 'POST /dossier/recovery {"jobId":"0x…","originalBody":{"tokenAddress":"0x…","chain":"ethereum"}}',
+          alternative: 'POST /dossier/recovery {"paymentTransaction":"0x…"}',
+        },
+      },
+      400,
+    );
+  }
   // The transaction is the stronger proof, so it decides when both are sent;
   // falling back to the job id could otherwise answer a mismatched pair.
   const rec = tx ? archive.byTransaction(tx) : archive.byJobId(jobId);

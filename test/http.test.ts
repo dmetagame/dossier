@@ -259,7 +259,63 @@ describe("recovery", () => {
 
   test("a transaction we never issued returns 404", async () => {
     assert.equal((await get("/dossier/recovery?transaction=0xdead")).status, 404);
-    assert.equal((await get("/dossier/recovery?jobId=notajob")).status, 404);
+  });
+
+  // Job ids are handed out by the public marketplace: `task-search` returns
+  // other agents' job ids, so accepting one as sole proof let anyone enumerate
+  // them and read reports they never bought. One now has to arrive with the
+  // request the buyer actually paid for.
+  test("a job id on its own is refused, however well formed", async () => {
+    for (const q of [
+      "jobId=notajob",
+      `jobId=0x${"a".repeat(64)}`,
+      `jobId=0x${"0".repeat(63)}1`,
+    ]) {
+      const r = await get(`/dossier/recovery?${q}`);
+      assert.equal(r.status, 400, `${q} must not be accepted on its own`);
+      assert.equal((await r.json()).error, "insufficient_proof_of_purchase");
+    }
+  });
+
+  test("the refusal names what to send, so a real buyer is not stranded", async () => {
+    const j = await (await get(`/dossier/recovery?jobId=0x${"b".repeat(64)}`)).json();
+    assert.match(j.message, /originalBody|requestParamsSha256/);
+    assert.match(j.message, /paymentTransaction/);
+  });
+
+  // The settlement hash is not in the marketplace search and reaches only the
+  // buyer, so it stays sufficient alone. Regressing this would strand everyone
+  // who paid outside a task.
+  test("a transaction alone still recovers, needing no second factor", async () => {
+    const r = await get("/dossier/recovery?transaction=0xRECOVERTEST");
+    assert.equal(r.status, 200);
+    assert.equal((await r.json()).status, "recovered");
+  });
+
+  // The path the tightening could plausibly have broken, and the one our own
+  // delivery message tells marketplace buyers to use. A buyer knows what they
+  // asked about, so pairing the job id with the request has to keep working.
+  test("a job id paired with the request still recovers the report", async () => {
+    const body = { tokenAddress: ADDR.cake, chain: "bsc" };
+    const delivered = await (await post("/dossier", body)).text();
+    const rec = archive.byHash(archive.paramsHash(body));
+    assert.ok(rec, "the delivery should have been archived");
+    const jobId = `0x${"c".repeat(64)}`;
+    archive.save({ ...rec!, jobId });
+
+    const r = await post("/dossier/recovery", { jobId, originalBody: body });
+    assert.equal(r.status, 200, "a buyer holding their own request must not be locked out");
+    const j = (await r.json()) as Record<string, any>;
+    assert.equal(j.status, "recovered");
+    assert.equal(j.deliverable, delivered, "byte-identical to what was delivered");
+
+    // The same job id with somebody else's request is still refused, so the
+    // second factor is doing real work rather than being a formality.
+    const wrong = await post("/dossier/recovery", {
+      jobId,
+      originalBody: { tokenAddress: ADDR.uni },
+    });
+    assert.equal(wrong.status, 403);
   });
 
   test("mismatched parameters alongside a valid proof are refused", async () => {

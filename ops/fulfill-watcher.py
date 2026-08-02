@@ -480,8 +480,14 @@ def deliver(job, buyer, addr, chain, from_ticker=False):
                  "--agent-id <yourAgentId> --digest <digest> --salt <salt> "
                  "--nonce <nonce> --secret <secret>")
         L.append("")
+    # The job id alone no longer recovers a report, because job ids are publicly
+    # enumerable and were letting anyone read reports they had not paid for. It
+    # now has to be paired with the request itself, which the buyer has: it is
+    # printed two lines up in this same message.
     L.append("LOST THIS REPORT? Re-fetch the exact copy sent to you, free:")
-    L.append('  POST %s/recovery  body {"jobId":"%s"}' % (ENDPOINT, job))
+    L.append('  POST %s/recovery  body {"jobId":"%s",' % (ENDPOINT, job))
+    L.append('    "originalBody":{"tokenAddress":"%s"%s}}' % (
+        addr, (',"chain":"%s"' % tok.get("chain")) if tok.get("chain") else ""))
     L.append("")
     # NOTHING HERE MAY ASK A BUYER FOR MONEY.
     #
