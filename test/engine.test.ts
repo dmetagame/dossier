@@ -5,7 +5,8 @@
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { stubUpstream, withStub, ADDR } from "./helpers";
-import { evaluate, fetchSources, SourcesUnavailableError } from "../src/engine/engine";
+import { evaluate, fetchSources, SourcesUnavailableError, honeypotCheck as sellability, controlCheck } from "../src/engine/engine";
+import { taxPct } from "../src/engine/sources/goplus";
 
 let restore: () => void;
 before(() => {
@@ -135,7 +136,102 @@ describe("absent tax data is a warning, not a pass", () => {
       assert.ok(/tax/.test(s.detail), "a pass must state the tax figures it saw");
     } else {
       assert.equal(s.status, "warn");
-      assert.ok(/did not report trading taxes/.test(s.detail));
+      assert.ok(/tax/.test(s.detail) && /not reported|neither/.test(s.detail),
+        `a warning must name what was missing, got: ${s.detail}`);
     }
+  });
+
+  // Number("") and Number(" ") are both 0, so a tax the source simply omitted
+  // used to be reported as a measured 0% and counted as covered. The committed
+  // fixture carries `"buy_tax": ""`, so this shipped.
+  test("a blank tax string is unknown, never a measured zero", () => {
+    for (const blank of ["", "   ", "\t", null, undefined, {}, []]) {
+      assert.equal(taxPct(blank), undefined, `${JSON.stringify(blank)} must not become a number`);
+    }
+    assert.equal(taxPct("0"), 0, "an explicit zero is still a measurement");
+    assert.equal(taxPct("0.05"), 5);
+  });
+
+  test("nonsensical tax values are rejected rather than reported", () => {
+    for (const bad of ["-0.1", "1.5", "abc", "NaN", "Infinity"]) {
+      assert.equal(taxPct(bad), undefined, `${bad} must not be reported as a tax`);
+    }
+  });
+
+  // Sell tax is the side that traps a buyer. Knowing the buy side says nothing
+  // about it, and defaulting it to zero let a token pass as "sell 0%" when the
+  // sell tax had never been reported at all.
+  test("a known buy tax does not license a clean pass on an unknown sell tax", () => {
+    const r = sellability({ status: "ok", buyTaxPct: 0, sellTaxPct: undefined });
+    assert.equal(r.status, "warn");
+    assert.match(r.detail, /sell tax was not reported/i);
+  });
+
+  test("a known sell tax with an unknown buy tax still warns", () => {
+    const r = sellability({ status: "ok", buyTaxPct: undefined, sellTaxPct: 0 });
+    assert.equal(r.status, "warn");
+    assert.match(r.detail, /buy tax was not reported/i);
+  });
+
+  test("both sides known and clean is the only route to a pass", () => {
+    assert.equal(sellability({ status: "ok", buyTaxPct: 0, sellTaxPct: 0 }).status, "pass");
+  });
+
+  test("a punitive sell tax fails even when the buy side is missing", () => {
+    const r = sellability({ status: "ok", buyTaxPct: undefined, sellTaxPct: 30 });
+    assert.equal(r.status, "fail");
+  });
+});
+
+// A sparse but "ok" security record used to silence the chain completely, so a
+// report could print an EIP-1967 implementation and mint or pause selectors read
+// from the deployed bytecode while the scored check beside it said "No dangerous
+// owner powers detected". Absent is not false.
+describe("contract control merges both sources", () => {
+  const chainClean = { status: "ok", isContract: true, capabilities: [] } as any;
+  const chainProxy = {
+    status: "ok", isContract: true, proxyImplementation: "0xabc", capabilities: [],
+  } as any;
+  const chainDangerous = {
+    status: "ok", isContract: true, capabilities: ["pause", "blacklist"],
+  } as any;
+
+  test("a proxy seen only on chain is not erased by a silent aggregator", () => {
+    const r = controlCheck({ status: "ok" } as any, chainProxy);
+    assert.notEqual(r.status, "pass", "an implementation slot is evidence, not noise");
+    assert.match(r.detail, /proxy/i);
+  });
+
+  test("pause and blacklist powers reach the score, not just the prose", () => {
+    // GoPlus does not report these at all, so before the merge they were visible
+    // in the report and absent from the verdict.
+    const r = controlCheck({ status: "ok" } as any, chainDangerous);
+    assert.equal(r.status, "fail");
+    assert.match(r.detail, /pausable/);
+    assert.match(r.detail, /blacklist/);
+  });
+
+  test("a mint selector plus an active owner counts even if GoPlus is quiet", () => {
+    const chain = { status: "ok", isContract: true, capabilities: ["mint"], ownerRenounced: false } as any;
+    const r = controlCheck({ status: "ok" } as any, chain);
+    assert.notEqual(r.status, "pass");
+    assert.match(r.detail, /mint/i);
+  });
+
+  test("a clean pass names the evidence it rests on", () => {
+    const r = controlCheck({ status: "ok", isProxy: false } as any, chainClean);
+    assert.equal(r.status, "pass");
+    assert.match(r.detail, /bytecode/, "a pass on both sources should say so");
+  });
+
+  test("a pass with no chain read says the chain was not read", () => {
+    const r = controlCheck({ status: "ok", isProxy: false } as any, { status: "unavailable" } as any);
+    assert.equal(r.status, "pass");
+    assert.match(r.detail, /chain could not be read/i);
+  });
+
+  test("the owner-can-change-balance finding still short-circuits everything", () => {
+    const r = controlCheck({ status: "ok", ownerCanChangeBalance: true } as any, chainClean);
+    assert.equal(r.status, "fail");
   });
 });

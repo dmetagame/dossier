@@ -44,6 +44,28 @@ export function goplusSupports(chain: string): boolean {
   return chain.toLowerCase() in CHAIN_IDS;
 }
 
+// A blank tax is not a zero tax.
+//
+// Number("") and Number(" ") are both 0, so a tax GoPlus simply omitted used to
+// render as a measured "0%" in a pre-trade risk report, and counted as covered.
+// Our own committed fixture carries `"buy_tax": ""`, so this shipped. In a
+// product whose whole discipline is that a source which said nothing is never
+// treated as evidence, this was the one place that rule was broken.
+//
+// Anything that is not a finite number in a sane range stays undefined, which
+// callers must present as unknown rather than as a measurement.
+export function taxPct(v: unknown): number | undefined {
+  if (typeof v !== "number" && typeof v !== "string") return undefined;
+  const s = String(v).trim();
+  if (s === "") return undefined;
+  const n = Number(s);
+  if (!Number.isFinite(n)) return undefined;
+  // GoPlus reports these as a fraction: 0.05 means 5%. Negative is
+  // nonsensical, and above 1 is a malformed record rather than a 100%+ tax.
+  if (n < 0 || n > 1) return undefined;
+  return n * 100;
+}
+
 export async function fetchGoPlus(chain: string, address: string): Promise<GoPlusTokenSecurity> {
   const chainId = CHAIN_IDS[chain.toLowerCase()];
   if (!chainId) return { status: "not_found" };
@@ -69,10 +91,7 @@ export async function fetchGoPlus(chain: string, address: string): Promise<GoPlu
   const entry = json.result?.[address.toLowerCase()];
   if (!entry) return { status: "not_found" };
 
-  const pct = (v: unknown): number | undefined => {
-    const n = Number(v);
-    return Number.isFinite(n) ? n * 100 : undefined;
-  };
+  const pct = taxPct;
   const flag = (v: unknown): boolean | undefined => (v === "1" ? true : v === "0" ? false : undefined);
 
   // Concentration counts wallets only: staking pools, locks, and burn

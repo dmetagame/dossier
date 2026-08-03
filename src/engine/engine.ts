@@ -149,43 +149,104 @@ export async function evaluate(req: RiskRequest, prefetched?: SourceSnapshot): P
 type Sec = Awaited<ReturnType<typeof fetchGoPlus>>;
 type Market = Awaited<ReturnType<typeof fetchDexScreener>>;
 
-function honeypotCheck(sec: Sec): CheckResult {
+export function honeypotCheck(sec: Sec): CheckResult {
   if (sec.status !== "ok") return { status: "unknown", detail: "sellability (no security data)" };
   if (sec.isHoneypot) return { status: "fail", detail: "Flagged as a honeypot — buyers cannot sell." };
   if (sec.cannotSellAll) return { status: "fail", detail: "Contract restricts selling full balances." };
   // Absent tax figures are not the same as zero tax. The source omits them for
   // many tokens, and reporting a clean pass on that silence would be claiming
   // knowledge we do not have — the mistake this engine exists to avoid.
-  const taxesKnown = sec.sellTaxPct !== undefined || sec.buyTaxPct !== undefined;
-  if (taxesKnown) {
-    const sell = sec.sellTaxPct ?? 0;
-    const buy = sec.buyTaxPct ?? 0;
-    if (sell > 15) return { status: "fail", detail: `Sell tax ${sell.toFixed(0)}% — exit is punitive.` };
-    if (sell > 5 || buy > 5)
-      return { status: "warn", detail: `Trading taxes present (buy ${buy}%, sell ${sell}%).` };
-    return { status: "pass", detail: `No honeypot flags; buy ${buy}% / sell ${sell}% tax.` };
+  // Each side is judged on its own evidence. Requiring only *one* of them to be
+  // present and defaulting the other to zero meant a token with a known 0% buy
+  // tax and an unreported sell tax could pass as "sell 0%" while a punitive exit
+  // had never been ruled out. Sell tax is the one that traps a buyer, so it is
+  // the one that must never be assumed.
+  const buy = sec.buyTaxPct;
+  const sell = sec.sellTaxPct;
+
+  // A known-bad sell tax settles it whatever else is missing.
+  if (sell !== undefined && sell > 15) {
+    return { status: "fail", detail: `Sell tax ${sell.toFixed(0)}% — exit is punitive.` };
   }
-  return {
-    status: "warn",
-    detail: "No honeypot flag, but the security source did not report trading taxes — a sell tax cannot be ruled out.",
-  };
+  if (sell === undefined) {
+    return {
+      status: "warn",
+      detail:
+        buy === undefined
+          ? "No honeypot flag, but the security source reported neither trading tax — a sell tax cannot be ruled out."
+          : `No honeypot flag and buy tax is ${buy}%, but the sell tax was not reported — a punitive exit cannot be ruled out.`,
+    };
+  }
+  if (buy === undefined) {
+    return { status: "warn", detail: `Sell tax is ${sell}%, but the buy tax was not reported.` };
+  }
+  if (sell > 5 || buy > 5) {
+    return { status: "warn", detail: `Trading taxes present (buy ${buy}%, sell ${sell}%).` };
+  }
+  return { status: "pass", detail: `No honeypot flags; buy ${buy}% / sell ${sell}% tax.` };
 }
 
-function controlCheck(sec: Sec, chain: RpcSnapshot): CheckResult {
-  // When the security source has nothing, the chain still does. Reading the
-  // contract directly answers the same question from primary evidence rather
-  // than leaving the check blank, which is what made an X Layer report on
-  // USD₮0 mostly empty.
+export function controlCheck(sec: Sec, chain: RpcSnapshot): CheckResult {
+  // Evidence from both sources is merged, and a risk seen by either one survives.
+  //
+  // This used to hand the whole question to the chain only when GoPlus had
+  // nothing at all: `if (sec.status !== "ok") return controlFromChain(chain)`.
+  // A sparse but "ok" GoPlus record therefore silenced the chain entirely, and
+  // every field GoPlus omitted read as "no risk". A report could print an
+  // EIP-1967 implementation slot and mint or pause selectors found in the
+  // deployed bytecode, while the scored check beside it said "No dangerous owner
+  // powers detected" — the report contradicting itself, in the direction that
+  // flatters the token.
+  //
+  // Absent is not false. A missing GoPlus field contributes nothing either way;
+  // only a positive signal counts, from whichever source saw it.
   if (sec.status !== "ok") return controlFromChain(chain);
-  if (sec.ownerCanChangeBalance)
+
+  // The strongest single finding either source can make.
+  if (sec.ownerCanChangeBalance) {
     return { status: "fail", detail: "Owner can modify holder balances." };
+  }
+
   const powers: string[] = [];
-  if (sec.isMintable && sec.ownerRenounced === false) powers.push("mintable by active owner");
-  if (sec.isProxy) powers.push("upgradeable proxy");
+  const fromChain = chain.status === "ok";
+
+  // Proxy: believe either source. GoPlus omitting the flag is not a denial, and
+  // an implementation slot read directly from the chain is primary evidence.
+  const proxyOnChain = fromChain && Boolean(chain.proxyImplementation);
+  if (sec.isProxy || proxyOnChain) {
+    powers.push(
+      sec.isProxy === undefined && proxyOnChain
+        ? "upgradeable proxy (implementation slot read from the chain)"
+        : "upgradeable proxy",
+    );
+  }
+
+  // Mintable, from the aggregator's flag or from a mint selector in the
+  // bytecode. Either way it only counts while an owner remains.
+  const ownerActive = sec.ownerRenounced === false || (fromChain && chain.ownerRenounced === false);
+  const mintOnChain = fromChain && Boolean(chain.capabilities?.includes("mint"));
+  if ((sec.isMintable || mintOnChain) && ownerActive) {
+    powers.push(mintOnChain && !sec.isMintable ? "mint function present, owner not renounced" : "mintable by active owner");
+  }
+
+  // Powers GoPlus does not report at all. Before this merge they were visible in
+  // the report and absent from the score.
+  if (fromChain && chain.capabilities?.includes("pause")) powers.push("pausable");
+  if (fromChain && chain.capabilities?.includes("blacklist")) powers.push("address blacklisting");
+
   if (sec.isOpenSource === false) powers.push("unverified source");
+
   if (powers.length >= 2) return { status: "fail", detail: `Contract control risks: ${powers.join(", ")}.` };
   if (powers.length === 1) return { status: "warn", detail: `Contract control risk: ${powers[0]}.` };
-  return { status: "pass", detail: "No dangerous owner powers detected." };
+
+  // Nothing found. Say which evidence that rests on, so a clean result on a
+  // half-empty record is not read as a clean result on a full one.
+  return {
+    status: "pass",
+    detail: fromChain
+      ? "No dangerous owner powers detected, in the security record or the deployed bytecode."
+      : "No dangerous owner powers detected in the security record; the chain could not be read.",
+  };
 }
 
 /**
