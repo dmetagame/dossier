@@ -338,7 +338,7 @@ class TestAskTiming(unittest.TestCase):
             "counterpartyAgentId": "4844", "title": "Quick due-diligence check"}]}}
         fw.has_deliverable = lambda job: False
         fw.resolve_token = lambda title: (None, None, [])
-        fw.read_buyer_reply = lambda job, buyer, asked_at=0: (None, None)
+        fw.read_buyer_reply = lambda job, buyer, asked_at=0, known_inbox=None: (None, None)
         fw.ask_for_token = lambda job, buyer, title, alts=None: (self.asks.append(time.time()) or True)
 
     def tearDown(self):
@@ -395,7 +395,7 @@ class TestOnlyDeliversWhatWasAsked(unittest.TestCase):
         self._state_file, fw.STATE_FILE = fw.STATE_FILE, self.state
         self._saved = {n: getattr(fw, n) for n in
                        ("jrun", "has_deliverable", "resolve_token", "read_buyer_reply",
-                        "ask_for_token", "deliver")}
+                        "ask_for_token", "deliver", "our_inbox")}
         self.delivered = []
         fw.jrun = lambda cmd, timeout=180: {"ok": True, "data": {"tasks": [{
             "jobId": "0xjob", "myAgentId": "7012", "myRole": "asp", "status": "accepted",
@@ -414,7 +414,7 @@ class TestOnlyDeliversWhatWasAsked(unittest.TestCase):
     def test_a_title_we_can_resolve_is_never_pushed(self):
         """The regression that caused the incident."""
         fw.resolve_token = lambda title: (WBTC_ETH, "ethereum", [])
-        fw.read_buyer_reply = lambda job, buyer, asked_at=0: (None, None)
+        fw.read_buyer_reply = lambda job, buyer, asked_at=0, known_inbox=None: (None, None)
         fw.main()
         self.assertEqual(self.delivered, [], "a report nobody asked for must not be sent")
         self.assertTrue(read_json(self.state)["0xjob"]["done"],
@@ -423,7 +423,7 @@ class TestOnlyDeliversWhatWasAsked(unittest.TestCase):
     def test_a_token_the_buyer_supplied_is_delivered(self):
         """The flow that genuinely rescued a stalled buyer must survive."""
         fw.resolve_token = lambda title: (None, None, [])
-        fw.read_buyer_reply = lambda job, buyer, asked_at=0: (WBTC_ETH, "ethereum")
+        fw.read_buyer_reply = lambda job, buyer, asked_at=0, known_inbox=None: (WBTC_ETH, "ethereum")
         write_json(self.state, {"0xjob": {"asked": True, "asked_at": time.time(),
                              "first_seen": time.time() - 10_000}})
         fw.main()
@@ -432,7 +432,7 @@ class TestOnlyDeliversWhatWasAsked(unittest.TestCase):
 
     def test_an_unanswered_question_delivers_nothing(self):
         fw.resolve_token = lambda title: (None, None, [])
-        fw.read_buyer_reply = lambda job, buyer, asked_at=0: (None, None)
+        fw.read_buyer_reply = lambda job, buyer, asked_at=0, known_inbox=None: (None, None)
         write_json(self.state, {"0xjob": {"asked": True, "asked_at": time.time(),
                              "first_seen": time.time() - 10_000}})
         fw.main()
@@ -779,7 +779,7 @@ class TestDeliveryIsStaged(unittest.TestCase):
                 "title": "WBTC report"}]}})
         fw.has_deliverable = lambda job: False
         fw.resolve_token = lambda title: (None, None, [])
-        fw.read_buyer_reply = lambda job, buyer, asked_at=0: (WBTC_ETH, "ethereum")
+        fw.read_buyer_reply = lambda job, buyer, asked_at=0, known_inbox=None: (WBTC_ETH, "ethereum")
         with open(self.state, "w") as fh:
             json.dump(self.seed, fh)
         fw.main()
@@ -801,3 +801,71 @@ class TestDeliveryIsStaged(unittest.TestCase):
         self.assertEqual(len(self.sent), 1, "the buyer must not receive a duplicate report")
         self.assertEqual(len(self.saves), 2, "but the registration is retried")
         self.assertTrue(st2["done"], "and a second failure closes it rather than looping")
+
+
+class TestOurInboxIsRemembered(unittest.TestCase):
+    """`session history` shows one conversation, and it is not always ours.
+
+    Measured against two live jobs on 2026-08-03. Before the buyer replies, the
+    seller-side query returns exactly our ask. After the buyer replies, it
+    returns exactly their message and our ask is gone: the daemon resolves the
+    job to a single group, and once the buyer's own session has one it answers
+    from theirs.
+
+    So at the moment we need to tell our messages from theirs, the history
+    contains none of ours. Identity is learned when we ask, while our question is
+    still the only thing there, and remembered in the job's state.
+
+    Without this the watcher refused every reply, forever, and two live buyers
+    went unserved.
+    """
+
+    OURS = "inbox-dossier"
+    THEM = "inbox-buyer"
+
+    def setUp(self):
+        self._run = fw.run
+        self.addCleanup(lambda: setattr(fw, "run", self._run))
+
+    def history(self, rows):
+        fw.run = lambda cmd, timeout=180: types.SimpleNamespace(
+            stdout=json.dumps(rows), stderr="", returncode=0, failure=None)
+
+    def msg(self, inbox, text, at):
+        return {"id": "m", "senderInboxId": inbox, "content": text,
+                "sentAt": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(at)) + "Z"}
+
+    def test_our_inbox_is_learned_from_the_ask(self):
+        asked = time.time()
+        self.history([self.msg(self.OURS, fw.ASK_MARKER + " which token?", asked)])
+        self.assertEqual(fw.our_inbox("0xjob", "4844"), self.OURS)
+
+    def test_a_reply_alone_in_the_history_is_still_read(self):
+        """The exact live shape: their message, and nothing of ours."""
+        asked = time.time() - 100
+        self.history([self.msg(self.THEM, "use %s" % WBTC_ETH, asked + 30)])
+        addr, _ = fw.read_buyer_reply("0xjob", "4844", asked, known_inbox=self.OURS)
+        self.assertEqual(addr, WBTC_ETH)
+
+    def test_without_a_remembered_inbox_it_still_refuses(self):
+        """Failing closed stays the behaviour when identity is genuinely unknown."""
+        asked = time.time() - 100
+        self.history([self.msg(self.THEM, "use %s" % WBTC_ETH, asked + 30)])
+        self.assertEqual(fw.read_buyer_reply("0xjob", "4844", asked), (None, None))
+
+    def test_a_remembered_inbox_never_overrides_a_marker(self):
+        """A stale or wrong cached id must not turn our own message into a reply."""
+        asked = time.time() - 100
+        self.history([
+            self.msg(self.OURS, fw.ASK_MARKER + " which token?", asked),
+            self.msg(self.OURS, fw.ASK_MARKER + " still waiting, e.g. %s" % WBTC_ETH, asked + 60),
+        ])
+        self.assertEqual(
+            fw.read_buyer_reply("0xjob", "4844", asked, known_inbox="something-stale"),
+            (None, None))
+
+    def test_the_remembered_inbox_is_still_bound_to_time(self):
+        asked = time.time() - 100
+        self.history([self.msg(self.THEM, "old chat %s" % WBTC_ETH, asked - 5000)])
+        self.assertEqual(
+            fw.read_buyer_reply("0xjob", "4844", asked, known_inbox=self.OURS), (None, None))

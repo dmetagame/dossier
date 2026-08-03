@@ -530,7 +530,7 @@ def sent_at(m):
         return None
 
 
-def read_buyer_reply(job, buyer, asked_at=0):
+def read_buyer_reply(job, buyer, asked_at=0, known_inbox=None):
     """Look for a token the buyer supplied in reply to our question.
 
     Returns (address, chain) or (None, None).
@@ -577,12 +577,22 @@ def read_buyer_reply(job, buyer, asked_at=0):
               if isinstance(m, dict) and m.get("senderInboxId")
               and any(k in body(m) for k in OURS)]
     marked.sort(key=lambda m: (sent_at(m) is None, sent_at(m) or 0))
-    if not marked:
-        # We asked, so one of these rows must be ours. If we cannot tell which,
-        # we cannot tell a reply from an echo of our own question either.
+    ours = {marked[0]["senderInboxId"]} if marked else set()
+    if not ours and known_inbox:
+        # The history no longer contains anything of ours, which is the normal
+        # state once the buyer has replied: `session history` resolves to a
+        # single conversation, and the moment a buyer's own session has a group
+        # it answers from theirs. Our ask, sent in ours, vanishes from our own
+        # query. Verified on 2026-08-03 against two live jobs: one row before the
+        # reply (our ask), one row after (their reply), never both.
+        #
+        # So our identity cannot be rediscovered from the history at the moment
+        # we need it. It is learned when we ask, while our ask is still the only
+        # thing there, and remembered.
+        ours = {known_inbox}
+    if not ours:
         log("  cannot identify our own inbox in the history; not reading a reply")
         return None, None
-    ours = {marked[0]["senderInboxId"]}
 
     for m in reversed(msgs):
         if not isinstance(m, dict) or m.get("senderInboxId") in ours:
@@ -600,6 +610,34 @@ def read_buyer_reply(job, buyer, asked_at=0):
                     break
             return hit.group(0), chain
     return None, None
+
+
+def our_inbox(job, buyer):
+    """Our own XMTP inbox id, read back from the history we just wrote to.
+
+    Called immediately after asking, when our question is the only message in
+    the conversation. That is the one moment this is knowable: once the buyer
+    replies, our own query stops returning our own messages.
+    """
+    r = run([OKXA2A, "session", "history", "--job-id", job,
+             "--toAgentId", str(buyer), "--limit", "10", "--json"])
+    try:
+        msgs = json.loads(r.stdout)
+    except Exception:
+        return None
+    if not isinstance(msgs, list):
+        return None
+    for m in msgs:
+        if not isinstance(m, dict):
+            continue
+        raw = m.get("content") or ""
+        try:
+            text = json.loads(raw).get("content") or ""
+        except Exception:
+            text = raw
+        if any(k in text for k in OURS) and m.get("senderInboxId"):
+            return m["senderInboxId"]
+    return None
 
 
 def ask_for_token(job, buyer, title, alts=None):
@@ -840,7 +878,8 @@ def _run_tick():
         # If the title was unusable we asked the buyer; a job is never closed on
         # the question alone, so their answer is picked up on a later tick.
         if not addr and st.get("asked"):
-            addr, chain = read_buyer_reply(job, buyer, st.get("asked_at", 0))
+            addr, chain = read_buyer_reply(job, buyer, st.get("asked_at", 0),
+                                           st.get("our_inbox"))
             if addr:
                 from_buyer = True
                 log("  buyer supplied token", addr[:12], "chain", chain)
@@ -867,7 +906,13 @@ def _run_tick():
             log("fulfilling", job[:12],
                 "| ambiguous ticker, asking buyer" if alts else "| no token in title, asking buyer")
             if ask_for_token(job, buyer, title, alts):
-                state[job] = {**st, "asked": True, "asked_at": time.time()}
+                st2 = {**st, "asked": True, "asked_at": time.time()}
+                inbox = our_inbox(job, buyer)
+                if inbox:
+                    st2["our_inbox"] = inbox
+                else:
+                    log("  could not learn our own inbox id; replies may be unreadable")
+                state[job] = st2
                 save_state(state)
             continue
 

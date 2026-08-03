@@ -36,11 +36,24 @@ Whether to deliver is decided by EVIDENCE, never by the next-action text:
    call genuinely failed is answered on that same request with a 400 naming the
    missing field, which reaches their automation at the moment of failure.
 
-**One owner.** `ops/fulfill-watcher.py` is the fulfilment authority for 7012 and
-follows exactly the rule above: it asks when a title is unusable, delivers when
-answered, and otherwise stays quiet. An AI session working this playbook must not
-race it. If both could act on a job, the watcher wins; check for its state entry
-before doing anything by hand.
+**Who acts.** `ops/fulfill-watcher.py` runs on a timer and does the same job.
+The split is by evidence, not by seniority:
+
+* **A buyer's message was dispatched to you.** You act. Deliver it. Do not defer
+  to the watcher, do not check its state file, do not wait for its next tick.
+  You are holding the buyer's own words; that is the strongest evidence anyone
+  in this system will ever have, and the watcher cannot see what you were handed.
+* **No buyer message in this session.** The watcher owns it. Stay quiet.
+
+This paragraph used to say the watcher always wins and that you must not race
+it. On 2026-08-03 that rule was followed exactly, and the result was that a
+buyer went unserved: their reply was dispatched to an AI session, which deferred
+to the watcher as instructed, and the watcher could not read the reply. Nobody
+delivered. The previous job, before that rule existed, was delivered in four
+minutes by the session that received the message.
+
+Deferring is not the safe option. A duplicate message is an annoyance; silence
+after a buyer answers a direct question is a broken service.
 
 ## For every incoming job on 7012 (Dossier) or 7008 (Verdict)
 
