@@ -195,9 +195,20 @@ facilitator handshake was unreliable from that runtime.
 
 ```bash
 git pull
+# Only when dependencies changed. The host has npm, not pnpm, so `pnpm install`
+# there fails with "command not found"; piped into anything it fails silently and
+# esbuild then bundles the old tree. That is how a dependency bump reached the
+# repo, passed CI, and left production still running the previous version.
+npm install
 npx esbuild src/server.ts --bundle --platform=node --target=node20 \
   --format=esm --outfile=dist/server.mjs
 sudo systemctl restart dossier
+```
+
+Verify a dependency deploy actually landed, rather than assuming it did:
+
+```bash
+node -pe "require('./node_modules/<pkg>/package.json').version"
 ```
 
 The landing page's fonts and its GSAP/Lenis bundle are emitted as ordinary
