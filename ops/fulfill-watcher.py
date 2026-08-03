@@ -640,6 +640,26 @@ def our_inbox(job, buyer):
     return None
 
 
+# Our own inbox id is a property of this agent, not of any one job, so it is
+# cached once under a reserved key rather than per job. That is what lets a job
+# that got stuck before this existed heal by itself: the next job to ask learns
+# the id, and every stuck job can then read its buyer's reply. The alternative
+# was editing the live state file by hand.
+INBOX_KEY = "__our_inbox__"
+
+
+def learn_inbox(state, job, buyer):
+    """Record our inbox id if we do not have it yet. Cheap and idempotent."""
+    if state.get(INBOX_KEY, {}).get("inbox"):
+        return
+    inbox = our_inbox(job, buyer)
+    if inbox:
+        state[INBOX_KEY] = {"inbox": inbox, "at": time.time()}
+        log("  learned our own inbox id; replies are readable from now on")
+    else:
+        log("  could not learn our own inbox id; replies may be unreadable")
+
+
 def ask_for_token(job, buyer, title, alts=None):
     # A buyer whose own x402 replay already succeeded has their report and needs
     # nothing from us; we cannot see that from the ASP side, so the message must
@@ -840,7 +860,9 @@ def _run_tick():
     # 28 July, because the done filter below is silent: a genuinely stuck job and
     # a long-finished one produced the same line, and telling them apart meant
     # opening the state file.
-    open_jobs = [t for t in todo if not state.get(t.get("jobId"), {}).get("done")]
+    open_jobs = [t for t in todo
+                 if t.get("jobId") != INBOX_KEY
+                 and not state.get(t.get("jobId"), {}).get("done")]
     log("tasks=%d accepted=%d open=%d" % (len(tasks), len(todo), len(open_jobs)))
     # A heartbeat the outside world can see. Uptime checks the web service, the
     # payment challenge, the key and the certificate, and none of that says
@@ -854,6 +876,8 @@ def _run_tick():
         pass
     for t in todo:
         job = t["jobId"]
+        if job == INBOX_KEY:
+            continue
         st = state.get(job, {})
         if st.get("done"):
             continue
@@ -878,8 +902,9 @@ def _run_tick():
         # If the title was unusable we asked the buyer; a job is never closed on
         # the question alone, so their answer is picked up on a later tick.
         if not addr and st.get("asked"):
-            addr, chain = read_buyer_reply(job, buyer, st.get("asked_at", 0),
-                                           st.get("our_inbox"))
+            addr, chain = read_buyer_reply(
+                job, buyer, st.get("asked_at", 0),
+                st.get("our_inbox") or state.get(INBOX_KEY, {}).get("inbox"))
             if addr:
                 from_buyer = True
                 log("  buyer supplied token", addr[:12], "chain", chain)
@@ -901,18 +926,14 @@ def _run_tick():
                 if time.time() - st.get("asked_at", 0) > REASK_SECONDS:
                     ask_for_token(job, buyer, title, alts)
                     state[job] = {**st, "asked": True, "asked_at": time.time()}
+                    learn_inbox(state, job, buyer)
                     save_state(state)
                 continue
             log("fulfilling", job[:12],
                 "| ambiguous ticker, asking buyer" if alts else "| no token in title, asking buyer")
             if ask_for_token(job, buyer, title, alts):
-                st2 = {**st, "asked": True, "asked_at": time.time()}
-                inbox = our_inbox(job, buyer)
-                if inbox:
-                    st2["our_inbox"] = inbox
-                else:
-                    log("  could not learn our own inbox id; replies may be unreadable")
-                state[job] = st2
+                state[job] = {**st, "asked": True, "asked_at": time.time()}
+                learn_inbox(state, job, buyer)
                 save_state(state)
             continue
 

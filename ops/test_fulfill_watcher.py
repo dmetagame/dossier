@@ -869,3 +869,104 @@ class TestOurInboxIsRemembered(unittest.TestCase):
         self.history([self.msg(self.THEM, "old chat %s" % WBTC_ETH, asked - 5000)])
         self.assertEqual(
             fw.read_buyer_reply("0xjob", "4844", asked, known_inbox=self.OURS), (None, None))
+
+
+class TestTheInboxCacheIsSharedAcrossJobs(unittest.TestCase):
+    """Our inbox id belongs to the agent, not to a job.
+
+    It is cached once under a reserved key, which is what lets a job that got
+    stuck before the cache existed recover without anyone editing the live state
+    file by hand: the next job to ask learns the id, and every stuck job can then
+    read its buyer's reply.
+    """
+
+    OURS = "inbox-dossier"
+
+    def setUp(self):
+        self.state = os.path.join(scratch(self), "state.json")
+        self._state_file, fw.STATE_FILE = fw.STATE_FILE, self.state
+        self._saved = {n: getattr(fw, n) for n in ("our_inbox",)}
+        self.addCleanup(lambda: setattr(fw, "STATE_FILE", self._state_file))
+        self.addCleanup(lambda: [setattr(fw, n, v) for n, v in self._saved.items()])
+
+    def test_it_is_learned_once_and_reused(self):
+        calls = []
+        fw.our_inbox = lambda job, buyer: (calls.append(job) or self.OURS)
+        state = {}
+        fw.learn_inbox(state, "0xjob1", "4844")
+        fw.learn_inbox(state, "0xjob2", "4844")
+        self.assertEqual(state[fw.INBOX_KEY]["inbox"], self.OURS)
+        self.assertEqual(len(calls), 1, "a cached id must not be re-fetched every ask")
+
+    def test_a_failure_to_learn_is_not_cached_as_success(self):
+        fw.our_inbox = lambda job, buyer: None
+        state = {}
+        fw.learn_inbox(state, "0xjob", "4844")
+        self.assertNotIn(fw.INBOX_KEY, state, "a failed lookup must be retried next time")
+
+    def test_the_reserved_key_is_not_mistaken_for_a_job(self):
+        """It shares a namespace with job ids, so it must survive a round trip."""
+        fw.save_state({fw.INBOX_KEY: {"inbox": self.OURS}, "0xjob": {"done": True}})
+        back = fw.load_state()
+        self.assertEqual(back[fw.INBOX_KEY]["inbox"], self.OURS)
+        self.assertTrue(back["0xjob"]["done"])
+
+
+class TestAStuckJobHealsItself(unittest.TestCase):
+    """The recovery path for jobs stranded before the cache existed.
+
+    Job 0xc4716819 on 2026-08-03 was asked, answered, and then refused on every
+    tick because the history no longer contained anything of ours to identify us
+    by. It had no remembered inbox and could not acquire one, since the learning
+    happens at ask time and it had already asked.
+
+    The cache is shared, so it heals: any later job that asks learns the id, and
+    this one reads its buyer's reply on the next tick with no hand-editing of the
+    live state file.
+    """
+
+    OURS = "inbox-dossier"
+    THEM = "inbox-buyer"
+
+    def setUp(self):
+        self.state = os.path.join(scratch(self), "state.json")
+        self._state_file, fw.STATE_FILE = fw.STATE_FILE, self.state
+        self._saved = {n: getattr(fw, n) for n in
+                       ("jrun", "has_deliverable", "resolve_token", "deliver", "run")}
+        self.addCleanup(lambda: setattr(fw, "STATE_FILE", self._state_file))
+        self.addCleanup(lambda: [setattr(fw, n, v) for n, v in self._saved.items()])
+
+        self.asked_at = time.time() - 600
+        self.delivered = []
+        fw.jrun = lambda cmd, timeout=180: {"ok": True, "data": {"tasks": [{
+            "jobId": "0xstuck", "myAgentId": "7012", "myRole": "asp",
+            "status": "accepted", "counterpartyAgentId": "9444",
+            "title": "Due diligence report please"}]}}
+        fw.has_deliverable = lambda job: False
+        fw.resolve_token = lambda title: (None, None, [])
+        fw.deliver = lambda job, buyer, addr, chain, from_ticker=False, already_messaged=False: (
+            self.delivered.append(addr) or {"uploaded": True, "messaged": True, "recorded": True})
+        # The live shape: their reply, and nothing of ours.
+        rows = [{"id": "m", "senderInboxId": self.THEM,
+                 "content": "use %s" % WBTC_ETH,
+                 "sentAt": time.strftime("%Y-%m-%dT%H:%M:%S",
+                                         time.gmtime(self.asked_at + 60)) + "Z"}]
+        fw.run = lambda cmd, timeout=180: types.SimpleNamespace(
+            stdout=json.dumps(rows), stderr="", returncode=0, failure=None)
+
+    def seed(self, extra):
+        d = {"0xstuck": {"asked": True, "asked_at": self.asked_at,
+                         "first_seen": self.asked_at - 300}}
+        d.update(extra)
+        write_json(self.state, d)
+
+    def test_with_a_cached_inbox_the_stuck_job_is_fulfilled(self):
+        self.seed({fw.INBOX_KEY: {"inbox": self.OURS}})
+        fw.main()
+        self.assertEqual(self.delivered, [WBTC_ETH],
+                         "a job stranded before the cache existed must recover from it")
+
+    def test_without_one_it_stays_refused_rather_than_guessing(self):
+        self.seed({})
+        fw.main()
+        self.assertEqual(self.delivered, [])
