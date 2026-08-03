@@ -526,6 +526,14 @@ def main():
     # "complete" means the buyer released funds, which only happens after they
     # have what they paid for — never chase those. Only "accepted" jobs, where
     # we cannot see whether the buyer's own replay succeeded, are candidates.
+    #
+    # And "cannot see" is the whole problem. An accepted job with no recorded
+    # deliverable was read as a buyer in trouble; it is nothing of the sort. On
+    # an x402 task the buyer replays the endpoint, receives the report inline,
+    # and no deliverable is ever recorded against the task. That is the normal
+    # resting state, confirmed by a buyer on 2026-08-03, so the condition matches
+    # correctly-served buyers just as readily as stranded ones. Delivery is now
+    # gated on the buyer having asked us, further down.
     todo = [t for t in tasks
             if str(t.get("myAgentId")) == ASP
             and t.get("myRole") == "asp"
@@ -544,12 +552,16 @@ def main():
         buyer = t.get("counterpartyAgentId")
         title = t.get("title") or ""
         addr, chain, alts = resolve_token(title)
+        # Whether this address is something the buyer handed us, or something we
+        # worked out on their behalf. Only the first justifies sending anything.
+        from_buyer = False
 
         # If the title was unusable we asked the buyer; a job is never closed on
         # the question alone, so their answer is picked up on a later tick.
         if not addr and st.get("asked"):
             addr, chain = read_buyer_reply(job, buyer)
             if addr:
+                from_buyer = True
                 log("  buyer supplied token", addr[:12], "chain", chain)
 
         if not addr:
@@ -576,6 +588,23 @@ def main():
             if ask_for_token(job, buyer, title, alts):
                 state[job] = {**st, "asked": True, "asked_at": time.time()}
                 save_state(state)
+            continue
+
+        # We can resolve this title, but nobody asked us to. Pushing it anyway is
+        # what produced an unrequested Base WBTC report in a buyer's channel 34
+        # seconds before their own correct paid report arrived, and with it a
+        # 1-star review. Ten such pushes exist in the archive; exactly one of them
+        # was a buyer who actually needed rescuing, and that buyer had asked.
+        #
+        # A buyer whose paid call fails is not stranded by this. The endpoint
+        # answers that same request with a 400 naming the missing field and two
+        # worked examples, which reaches their automation at the moment of
+        # failure. That is a better rescue channel than an unsolicited push,
+        # which arrives with no context and cannot be told apart from a scam.
+        if not from_buyer:
+            log("  resolved from the title, but the buyer never asked; not sending")
+            state[job] = {"done": True, "why": "not requested by the buyer"}
+            save_state(state)
             continue
 
         log("fulfilling", job[:12], "|", title)

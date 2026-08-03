@@ -325,5 +325,64 @@ class TestAskTiming(unittest.TestCase):
         self.assertEqual(len(self.asks), 0)
 
 
+class TestOnlyDeliversWhatWasAsked(unittest.TestCase):
+    """An accepted job with no recorded deliverable is not a buyer in trouble.
+
+    On an x402 task the buyer replays the endpoint, gets the report inline, and
+    nothing is ever recorded against the task. That is the resting state, so the
+    old trigger fired on correctly-served buyers: one such push landed an
+    unrequested Base WBTC report in a buyer's channel 34 seconds before their own
+    correct report, and earned a 1-star review. Delivery now requires that the
+    buyer asked.
+    """
+
+    def setUp(self):
+        self.state = os.path.join(tempfile.mkdtemp(), "state.json")
+        self._state_file, fw.STATE_FILE = fw.STATE_FILE, self.state
+        self._saved = {n: getattr(fw, n) for n in
+                       ("jrun", "has_deliverable", "resolve_token", "read_buyer_reply",
+                        "ask_for_token", "deliver")}
+        self.delivered = []
+        fw.jrun = lambda cmd, timeout=180: {"ok": True, "data": {"tasks": [{
+            "jobId": "0xjob", "myAgentId": "7012", "myRole": "asp", "status": "accepted",
+            "counterpartyAgentId": "4844", "title": "WBTC due-diligence report"}]}}
+        fw.has_deliverable = lambda job: False
+        fw.ask_for_token = lambda job, buyer, title, alts=None: True
+        fw.deliver = lambda job, buyer, addr, chain, from_ticker=False: (
+            self.delivered.append((job, addr, chain)) or True)
+
+    def tearDown(self):
+        fw.STATE_FILE = self._state_file
+        for n, v in self._saved.items():
+            setattr(fw, n, v)
+
+    def test_a_title_we_can_resolve_is_never_pushed(self):
+        """The regression that caused the incident."""
+        fw.resolve_token = lambda title: (WBTC_ETH, "ethereum", [])
+        fw.read_buyer_reply = lambda job, buyer: (None, None)
+        fw.main()
+        self.assertEqual(self.delivered, [], "a report nobody asked for must not be sent")
+        self.assertTrue(json.load(open(self.state))["0xjob"]["done"],
+                        "and the job should not be reconsidered every tick")
+
+    def test_a_token_the_buyer_supplied_is_delivered(self):
+        """The flow that genuinely rescued a stalled buyer must survive."""
+        fw.resolve_token = lambda title: (None, None, [])
+        fw.read_buyer_reply = lambda job, buyer: (WBTC_ETH, "ethereum")
+        json.dump({"0xjob": {"asked": True, "asked_at": time.time(),
+                             "first_seen": time.time() - 10_000}}, open(self.state, "w"))
+        fw.main()
+        self.assertEqual(len(self.delivered), 1, "an answered question must still be fulfilled")
+        self.assertEqual(self.delivered[0][1], WBTC_ETH)
+
+    def test_an_unanswered_question_delivers_nothing(self):
+        fw.resolve_token = lambda title: (None, None, [])
+        fw.read_buyer_reply = lambda job, buyer: (None, None)
+        json.dump({"0xjob": {"asked": True, "asked_at": time.time(),
+                             "first_seen": time.time() - 10_000}}, open(self.state, "w"))
+        fw.main()
+        self.assertEqual(self.delivered, [])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
