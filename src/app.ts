@@ -17,6 +17,7 @@ import {
   NotAContractError,
 } from "./dossier/report";
 import { renderDossierHtml } from "./dossier/render";
+import { renderDeliveryMessage } from "./dossier/message";
 import * as archive from "./dossier/archive";
 import { renderSiteHtml } from "./site";
 import { fontByPath } from "./fonts";
@@ -834,7 +835,7 @@ app.on(["GET", "POST"], "/dossier", async (c) => {
   try {
     const dossier = await buildDossier(parsed.data);
     const json = parsed.data.format === "json";
-    const body = json ? JSON.stringify(dossier) : renderDossierHtml(dossier);
+    const message = parsed.data.format === "message";
     // Archive before responding, and remember the key so the settlement
     // transaction can be attached once the SDK has settled.
     const id = archive.newId();
@@ -843,7 +844,21 @@ app.on(["GET", "POST"], "/dossier", async (c) => {
     // ones keyed on a publicly enumerable job id. x402 deliveries are keyed on
     // the settlement transaction and deliberately need no code: see the comment
     // on the recovery route.
+    //
+    // Minted before the body is built, because the delivery message quotes it:
+    // a buyer who is told to recover with a code has to be told the code in the
+    // same breath.
     const recovery = jobId ? archive.newRecoveryCode() : undefined;
+    const body = json
+      ? JSON.stringify(dossier)
+      : message
+        ? renderDeliveryMessage(dossier, {
+            jobId,
+            recoveryCode: recovery?.code,
+            endpoint: `${config.publicOrigin}/dossier`,
+            fromTicker: false,
+          })
+        : renderDossierHtml(dossier);
     archive.save({
       id,
       paramsSha256: archive.paramsHash(parsed.data as Record<string, unknown>),
@@ -854,7 +869,7 @@ app.on(["GET", "POST"], "/dossier", async (c) => {
         chain: dossier.token.chain,
       }),
       request: parsed.data as Record<string, unknown>,
-      contentType: json ? "application/json" : "text/html",
+      contentType: json ? "application/json" : message ? "text/plain" : "text/html",
       deliverable: body,
       deliveredAt: new Date().toISOString(),
       ...(jobId ? { jobId } : {}),
@@ -871,9 +886,9 @@ app.on(["GET", "POST"], "/dossier", async (c) => {
     // .txt file, and a buyer's first sight of the deliverable was a text blob.
     // `inline` so browsers still render it; the filename is only used on save.
     c.header("Content-Disposition", `inline; filename="${downloadName(dossier, json)}"`);
-    return json
-      ? c.json(dossier)
-      : c.html(body);
+    if (json) return c.json(dossier);
+    if (message) return c.text(body);
+    return c.html(body);
   } catch (e) {
     // Non-2xx responses are never settled, so none of these charge the buyer.
     if (e instanceof ChainNotFoundError) {

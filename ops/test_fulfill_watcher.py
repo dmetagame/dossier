@@ -228,90 +228,100 @@ class TestSymbolFolding(unittest.TestCase):
             self.assertIsNone(fw.decode_abi_string(bad), repr(bad))
 
 
-class TestBuyerFacingMessage(Harness):
-    """The delivery text a buyer actually receives.
+class TestSendsWhatTheServiceWrote(Harness):
+    """The watcher pastes the delivery text; it no longer composes it.
 
-    The 2026-08-02 payment-demand incident lived here, in text that shipped to
-    everyone while being true for almost nobody.
+    It used to build the buyer's message itself, and so did the AI session on
+    the other fulfilment path, from the same JSON. Two authors, one buyer, and
+    no way to tell which text a given buyer received. On 2026-08-03 the AI's
+    version told a buyer "safe position size ~ $78,345" for a token the next
+    line flagged as mintable with an unrenounced owner; the watcher's version
+    said "heuristic size cap", which is what the report says.
+
+    The words now live in src/dossier/message.ts and are asserted in
+    test/delivery-message.test.ts, next to the code that writes them. What is
+    left to test here is that the watcher changes nothing but the one line it
+    is supposed to change.
     """
 
-    recovery_code = "a1b2c3d4e5f60718"
+    SERVICE_TEXT = (
+        "DOSSIER REPORT - UNI (ethereum)\n\nVERDICT: CAUTION | heuristic size cap $78,345\n\n"
+        "ATTACHMENT_BLOCK\n\nYou owe nothing further for this report."
+    )
 
-    def deliver_and_capture(self):
+    def deliver_and_capture(self, upload=None):
         sent = {}
         report = {
-            "riskVerdict": {
-                "verdict": "caution",
-                "confidence": 0.4,
-                "maxSizeUsd": 1234,
-                "reasons": ["Contract control risk: upgradeable proxy."],
-            },
-            "token": {"symbol": "WBTC", "chain": "ethereum", "priceUsd": 1.0},
-            "sources": ["GoPlus", "ethereum RPC"],
+            "riskVerdict": {"verdict": "caution", "confidence": 0.4,
+                            "maxSizeUsd": 78345, "reasons": ["Contract control risk."]},
+            "token": {"symbol": "UNI", "chain": "ethereum", "priceUsd": 3.93},
+            "sources": ["GoPlus"],
         }
-        # fetch() returns a status-bearing result now, not a bare string: an
-        # error page used to be indistinguishable from a report and could be
-        # uploaded to the buyer as one. The HTML must also look like a report and
-        # name the token, which is what the delivery path checks before writing
-        # anything to disk.
         fw.fetch = lambda a, c, fmt, job=None: {
-            "ok": True,
-            "why": None,
-            "status": 200,
-            "body": json.dumps(report) if fmt == "json"
-            else "<html><body>report for %s</body></html>" % a,
-            "recoveryCode": self.recovery_code,
+            "ok": True, "why": None, "status": 200, "recoveryCode": "deadbeef" * 4,
+            "body": (json.dumps(report) if fmt == "json"
+                     else self.SERVICE_TEXT if fmt == "message"
+                     else "<html><body>report for %s</body></html>" % a),
         }
-        fw.jrun = lambda cmd, timeout=180: {}
-        fw.run = lambda cmd, timeout=180: types.SimpleNamespace(stdout="", stderr="", returncode=0, failure=None)
-
-        def capture(job, buyer, text):
-            sent["text"] = text
-            return True
-
-        fw.send_message = capture
-        for name in ("fetch", "jrun", "send_message"):
-            self.addCleanup(lambda n=name, v=getattr(fw, name): setattr(fw, n, v))
-
-        tmp = scratch(self)
-        cwd = os.getcwd()
-        os.chdir(tmp)
-        self.addCleanup(os.chdir, cwd)
+        fw.send_message = lambda job, buyer, text: (sent.__setitem__("text", text) or True)
+        fw.jrun = lambda cmd, timeout=180: (
+            upload if upload is not None else {"fileKey": "fk", "digest": "d", "salt": "s",
+                                              "nonce": "n", "secret": "x", "filename": "f.html"})
+        fw.run = lambda cmd, timeout=180: types.SimpleNamespace(
+            stdout="", stderr="", returncode=0, failure=None)
         fw.deliver("0x" + "a" * 64, "4844", WBTC_ETH, "ethereum")
-        return sent["text"]
+        return sent.get("text", "")
 
-    def test_never_asks_the_buyer_for_money(self):
-        text = self.deliver_and_capture().lower()
-        for phrase in (
-            "re-run your x402 task payment",
-            "re-run the task payment",
-            "pay again",
-            "second payment",
-            "send payment",
-        ):
-            self.assertNotIn(phrase, text, "a delivery message must never demand payment")
+    def setUp(self):
+        super().setUp()
+        self._saved = {n: getattr(fw, n) for n in ("fetch", "jrun", "send_message")}
+        self.addCleanup(lambda: [setattr(fw, n, v) for n, v in self._saved.items()])
 
-    def test_says_plainly_that_nothing_is_owed(self):
-        self.assertIn("owe nothing further", self.deliver_and_capture().lower())
+    def test_every_line_the_service_wrote_survives_verbatim(self):
+        text = self.deliver_and_capture()
+        for line in self.SERVICE_TEXT.split("\n"):
+            if line and line != "ATTACHMENT_BLOCK":
+                self.assertIn(line, text, "the watcher must not rewrite %r" % line)
 
-    def test_recovery_instructions_carry_the_second_factor(self):
-        """A bare job id stopped being proof of purchase on 2026-08-02.
+    def test_the_attachment_block_is_the_only_substitution(self):
+        text = self.deliver_and_capture()
+        self.assertNotIn("ATTACHMENT_BLOCK", text, "the marker must be replaced")
+        self.assertIn("fileKey fk", text)
+        self.assertIn("secret x", text)
 
-        If this message still told buyers to recover with the job id alone, it
-        would be handing them a call that returns 400. Which second factor it
-        names depends on whether the delivery minted a code, so this only
-        asserts that one is named; the subclass below pins the code form.
+    def test_a_failed_upload_says_so_rather_than_printing_a_dead_marker(self):
+        text = self.deliver_and_capture(upload={})
+        self.assertNotIn("ATTACHMENT_BLOCK", text)
+        self.assertIn("could not be uploaded", text)
+        # And the analysis still reaches the buyer, which is the point of
+        # sending at all.
+        self.assertIn("VERDICT: CAUTION", text)
+
+    def test_an_empty_body_with_a_200_means_no_message(self):
+        """The case a status check alone does not catch.
+
+        A proxy, a truncated response or a bad deploy can return 200 with
+        nothing in it. The status says the call succeeded, so only the emptiness
+        of the text itself can stop a blank message reaching the buyer, or worse
+        a locally invented one.
         """
-        text = self.deliver_and_capture()
-        self.assertIn("/recovery", text)
-        self.assertIn(WBTC_ETH, text)
-        self.assertTrue("recoveryCode" in text or "originalBody" in text,
-                        "the buyer must be told what to send besides the job id")
-
-    def test_states_the_verdict_and_the_contract_it_applies_to(self):
-        text = self.deliver_and_capture()
-        self.assertIn("CAUTION", text)
-        self.assertIn(WBTC_ETH, text)
+        report = {"riskVerdict": {"verdict": "caution", "reasons": []},
+                  "token": {"symbol": "UNI", "chain": "ethereum"}, "sources": []}
+        fw.fetch = lambda a, c, fmt, job=None: (
+            {"ok": True, "why": None, "status": 200, "body": json.dumps(report)}
+            if fmt == "json" else
+            {"ok": True, "why": None, "status": 200,
+             "body": "<html><body>report for %s</body></html>" % a}
+            if fmt == "html" else
+            {"ok": True, "why": None, "status": 200, "body": "", "recoveryCode": None})
+        sent = []
+        fw.send_message = lambda job, buyer, text: (sent.append(text) or True)
+        fw.jrun = lambda cmd, timeout=180: {"fileKey": "fk"}
+        fw.run = lambda cmd, timeout=180: types.SimpleNamespace(
+            stdout="", stderr="", returncode=0, failure=None)
+        res = fw.deliver("0x" + "a" * 64, "4844", WBTC_ETH, "ethereum")
+        self.assertEqual(res, fw.NOTHING_SENT)
+        self.assertEqual(sent, [], "no text means nothing is sent, not something invented")
 
 
 class TestAskTiming(unittest.TestCase):
@@ -791,32 +801,3 @@ class TestDeliveryIsStaged(unittest.TestCase):
         self.assertEqual(len(self.sent), 1, "the buyer must not receive a duplicate report")
         self.assertEqual(len(self.saves), 2, "but the registration is retried")
         self.assertTrue(st2["done"], "and a second failure closes it rather than looping")
-
-
-class TestRecoveryInstructionsUseTheCode(TestBuyerFacingMessage):
-    """The delivery message is the only place the recovery code ever exists.
-
-    Recovery used to be proved by pairing the job id with the request, and both
-    halves are public: job ids come out of the marketplace search, and "WBTC on
-    ethereum" is what most buyers of a WBTC report sent. The service now mints a
-    random code per delivery and stores only its hash, so this message is what
-    carries it to the buyer.
-    """
-
-    def test_the_code_is_printed_where_the_buyer_will_find_it(self):
-        text = self.deliver_and_capture()
-        self.assertIn(self.recovery_code, text)
-        self.assertIn("recoveryCode", text)
-        self.assertNotIn("originalBody", text,
-                         "the guessable form must not be offered beside the code")
-
-    def test_the_buyer_is_told_the_code_cannot_be_reissued(self):
-        text = self.deliver_and_capture().lower()
-        self.assertIn("keep that code", text)
-
-    def test_without_a_code_the_old_instructions_still_ship(self):
-        """Any delivery where the header did not arrive must stay recoverable."""
-        self.recovery_code = None
-        text = self.deliver_and_capture()
-        self.assertIn("originalBody", text)
-        self.assertIn("recovery", text.lower())

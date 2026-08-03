@@ -382,6 +382,36 @@ describe("recovery", () => {
     assert.equal((await good.json()).status, "recovered");
   });
 
+  test("format=message returns the deliverable text, with its code inline", async () => {
+    // The whole point: the sender receives a finished string. If it had to be
+    // assembled from JSON by whoever is sending, that is where "safe position
+    // size" came from.
+    const jobId = `0x${"f".repeat(64)}`;
+    const r = await app.request("/dossier", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-internal-key": process.env.INTERNAL_KEY ?? "",
+        "x-job-id": jobId,
+      },
+      body: JSON.stringify({ tokenAddress: ADDR.uni, chain: "ethereum", format: "message" }),
+    });
+    assert.equal(r.status, 200);
+    assert.match(r.headers.get("content-type") ?? "", /text\/plain/);
+    const text = await r.text();
+    assert.match(text, /VERDICT:/);
+    assert.match(text, /heuristic size cap/);
+    assert.ok(!/safe position size/i.test(text));
+
+    // The code quoted in the text is the one that actually recovers, not a
+    // second code minted for the header.
+    const code = text.match(/"recoveryCode":"([0-9a-f]{32})"/)?.[1];
+    assert.ok(code, "the message must quote the code it tells the buyer to use");
+    assert.equal(code, r.headers.get("x-recovery-code"));
+    const back = await post("/dossier/recovery", { jobId, recoveryCode: code });
+    assert.equal(back.status, 200, "the code printed in the message must work");
+  });
+
   test("a coded report cannot be recovered by guessing the request", async () => {
     // The whole point of the change. This is the exact pair the audit called
     // out: a job id anyone can enumerate, plus the request anyone would guess.

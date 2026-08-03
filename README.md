@@ -16,7 +16,7 @@ Free sample of a real generated report: https://dossier.rouma.xyz/dossier/sample
 
 | Route | Method | Price | What it does |
 |---|---|---|---|
-| `/dossier` | GET, POST | 0.01 USD₮0 | Full due-diligence report (`html` default, `json` optional) |
+| `/dossier` | GET, POST | 0.01 USD₮0 | Full due-diligence report (`html` default, `json` or `message`) |
 | `/dossier/recovery` | GET, POST | free | Re-fetch a report you already paid for: `paymentTransaction` alone, or `jobId` **with** `recoveryCode` |
 | `/dossier/preflight` | GET, POST | free | Coverage check for a token before you pay |
 | `/dossier/sample` | GET | free | Real sample report, cached |
@@ -273,6 +273,18 @@ backend attachment registration is not available for x402 tasks). The practical
 consequence is that the **endpoint host must be reachable from the buyer's environment**,
 which is why the service runs on a dedicated domain rather than a shared `*.vercel.app`
 host that some corporate networks filter.
+
+`format: "message"` returns the buyer-facing delivery text itself, finished, from the same
+run that produced the report. Both fulfilment paths fetch it and paste it; neither writes
+it. They used to write their own, from the same JSON, and the two disagreed: on
+2026-08-03 one of them told a buyer "safe position size ≈ $78,345" for a token the next
+line of the same message flagged as mintable with an unrenounced owner. The number is 1%
+of the deepest pool's base-side liquidity, halved on caution, and the report calls it a
+heuristic size cap. A service whose claim is that no LLM touches the analysis cannot have
+one paraphrasing the verdict into the buyer's inbox.
+
+The text carries a single substitution marker, `ATTACHMENT_BLOCK`, replaced with the
+encrypted-attachment parameters that only exist after the upload. Nothing else is edited.
 
 An `okx-a2a` daemon (on an always-on VPS, not in this repo) additionally watches accepted
 jobs and can send the report summary plus retrieval details to the buyer as an A2A/XMTP

@@ -71,7 +71,9 @@ export const DossierRequest = z.object({
   // Optional: omitted means "auto-detect", resolved only when unambiguous.
   chain: ChainName.optional(),
   tokenAddress: z.string().regex(/^0x[a-fA-F0-9]{40}$/, "must be an EVM address"),
-  format: z.enum(["html", "json"]).default("html"),
+  // "message" returns the buyer-facing delivery text, generated here so that
+  // whoever sends it pastes rather than paraphrases. See src/dossier/message.ts.
+  format: z.enum(["html", "json", "message"]).default("html"),
 });
 export type DossierRequest = z.infer<typeof DossierRequest>;
 

@@ -679,108 +679,60 @@ def deliver(job, buyer, addr, chain, from_ticker=False, already_messaged=False):
         up = jrun([OKXA2A, "file", "upload", "--file-path", path, "--agent-id", ASP,
                    "--job-id", job, "--filename", "dossier-%s.html" % safe_sym,
                    "--mime-type", "text/html"], timeout=240) or {}
+        # One more call, for the text the buyer reads. It is fetched with the
+        # job id so the code it quotes is the code filed against this delivery.
+        msg = fetch(addr, chain, "message", job)
+        if not msg["ok"]:
+            log("  could not fetch the delivery text (%s); not sending" % msg["why"])
+            return NOTHING_SENT
         return _finish(job, buyer, addr, chain, from_ticker, data, path, sym, up,
-                       already_messaged, page.get("recoveryCode"))
+                       already_messaged, msg.get("recoveryCode"), msg["body"])
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 def _finish(job, buyer, addr, chain, from_ticker, data, path, sym, up,
-            already_messaged=False, recovery_code=None):
-    """Compose the message, send it, and register the deliverable.
+            already_messaged=False, recovery_code=None, text=None):
+    """Send the delivered text and register the deliverable.
+
+    The message is no longer composed here. `/dossier` with format=message
+    returns it finished, from the same run that minted the recovery code, and
+    this function substitutes exactly one line: the attachment parameters, which
+    only exist after the upload above.
+
+    Composing it in two places is how the two places came to disagree. The
+    version an AI session sent a buyer on 2026-08-03 called the size cap a "safe
+    position size" for a token the next line flagged as mintable with an
+    unrenounced owner. This one never did, and that is the problem: nobody could
+    tell which text a given buyer had received.
 
     Runs inside deliver()'s temp directory so `task-deliverable-save` still has
     a file to read. It used to run after the directory had been removed, which
     made every registration fail against a path that no longer existed.
     """
     v = data["riskVerdict"]
-    tok = data.get("token") or {}
-    L = []
-    L.append("DOSSIER REPORT - %s (%s)" % (sym, tok.get("chain")))
-    L.append("")
-    # Wording matches the report itself. "safe" is not a claim a 1%-of-deepest-
-    # pool rule of thumb supports, and the buyer is holding the document that
-    # calls it a heuristic.
-    L.append("VERDICT: %s | data coverage %s | heuristic size cap $%s" % (
-        str(v.get("verdict")).upper(),
-        ("%d%%" % round(float(v.get("confidence") or 0) * 100)),
-        money(v.get("maxSizeUsd")) if v.get("maxSizeUsd") is not None else "n/a"))
-    L.append("")
-    L.append("KEY FINDINGS:")
-    for r_ in v.get("reasons", []):
-        L.append("  - " + r_)
-    L.append("")
-    L.append("SNAPSHOT: price $%s | liquidity $%s | 24h volume $%s | holders %s" % (
-        fmt_price(tok.get("priceUsd")), money(tok.get("liquidityUsd")),
-        money(tok.get("volume24hUsd")),
-        money(tok.get("holderCount")) if tok.get("holderCount") else "n/a"))
-    L.append("CONTRACT: %s" % addr)
-    if from_ticker:
-        # The buyer named a ticker, not an address. Say so, so a mismatch is
-        # caught by the person who knows which token they meant.
-        L.append("  (resolved from the ticker in the job title, by far the deepest"
-                 " token trading under it. If you meant a different contract,"
-                 " reply with its address and I will re-run this.)")
-    L.append("SOURCES: %s" % ", ".join(data.get("sources") or []))
-    L.append("")
-    if up.get("fileKey"):
-        L.append("FULL HTML REPORT (encrypted attachment in this job's file channel):")
-        for k in ("fileKey", "digest", "salt", "nonce", "secret", "filename"):
-            L.append("  %s %s" % (k, up.get(k)))
-        L.append("  retrieve with: okx-a2a file download --file-key <fileKey> "
-                 "--agent-id <yourAgentId> --digest <digest> --salt <salt> "
-                 "--nonce <nonce> --secret <secret>")
-        L.append("")
-    # The job id alone no longer recovers a report, because job ids are publicly
-    # enumerable and were letting anyone read reports they had not paid for. It
-    # now has to be paired with the request itself, which the buyer has: it is
-    # printed two lines up in this same message.
-    L.append("LOST THIS REPORT? Re-fetch the exact copy sent to you, free:")
-    if recovery_code:
-        # A one-time code, printed here and nowhere else. It replaces pairing the
-        # job id with the request, which was guessable: "WBTC on ethereum" is
-        # what most buyers of a WBTC report sent, and job ids are public, so that
-        # pair let anyone read a report they had not bought.
-        L.append('  POST %s/recovery  body {"jobId":"%s",' % (ENDPOINT, job))
-        L.append('    "recoveryCode":"%s"}' % recovery_code)
-        L.append("  Keep that code. It is not stored here in a form we can read")
-        L.append("  back to you, and this message is the only copy.")
-    else:
-        # Older records, and any delivery where the header did not arrive, still
-        # recover by pairing the job id with the request that paid for it.
-        L.append('  POST %s/recovery  body {"jobId":"%s",' % (ENDPOINT, job))
-        L.append('    "originalBody":{"tokenAddress":"%s"%s}}' % (
-            addr, (',"chain":"%s"' % chain) if chain else ""))
-    L.append("")
-    # NOTHING HERE MAY ASK A BUYER FOR MONEY.
-    #
-    # This block used to say "TO CLOSE THIS TASK: re-run your x402 task payment".
-    # It was written for one stalled buyer whose replay had failed, but it sat
-    # unconditionally in the delivery message, so every buyer received it —
-    # including buyers who had already paid successfully. For them the claim was
-    # simply false, and an automated message demanding a second payment is
-    # indistinguishable from a scam. It earned a 3-star review on 2026-08-02
-    # saying exactly that, and it deserved to.
-    #
-    # The watcher cannot tell from here whether a given buyer's payment settled,
-    # so it must not assert anything about their payment state. A stuck task is a
-    # small problem; looking like a fraud is not. Anyone genuinely stuck is
-    # handled case by case, by a human, off this path.
-    L.append("You owe nothing further for this report. This message never asks")
-    L.append("for payment.")
-    L.append("")
-    L.append("Endpoint, if you want the document outside the task: POST %s" % ENDPOINT)
+    if not text:
+        log("  no delivery text from the service; not sending a report")
+        return NOTHING_SENT
 
-    # Three stages, reported separately. `deliver` used to return the result of
-    # the message send alone, so a job counted as done when the upload had
-    # produced no fileKey and when the deliverable was never registered — the
-    # two things OKX review actually looks for. Worse, the single bool meant a
-    # retry could only redo everything, which would send the buyer a second copy
-    # of a message they already had.
+    block = []
+    if up.get("fileKey"):
+        block.append("FULL HTML REPORT (encrypted attachment in this job's file channel):")
+        for k in ("fileKey", "digest", "salt", "nonce", "secret", "filename"):
+            block.append("  %s %s" % (k, up.get(k)))
+        block.append("  retrieve with: okx-a2a file download --file-key <fileKey> "
+                     "--agent-id <yourAgentId> --digest <digest> --salt <salt> "
+                     "--nonce <nonce> --secret <secret>")
+    else:
+        block.append("(The HTML attachment could not be uploaded for this delivery. "
+                     "Everything above is the full analysis; the recovery call below "
+                     "returns the document itself.)")
+    body = text.replace("ATTACHMENT_BLOCK", "\n".join(block))
+
     uploaded = bool(up.get("fileKey"))
     # On a registration-only retry the buyer already has this report. Sending it
     # again would be the duplicate-message failure the staging exists to avoid.
-    messaged = True if already_messaged else send_message(job, buyer, "\n".join(L))
+    messaged = True if already_messaged else send_message(job, buyer, body)
     rec = run([ONCHAINOS, "agent", "task-deliverable-save", "--job-id", job, "--role", "asp",
                "--file", path, "--title", "Due-diligence dossier: %s" % sym,
                "--short-id", job[:6] + "-" + job[-4:]])
