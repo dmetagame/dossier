@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 // DexScreener pairs API — free, no key, reachable from the dev box.
 // Gives liquidity depth, volume, price, and pair age across chains incl. X Layer.
 
-import type { SourceStatus } from "./goplus";
+import type { SourceStatus, Provenance } from "./goplus";
 import { SUPPORTED_CHAINS } from "../schema";
 
 // Cross-chain resolution for "just an address" requests. The tokens endpoint
@@ -33,6 +33,55 @@ export type ChainResolution =
   | { status: "unavailable" };
 
 /**
+ * One DexScreener call, shared by chain resolution and market analysis.
+ *
+ * Both used to fetch the identical URL independently: the resolver to rank
+ * chains, then the analyser to measure the chain it picked. Two calls for the
+ * same bytes, and the token can move between them, so the chain a report chose
+ * was not reproducible from the response the report attests to. Fetch once, pass
+ * the payload down, and the whole report describes one observation.
+ */
+export interface TokenPairs {
+  status: SourceStatus;
+  pairs: any[];
+  provenance?: Provenance;
+}
+
+export async function fetchTokenPairs(address: string): Promise<TokenPairs> {
+  const url = `https://api.dexscreener.com/latest/dex/tokens/${address}`;
+  // One respectful retry on 429; a still-failing source is "unavailable", never
+  // silently equated with "no market for this token".
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+      if (res.status === 429 && attempt === 0) {
+        await new Promise((r) => setTimeout(r, 1500));
+        continue;
+      }
+      if (!res.ok) return { status: "unavailable", pairs: [] };
+      const body = await res.text();
+      const provenance: Provenance = {
+        url,
+        retrievedAt: new Date().toISOString(),
+        responseSha256: createHash("sha256").update(body).digest("hex"),
+      };
+      let json: { pairs?: any[] };
+      try {
+        json = JSON.parse(body) as { pairs?: any[] };
+      } catch {
+        // A 200 carrying unparseable bytes is an upstream fault, not evidence
+        // that the token has no market.
+        return { status: "unavailable", pairs: [], provenance };
+      }
+      return { status: "ok", pairs: Array.isArray(json.pairs) ? json.pairs : [], provenance };
+    } catch {
+      return { status: "unavailable", pairs: [] };
+    }
+  }
+  return { status: "unavailable", pairs: [] };
+}
+
+/**
  * The liquidity the report will actually judge, for one chain's pairs.
  *
  * Chain ranking and market analysis have to agree on what "deepest" means. They
@@ -59,17 +108,12 @@ export function finiteUsd(v: unknown): number {
   return Number.isFinite(n) && n >= 0 ? n : 0;
 }
 
-export async function resolveChain(address: string): Promise<ChainResolution> {
-  let json: { pairs?: any[] } | null = null;
-  try {
-    const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${address}`, {
-      signal: AbortSignal.timeout(8000),
-    });
-    if (!res.ok) return { status: "unavailable" };
-    json = (await res.json()) as { pairs?: any[] };
-  } catch {
-    return { status: "unavailable" };
-  }
+export async function resolveChain(address: string, shared?: TokenPairs): Promise<ChainResolution> {
+  // `shared` is the single fetch the caller already made. Fetching here as well
+  // is the fallback for callers that have not adopted it.
+  const payload = shared ?? (await fetchTokenPairs(address));
+  if (payload.status !== "ok") return { status: "unavailable" };
+  const json = { pairs: payload.pairs };
   const addr = address.toLowerCase();
   // Rank candidate chains by the token's pooled liquidity on each.
   const byChain = new Map<string, any[]>();
@@ -119,34 +163,18 @@ export interface MarketSnapshot {
   pairCount?: number;
 }
 
-export async function fetchDexScreener(chain: string, address: string): Promise<MarketSnapshot> {
-  // One respectful retry on 429; a still-failing source is "unavailable",
-  // never silently equated with "no market for this token".
-  let json: { pairs?: any[] } | null = null;
-  let marketProvenance: MarketSnapshot["provenance"];
-  for (let attempt = 0; attempt < 2 && !json; attempt++) {
-    try {
-      const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${address}`, {
-        signal: AbortSignal.timeout(8000),
-      });
-      if (res.ok) {
-        marketProvenance = {
-          url: `https://api.dexscreener.com/latest/dex/tokens/${address}`,
-          retrievedAt: new Date().toISOString(),
-          responseSha256: createHash("sha256").update(await res.clone().text()).digest("hex"),
-        };
-      }
-      if (res.status === 429 && attempt === 0) {
-        await new Promise((r) => setTimeout(r, 1500));
-        continue;
-      }
-      if (!res.ok) return { status: "unavailable" };
-      json = (await res.json()) as { pairs?: any[] };
-    } catch {
-      return { status: "unavailable" };
-    }
-  }
-  if (!json) return { status: "unavailable" };
+export async function fetchDexScreener(
+  chain: string,
+  address: string,
+  shared?: TokenPairs,
+): Promise<MarketSnapshot> {
+  // Reuse the caller's single fetch when it has one. Fetching independently is
+  // what let the resolver rank chains on one observation and the analyser
+  // measure a different one taken moments later.
+  const payload = shared ?? (await fetchTokenPairs(address));
+  if (payload.status !== "ok") return { status: "unavailable" };
+  const marketProvenance = payload.provenance;
+  const json = { pairs: payload.pairs };
   const chainKey = chain.toLowerCase() === "ethereum" ? "ethereum" : chain.toLowerCase();
   const addr = address.toLowerCase();
   // The tokens endpoint returns pairs where the token is on EITHER side.

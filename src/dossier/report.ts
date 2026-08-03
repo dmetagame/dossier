@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { resolveChain } from "../engine/sources/dexscreener";
+import { resolveChain, fetchTokenPairs } from "../engine/sources/dexscreener";
 import { evaluate, fetchSources, SourcesUnavailableError } from "../engine/engine";
 import { ChainName, SUPPORTED_CHAINS } from "../engine/schema";
 import {
@@ -22,6 +22,13 @@ export interface ChainResolutionInfo {
   source: "specified" | "auto-detected";
   ambiguous: boolean;
   alternatives: string[];
+  /**
+   * Liquidity per candidate chain, under the rule the report then analyses with.
+   * Present only when we chose. It makes the choice checkable rather than
+   * asserted: the report claims it picked the deepest deployment, and this is
+   * the arithmetic behind that claim.
+   */
+  consideredUsd?: Record<string, number>;
 }
 
 // Chain omitted and no supported chain has a market for the address.
@@ -88,13 +95,17 @@ export interface Preflight {
  */
 export async function preflight(req: DossierRequest): Promise<Preflight> {
   let chain = req.chain as z.infer<typeof ChainName>;
+  // One DexScreener observation for the whole call: resolution and analysis used
+  // to fetch the same URL separately, so the chain could be chosen from one
+  // snapshot and measured on another taken moments later.
+  const pairs = await fetchTokenPairs(req.tokenAddress);
   if (!chain) {
-    const resolved = await resolveChain(req.tokenAddress);
+    const resolved = await resolveChain(req.tokenAddress, pairs);
     if (resolved.status === "not_found") throw new ChainNotFoundError();
     if (resolved.status === "unavailable") throw new SourcesUnavailableError();
     chain = resolved.chain;
   }
-  const snapshot = await fetchSources(chain, req.tokenAddress);
+  const snapshot = await fetchSources(chain, req.tokenAddress, pairs);
   const { sec, market, chain: chainFacts } = snapshot;
   if (sec.status === "unavailable" && market.status === "unavailable") {
     throw new SourcesUnavailableError();
@@ -201,8 +212,13 @@ export async function buildDossier(req: DossierRequest): Promise<Dossier> {
     ambiguous: false,
     alternatives: [],
   };
+  // One DexScreener observation for the whole report. Both the resolver and the
+  // market analysis hit the identical URL independently, so a report could rank
+  // chains on one response and measure the winner on another, and the chain it
+  // chose was not reproducible from the bytes it attests to.
+  const pairs = await fetchTokenPairs(req.tokenAddress);
   if (!chain) {
-    const resolved = await resolveChain(req.tokenAddress);
+    const resolved = await resolveChain(req.tokenAddress, pairs);
     if (resolved.status === "not_found") throw new ChainNotFoundError();
     if (resolved.status === "unavailable") throw new SourcesUnavailableError();
     chain = resolved.chain;
@@ -210,6 +226,9 @@ export async function buildDossier(req: DossierRequest): Promise<Dossier> {
       source: "auto-detected",
       ambiguous: resolved.ambiguous,
       alternatives: resolved.alternatives,
+      // The depths the choice rested on, from the same observation the rest of
+      // the report describes.
+      consideredUsd: resolved.consideredUsd,
     };
   }
 
@@ -217,7 +236,7 @@ export async function buildDossier(req: DossierRequest): Promise<Dossier> {
   // checks must describe the same snapshot: fetching separately let a document
   // print a tax rate in one section while the checks table said the security
   // source had returned nothing.
-  const snapshot = await fetchSources(chain, req.tokenAddress);
+  const snapshot = await fetchSources(chain, req.tokenAddress, pairs);
   const { sec, market, chain: chainFacts } = snapshot;
 
   if (sec.status === "unavailable" && market.status === "unavailable") {

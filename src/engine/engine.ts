@@ -1,6 +1,6 @@
 import type { Verdict, RiskRequest, CheckResult } from "./schema";
 import { fetchGoPlus, goplusSupports } from "./sources/goplus";
-import { fetchDexScreener } from "./sources/dexscreener";
+import { fetchDexScreener, type TokenPairs } from "./sources/dexscreener";
 import { fetchChainFacts, rpcSupports, type RpcSnapshot } from "./sources/rpc";
 
 // Thrown when no data source could be reached at all — the caller must
@@ -38,11 +38,16 @@ export interface SourceSnapshot {
   startedAt: number;
 }
 
-export async function fetchSources(chain: string, tokenAddress: string): Promise<SourceSnapshot> {
+export async function fetchSources(
+  chain: string,
+  tokenAddress: string,
+  /** The caller's single DexScreener observation, so the whole report describes one. */
+  sharedPairs?: TokenPairs,
+): Promise<SourceSnapshot> {
   const startedAt = Date.now();
   const [sec, market, chainFacts] = await Promise.all([
     goplusSupports(chain) ? fetchGoPlus(chain, tokenAddress) : Promise.resolve({ status: "not_found" } as const),
-    fetchDexScreener(chain, tokenAddress),
+    fetchDexScreener(chain, tokenAddress, sharedPairs),
     rpcSupports(chain)
       ? fetchChainFacts(chain, tokenAddress)
       : Promise.resolve({ status: "unavailable" } as const),

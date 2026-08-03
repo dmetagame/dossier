@@ -8,6 +8,7 @@ import { stubUpstream, withStub, ADDR } from "./helpers";
 import { evaluate, fetchSources, SourcesUnavailableError, honeypotCheck as sellability, controlCheck } from "../src/engine/engine";
 import { taxPct } from "../src/engine/sources/goplus";
 import { comparableLiquidity, finiteUsd } from "../src/engine/sources/dexscreener";
+import { preflight } from "../src/dossier/report";
 
 let restore: () => void;
 before(() => {
@@ -281,5 +282,48 @@ describe("chain resolution measures what the report will measure", () => {
     }
     assert.equal(finiteUsd(1234), 1234);
     assert.equal(finiteUsd("1234"), 1234);
+  });
+});
+
+// Resolution and analysis both hit the identical DexScreener URL independently,
+// so a report could rank chains on one observation and measure the winner on
+// another taken moments later, and the chain it chose was not reproducible from
+// the bytes it attests to.
+describe("a report describes one DexScreener observation, not two", () => {
+  test("auto-detecting a chain does not fetch the same URL twice", async () => {
+    const calls: string[] = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (u: any, init?: any) => {
+      const url = String(u);
+      if (url.includes("dexscreener")) calls.push(url);
+      return realFetch(u, init);
+    }) as any;
+    try {
+      await preflight({ tokenAddress: ADDR.cake, format: "html" } as any);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+    const tokenCalls = calls.filter((u) => u.includes("/dex/tokens/"));
+    assert.equal(
+      tokenCalls.length,
+      1,
+      `chain resolution and market analysis must share one fetch, saw ${tokenCalls.length}`,
+    );
+  });
+
+  test("an explicit chain also makes exactly one call", async () => {
+    const calls: string[] = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (u: any, init?: any) => {
+      const url = String(u);
+      if (url.includes("dexscreener")) calls.push(url);
+      return realFetch(u, init);
+    }) as any;
+    try {
+      await preflight({ tokenAddress: ADDR.cake, chain: "bsc", format: "html" } as any);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+    assert.equal(calls.filter((u) => u.includes("/dex/tokens/")).length, 1);
   });
 });
