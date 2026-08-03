@@ -14,11 +14,24 @@
 // different, and is real knowledge: it means the buyer sent a wallet address or
 // a contract that does not exist, which is worth refusing before payment.
 
+// More than one endpoint per chain, because a single public RPC is a single
+// point of failure and these rate limit. Pinning reads to a block costs one
+// extra request per report, which made a chain with only one endpoint fail
+// intermittently: publicnode answered 403 and the whole snapshot went
+// unavailable, so a report simply lost its on-chain section.
+//
+// Every fallback below was checked from the deploy host, which is the only place
+// whose answer matters: eth.llamarpc.com and base.llamarpc.com both 403 from
+// there, and polygon-rpc.com 401s, so none of them are listed.
 const RPC_URLS: Record<string, string[]> = {
-  ethereum: ["https://ethereum-rpc.publicnode.com"],
-  bsc: ["https://bsc-rpc.publicnode.com"],
-  base: ["https://base-rpc.publicnode.com"],
-  arbitrum: ["https://arbitrum-one-rpc.publicnode.com"],
+  ethereum: ["https://ethereum-rpc.publicnode.com", "https://rpc.ankr.com/eth"],
+  bsc: [
+    "https://bsc-rpc.publicnode.com",
+    "https://bsc-dataseed.binance.org",
+    "https://bsc-dataseed1.defibit.io",
+  ],
+  base: ["https://base-rpc.publicnode.com", "https://mainnet.base.org"],
+  arbitrum: ["https://arbitrum-one-rpc.publicnode.com", "https://arb1.arbitrum.io/rpc"],
   polygon: ["https://polygon-bor-rpc.publicnode.com"],
   // X Layer's own public endpoints, with OKX's as the fallback.
   xlayer: ["https://rpc.xlayer.tech", "https://xlayerrpc.okx.com"],
