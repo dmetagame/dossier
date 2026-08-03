@@ -81,7 +81,14 @@ before doing anything by hand.
         `okx-a2a xmtp-send --session-key "job:<jobId>:my:<myAgentId>:to:<buyerAgentId>" --message "<message>" --json`
         The message MUST be self-contained — assume the buyer can neither download
         the attachment nor call the endpoint. In this order:
-        1. the verdict line (verdict, confidence, safe position size),
+        1. the verdict line: verdict, data coverage, and the size cap called
+           by its real name, **"heuristic size cap"**. Never "safe position
+           size". It is 1% of the deepest pool's base-side liquidity, halved on
+           caution; "safe" is not a claim that rule of thumb supports, and the
+           report the buyer is holding calls it a heuristic. This line said
+           "safe position size" until 2026-08-03 and a buyer was told
+           "safe position size ~ $78,345" for a token the same message flagged
+           as mintable with an unrenounced owner.
         2. every key finding as plain text (the report's "Key findings" list),
         3. the attachment params (fileKey/digest/salt/nonce/secret/filename),
         4. the recovery instructions, in this exact form:
