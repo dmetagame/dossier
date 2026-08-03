@@ -398,3 +398,33 @@ describe("deliverables are named", () => {
     assert.match(r.headers.get("content-disposition") ?? "", /\.json"/);
   });
 });
+
+// HEAD is a payable method so that unpaid probes and OKX's validator still get a
+// 402, but Hono dispatches it to the GET handler and HTTP then strips the body.
+// A paid HEAD therefore ran every upstream source, built the report, archived it,
+// and returned 200 with zero bytes — and 200 is what the SDK settles on. The
+// caller was charged for nothing, which is the one thing this service promises
+// never to do.
+describe("HEAD on the paid route", () => {
+  test("is refused rather than served, and cannot settle", async () => {
+    const r = await app.request(`/dossier?tokenAddress=${ADDR.cake}&chain=bsc`, { method: "HEAD" });
+    assert.equal(r.status, 405, "must not be a 2xx, or the payment settles");
+    assert.equal(r.headers.get("allow"), "GET, POST");
+  });
+
+  test("does no work: no report is built and nothing is archived", async () => {
+    const before = archive.byHash(archive.paramsHash({ tokenAddress: ADDR.uni, chain: "ethereum" }));
+    await app.request(`/dossier?tokenAddress=${ADDR.uni}&chain=ethereum`, { method: "HEAD" });
+    const after = archive.byHash(archive.paramsHash({ tokenAddress: ADDR.uni, chain: "ethereum" }));
+    assert.equal(
+      after?.id,
+      before?.id,
+      "a HEAD that archives a report has done the work and returned nothing",
+    );
+  });
+
+  test("GET and POST are untouched", async () => {
+    assert.equal((await get(`/dossier?tokenAddress=${ADDR.cake}&chain=bsc`)).status, 200);
+    assert.equal((await post("/dossier", { tokenAddress: ADDR.cake, chain: "bsc" })).status, 200);
+  });
+});

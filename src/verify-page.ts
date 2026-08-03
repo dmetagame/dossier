@@ -25,23 +25,43 @@ function canonical(v) {
 const hex = (buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
 const b64u = (s) => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
 
+// Everything rendered below is built as DOM nodes, with external values assigned
+// through textContent. Nothing an attestation carries is ever parsed as markup.
+//
+// This used to concatenate strings into innerHTML, which made every field of a
+// pasted attestation an XSS vector on this origin: reportId, token, verdict,
+// issuer, methodology, and every source name and status went into the document
+// verbatim. A crafted ?attestation= link executed script here, and it executed
+// whether or not the signature checked out, because the rendering happened
+// either way. On a page whose whole purpose is proving a document has not been
+// tampered with, that was the worst possible place for it.
+function el(tag, cls, text) {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text !== undefined && text !== null) n.textContent = String(text);
+  return n;
+}
+
 function line(ok, text) {
-  return '<div class="r ' + (ok === true ? "ok" : ok === false ? "no" : "na") + '">' +
-    (ok === true ? "PASS" : ok === false ? "FAIL" : "  · ") + "  " + text + "</div>";
+  const d = el("div", "r " + (ok === true ? "ok" : ok === false ? "no" : "na"));
+  d.appendChild(el("span", "tag", ok === true ? "PASS" : ok === false ? "FAIL" : "·"));
+  d.appendChild(el("span", null, "  " + text));
+  return d;
 }
 
 async function run() {
-  out.innerHTML = "";
+  out.replaceChildren();
   let att;
   try {
     att = JSON.parse($("#input").value);
   } catch (e) {
-    out.innerHTML = line(false, "That is not valid JSON.");
+    out.replaceChildren(line(false, "That is not valid JSON."));
     return;
   }
+  const wholeReport = Boolean(att && att.attestation);
   if (att.attestation) att = att.attestation;
   if (!att || !att.payload) {
-    out.innerHTML = line(false, "No attestation found. Paste the report's attestation object, or the whole JSON report.");
+    out.replaceChildren(line(false, "No attestation found. Paste the report's attestation object, or the whole JSON report."));
     return;
   }
 
@@ -49,54 +69,73 @@ async function run() {
   const digest = hex(await crypto.subtle.digest("SHA-256", canonicalBytes));
   const hashOk = digest === att.payloadSha256;
 
-  let html = line(hashOk, hashOk
+  const frag = document.createDocumentFragment();
+  frag.appendChild(line(hashOk, hashOk
     ? "The payload hashes to the value in the attestation."
-    : "The payload does NOT hash to the stated value: it has been altered.");
-  html += '<div class="mono small">recomputed ' + digest + "</div>";
+    : "The payload does NOT hash to the stated value: it has been altered."));
+  frag.appendChild(el("div", "mono small", "recomputed " + digest));
 
   const pinned = $("#key").value.trim();
   const key = pinned || att.publicKey;
   if (!att.signature) {
-    html += line(null, "This report carries no signature, only a hash.");
+    frag.appendChild(line(null, "This report carries no signature, only a hash."));
   } else if (!key) {
-    html += line(null, "No public key to check against. Fetch one from /.well-known/dossier-signing-key.json.");
+    frag.appendChild(line(null, "No public key to check against. Fetch one from /.well-known/dossier-signing-key.json."));
   } else if (pinned && att.publicKey && pinned !== att.publicKey) {
-    html += line(false, "Signed by a different key than the one you pinned.");
+    frag.appendChild(line(false, "Signed by a different key than the one you pinned."));
   } else {
     try {
       const pub = await crypto.subtle.importKey("jwk",
         { kty: "OKP", crv: "Ed25519", x: key }, { name: "Ed25519" }, false, ["verify"]);
       const sigOk = await crypto.subtle.verify("Ed25519", pub, b64u(att.signature), canonicalBytes);
-      html += line(sigOk, sigOk
+      frag.appendChild(line(sigOk, sigOk
         ? "The signature is valid for this payload and key."
-        : "The signature is NOT valid for this payload and key.");
+        : "The signature is NOT valid for this payload and key."));
     } catch (e) {
-      html += line(null, "This browser could not run Ed25519 (" + e.message + "). Use the Node snippet below.");
+      frag.appendChild(line(null, "This browser could not run Ed25519 (" + e.message + "). Use the Node snippet below."));
     }
   }
 
+  // What the signature does and does not commit to. The payload covers the
+  // verdict, the coverage figure, the size cap, each check's status, the token
+  // and chain, the block, and the source observations. It does not cover the
+  // prose explanations, the market numbers, the security flags, or the token's
+  // name and supply. Saying "this report is verified" when only the payload was
+  // checked would overstate it, so the distinction is on the page.
+  frag.appendChild(line(null, wholeReport
+    ? "Checked: the attestation inside this report. The verdict, coverage, size cap and check statuses are covered. The written explanations and the market and security figures are not."
+    : "Checked: this attestation payload. It covers the verdict, coverage, size cap and check statuses, not the report's prose or its market and security figures."));
+
   const p = att.payload;
-  html += '<div class="facts">'
-    + row("Report", p.reportId)
-    + row("Token", (p.token && p.token.address) + " on " + (p.token && p.token.chain))
-    + row("Verdict", p.result && p.result.verdict)
-    + row("Coverage", p.result && (p.result.coverage * 100) + "%")
-    + row("Issued", p.issuedAt)
-    + row("Issuer", p.issuer && ("agent #" + p.issuer.agentId))
-    + row("Block", p.blockNumber ? (p.chainId + " @ " + p.blockNumber) : "not recorded")
-    + row("Methodology", p.methodologyVersion)
-    + "</div>";
+  const facts = el("div", "facts");
+  const add = (k, v) => facts.appendChild(row(k, v));
+  add("Report", p.reportId);
+  add("Token", (p.token && p.token.address) + " on " + (p.token && p.token.chain));
+  add("Verdict", p.result && p.result.verdict);
+  add("Coverage", p.result && (p.result.coverage * 100) + "%");
+  add("Issued", p.issuedAt);
+  add("Issuer", p.issuer && ("agent #" + p.issuer.agentId));
+  add("Block", p.blockNumber ? (p.chainId + " @ " + p.blockNumber) : "not recorded");
+  add("Methodology", p.methodologyVersion);
+  frag.appendChild(facts);
+
   if (p.observations && p.observations.length) {
-    html += '<div class="facts"><div class="h">Sources, as read at issue time</div>'
-      + p.observations.map((o) => row(o.source, o.status
+    const box = el("div", "facts");
+    box.appendChild(el("div", "h", "Sources, as read at issue time"));
+    for (const o of p.observations) {
+      box.appendChild(row(o.source, o.status
         + (o.retrievedAt ? " · " + o.retrievedAt : "")
-        + (o.responseSha256 ? " · sha256 " + o.responseSha256.slice(0, 16) + "…" : ""))).join("")
-      + "</div>";
+        + (o.responseSha256 ? " · sha256 " + String(o.responseSha256).slice(0, 16) + "…" : "")));
+    }
+    frag.appendChild(box);
   }
-  out.innerHTML = html;
+  out.replaceChildren(frag);
 }
 function row(k, v) {
-  return '<div class="f"><span>' + k + "</span><span class=\"mono\">" + (v == null ? "—" : String(v)) + "</span></div>";
+  const d = el("div", "f");
+  d.appendChild(el("span", null, k));
+  d.appendChild(el("span", "mono", v == null ? "—" : String(v)));
+  return d;
 }
 $("#go").addEventListener("click", run);
 
@@ -111,7 +150,7 @@ $("#go").addEventListener("click", run);
     $("#input").value = JSON.stringify(JSON.parse(json), null, 2);
     run();
   } catch (e) {
-    out.innerHTML = line(false, "The attestation in this link could not be decoded.");
+    out.replaceChildren(line(false, "The attestation in this link could not be decoded."));
   }
 })();
 $("#fetchkey").addEventListener("click", async () => {
@@ -156,6 +195,7 @@ button:focus-visible,a:focus-visible,textarea:focus-visible,input:focus-visible{
 #out{margin-top:1.75rem}
 .r{font:.9375rem/1.5 var(--mono);padding:.6rem .8rem;border-radius:7px;margin-bottom:.4rem;
   border:1px solid var(--line);background:var(--paper)}
+.r .tag{display:inline-block;min-width:3.2em;font-weight:600}
 .r.ok{color:var(--ok);border-color:rgba(28,143,90,.35)}
 .r.no{color:var(--no);border-color:rgba(192,43,43,.35)}
 .r.na{color:var(--na)}

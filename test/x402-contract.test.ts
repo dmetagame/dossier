@@ -13,6 +13,7 @@ import {
 } from "../src/x402-contract";
 import { SUPPORTED_CHAINS } from "../src/engine/schema";
 import { config } from "../src/config";
+import { renderVerifyHtml } from "../src/verify-page";
 
 describe("the published input contract", () => {
   const ext = httpInputSchema(dossierInputSchema, "text/html", "the report");
@@ -127,5 +128,35 @@ describe("the challenge stays small enough to survive a proxy", () => {
       prose < json.length * 0.75,
       `prose is ${prose}B of a ${json.length}B contract; move it to the 402 body`,
     );
+  });
+});
+
+// The verifier renders attacker-controlled JSON: anyone can hand a victim a
+// ?attestation=<base64url> link. It used to concatenate those fields into
+// innerHTML, so reportId, token, verdict, issuer and every source name became
+// script injection on our own origin — and it rendered whether or not the
+// signature checked out. On the page whose whole purpose is proving a document
+// is untampered, that was the worst place for it.
+describe("the verifier cannot be made to execute a pasted attestation", () => {
+  const page = renderVerifyHtml("https://dossier.rouma.xyz");
+
+  test("no attestation field is ever written as markup", () => {
+    assert.equal(
+      /innerHTML\s*=/.test(page.replace(/^\s*\/\/.*$/gm, "")),
+      false,
+      "innerHTML assignment reintroduces the injection path",
+    );
+  });
+
+  test("values reach the document through textContent", () => {
+    assert.match(page, /textContent\s*=/);
+    assert.match(page, /createElement\(/);
+  });
+
+  test("the row and line builders return nodes, not strings", () => {
+    // A string-returning builder is what fed innerHTML. If either goes back to
+    // concatenating tags, this fails before it can ship.
+    assert.equal(/function row\([^)]*\)\s*\{\s*return\s*'</.test(page), false);
+    assert.equal(/function line\([^)]*\)\s*\{\s*return\s*'</.test(page), false);
   });
 });

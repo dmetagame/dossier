@@ -692,6 +692,31 @@ const invalid = (c: any, issues: unknown) =>
 
 app.on(["GET", "POST"], "/dossier", async (c) => {
   // Reached only after the middleware has verified payment (or in dev-skip mode).
+
+  // HEAD never builds a report. Hono dispatches HEAD to the GET handler and HTTP
+  // then strips the body, so a paid HEAD used to run every source, build the
+  // report, archive it, and return 200 with zero bytes. 200 is what the SDK
+  // settles on, so the caller was charged for nothing: the exact thing this
+  // service promises never to do.
+  //
+  // 405 is deliberate rather than 402. It is >= 400, so nothing settles, and it
+  // tells an honest client the truth: this method is gated so that unpaid probes
+  // and marketplace validators still get their 402, but it cannot deliver a
+  // document, so it must not take money for one.
+  if (c.req.method === "HEAD") {
+    c.header("Allow", "GET, POST");
+    return c.json(
+      {
+        error: "method_not_allowed",
+        message:
+          "HEAD cannot return a report, so it is never charged. Use GET or POST. " +
+          "An unpaid HEAD still answers 402 so availability probes keep working.",
+        charged: false,
+      },
+      405,
+    );
+  }
+
   const parsed = DossierRequest.safeParse(await readParams(c));
   if (!parsed.success) {
     return invalid(c, parsed.error.issues);

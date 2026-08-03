@@ -210,7 +210,10 @@ export function renderDossierHtml(d: Dossier, opts: RenderOpts = {}): string {
       </div>
       <div class="chainnote">Check this report yourself at ${esc(d.attestation.verifyWith)}. It runs in
         your browser, against a key you can fetch separately. A valid signature proves who issued the
-        report and that its findings and inputs are unaltered; it does not prove the sources were
+        report, and that the verdict, the coverage figure, the size cap, each check's status, the
+        token and chain, the block read, and the source statuses are unaltered. It does not cover
+        the written explanations or the market and security figures printed above. It does not
+        prove the sources were
         right, and it does not cover the payment transaction, which does not exist when the report is
         made.</div>`
         : `<div class="chainnote">${esc(d.attestation.unsignedReason)} The payload hash above can
