@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { stubUpstream, withStub, ADDR } from "./helpers";
 import { evaluate, fetchSources, SourcesUnavailableError, honeypotCheck as sellability, controlCheck } from "../src/engine/engine";
 import { taxPct } from "../src/engine/sources/goplus";
+import { comparableLiquidity, finiteUsd } from "../src/engine/sources/dexscreener";
 
 let restore: () => void;
 before(() => {
@@ -233,5 +234,52 @@ describe("contract control merges both sources", () => {
   test("the owner-can-change-balance finding still short-circuits everything", () => {
     const r = controlCheck({ status: "ok", ownerCanChangeBalance: true } as any, chainClean);
     assert.equal(r.status, "fail");
+  });
+});
+
+// Chain ranking and market analysis have to agree on what "deepest" means.
+// Ranking summed every pair the token appeared in, on either side, while
+// analysis then used base-side pairs whenever any existed. A chain could win on
+// quote-side depth the report went on to ignore, and then claim it had picked
+// the deepest deployment.
+describe("chain resolution measures what the report will measure", () => {
+  const addr = "0x" + "a".repeat(40);
+  const other = "0x" + "b".repeat(40);
+  const pair = (base: string, quote: string, usd: number) => ({
+    baseToken: { address: base },
+    quoteToken: { address: quote },
+    liquidity: { usd },
+  });
+
+  test("quote-side depth does not win a chain the report would then ignore", () => {
+    // The audit's example: a $1k base pool beside a $500k quote pool must not
+    // outrank a $100k base pool, because $1k is all the report would analyse.
+    const chainB = [pair(addr, other, 1_000), pair(other, addr, 500_000)];
+    const chainA = [pair(addr, other, 100_000)];
+    assert.equal(comparableLiquidity(chainB, addr), 1_000);
+    assert.equal(comparableLiquidity(chainA, addr), 100_000);
+    assert.ok(
+      comparableLiquidity(chainA, addr) > comparableLiquidity(chainB, addr),
+      "the chain the report can actually analyse must rank higher",
+    );
+  });
+
+  test("quote-side pools still count for a token that is never the base", () => {
+    const onlyQuote = [pair(other, addr, 250_000)];
+    assert.equal(comparableLiquidity(onlyQuote, addr), 250_000);
+  });
+
+  test("upstream strings are not concatenated into liquidity", () => {
+    // 0 + "9000" + "2000" would be "090002000" under `+`.
+    const dirty = [pair(addr, other, "9000" as any), pair(addr, other, "2000" as any)];
+    assert.equal(comparableLiquidity(dirty, addr), 11_000);
+  });
+
+  test("negative, infinite and malformed values contribute nothing", () => {
+    for (const bad of [-5, Infinity, NaN, null, undefined, {}, "abc"]) {
+      assert.equal(finiteUsd(bad), 0, `${JSON.stringify(bad)} must not survive`);
+    }
+    assert.equal(finiteUsd(1234), 1234);
+    assert.equal(finiteUsd("1234"), 1234);
   });
 });
