@@ -36,6 +36,17 @@ jobs:
       - name: Test
         run: pnpm test
 
+      # The fulfilment watcher ships to production too, and every incident this
+      # service has had originated in it: a wrong-chain delivery, and a delivery
+      # message that demanded a second payment. It was unguarded until 2026-08-03
+      # because it is Python and the test job was Node only.
+      #
+      # Offline like the Node suite: the watcher reaches outside through a single
+      # `run()`, which the tests stub, and an unstubbed call raises rather than
+      # quietly hitting the network.
+      - name: Test the fulfilment watcher
+        run: python3 -m unittest discover -s ops -p 'test_*.py' -v
+
       - name: Build the server bundle
         run: pnpm build:server
 
