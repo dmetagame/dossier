@@ -7,3 +7,8 @@ nohup.out
 api/index.js
 __pycache__/
 *.pyc
+
+# Avatar exploration output. The shipped mark lives in src/assets/avatar.png
+# (bundled and served) and submission/avatar-dossier-final.png (the file handed
+# to OKX). Candidate sheets are working files and do not belong in history.
+submission/avatars/

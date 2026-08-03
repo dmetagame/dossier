@@ -36,8 +36,10 @@ Whether to deliver is decided by EVIDENCE, never by the next-action text:
    - Dossier (7012), full report:
      `curl -s -X POST https://dossier.rouma.xyz/dossier -H "x-internal-key: $KEY" -H 'content-type: application/json' -d '{"tokenAddress":"0x…","chain":"…"}' -o report.html`
      Also fetch `"format":"json"` for the summary numbers.
-   - Verdict (7008), decision JSON:
-     `curl -s -X POST https://dossier.rouma.xyz/verdict -H "x-internal-key: $KEY" -H 'content-type: application/json' -d '{"chain":"…","tokenAddress":"0x…"}'`
+   - There is no `/verdict`. This step used to name it for agent 7008; the route
+     was removed along with that agent and now 404s, so anyone working through
+     this runbook hit a dead end. `/dossier` with `"format":"json"` returns the
+     decision, its reasons and the size cap, which is what that call was for.
    - `chain` may be omitted for /dossier; a 400 with `candidates` means
      ambiguous — ask the buyer via XMTP which chain (step 4 form).
 

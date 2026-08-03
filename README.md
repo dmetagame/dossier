@@ -17,12 +17,20 @@ Free sample of a real generated report: https://dossier.rouma.xyz/dossier/sample
 | Route | Method | Price | What it does |
 |---|---|---|---|
 | `/dossier` | GET, POST | 0.01 USD₮0 | Full due-diligence report (`html` default, `json` optional) |
-| `/dossier/recovery` | GET, POST | free | Re-fetch a report you already paid for (`paymentTransaction` or `jobId`) |
+| `/dossier/recovery` | GET, POST | free | Re-fetch a report you already paid for: `paymentTransaction` alone, or `jobId` **with** `originalBody`/`requestParamsSha256` |
 | `/dossier/preflight` | GET, POST | free | Coverage check for a token before you pay |
 | `/dossier/sample` | GET | free | Real sample report, cached |
 | `/` | GET | free | Landing page |
 | `/info` | GET | free | Machine-readable service description |
-| `/health` | GET | free | Status |
+| `/health` | GET | free | Status, including whether the payment layer is actually up |
+| `/verify` | GET | free | Browser-side attestation checker; runs locally, no wallet or account |
+| `/.well-known/dossier-signing-key.json` | GET | free | The Ed25519 public key reports are signed with |
+| `/avatar.png` | GET | free | Listing image, served from our own origin |
+| `/f/:file` | GET | free | Self-hosted webfonts for the landing page, content-hashed |
+
+A job id is not sufficient on its own for `/dossier/recovery`: job ids are publicly
+enumerable through the marketplace, so one has to arrive with the request it paid for.
+A settlement transaction needs nothing else, because it reaches only the buyer.
 
 Parameters: `{"tokenAddress": "0x…", "chain": "…", "format": "html|json"}`. They may be
 sent as a JSON body or as query-string parameters, on either method — buyers' x402
