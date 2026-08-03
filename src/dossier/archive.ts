@@ -27,6 +27,14 @@ export interface ArchiveRecord {
   id: string;
   /** Hash of the semantic request, used only as a secondary proof check. */
   paramsSha256: string;
+  /**
+   * The same hash, but with the chain we resolved rather than the one the buyer
+   * sent. A buyer who omitted the chain gets recovery instructions and a report
+   * that both name the resolved one, so proving ownership with either form has
+   * to work. Matching only the request as sent returned 403 on the exact command
+   * we printed for them.
+   */
+  resolvedParamsSha256?: string;
   request: Record<string, unknown>;
   contentType: string;
   deliverable: string;

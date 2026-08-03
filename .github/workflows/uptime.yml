@@ -48,6 +48,17 @@ jobs:
             [ "$code" = "402" ] || { echo "::error::$method /dossier returned $code, expected 402"; exit 1; }
           done
 
+      - name: Rate limiting is actually enforcing
+        run: |
+          set -euo pipefail
+          # The limiter used to default to observe, so a deploy that lost
+          # RATE_LIMIT_MODE throttled nobody and looked identical from outside.
+          # The default is enforce now; this asserts nothing has re-selected
+          # observe in production.
+          m=$(curl -sS --max-time 30 "$BASE/health" | python3 -c "import json,sys; print(json.load(sys.stdin).get('rateLimit'))")
+          echo "  rateLimit -> $m"
+          [ "$m" = "enforce" ] || { echo "::error::rate limiting is '$m', not enforce"; exit 1; }
+
       - name: The service reports its own payment layer as ready
         run: |
           set -euo pipefail

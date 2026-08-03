@@ -160,6 +160,14 @@ $("#fetchkey").addEventListener("click", async () => {
 });
 `;
 
+/**
+ * The exact bytes served inside <script>, so a CSP can allow this one script by
+ * hash instead of opening the page to `unsafe-inline`. On a verifier that renders
+ * attacker-supplied JSON, `unsafe-inline` would give back most of what removing
+ * innerHTML just took away.
+ */
+export const VERIFY_INLINE = SCRIPT.replace(/<\//g, "<\\/");
+
 export function renderVerifyHtml(origin: string): string {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -268,5 +276,5 @@ console.log("signed", verify(null, bytes, key, Buffer.from(att.signature, "base6
   returns the transaction next to the attestation, and it is our word, not the key's.</p>
 </section>
 
-</div><script>${SCRIPT.replace(/<\//g, "<\\/")}</script></body></html>`;
+</div><script>${VERIFY_INLINE}</script></body></html>`;
 }

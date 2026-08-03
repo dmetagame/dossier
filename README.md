@@ -82,11 +82,18 @@ the connection drops after settlement, the file is overwritten. Every delivered 
 is archived (90 days, 5000 records, pruned) and can be re-fetched:
 
 ```bash
-# paid over x402
+# paid over x402: the settlement hash is enough on its own
 curl "https://dossier.rouma.xyz/dossier/recovery?paymentTransaction=0x…"
-# bought as a marketplace task
-curl "https://dossier.rouma.xyz/dossier/recovery?jobId=0x…"
+
+# bought as a marketplace task: a job id is not proof of purchase on its own,
+# because job ids are publicly enumerable, so send the request it paid for too
+curl -X POST https://dossier.rouma.xyz/dossier/recovery \
+  -H 'content-type: application/json' \
+  -d '{"jobId":"0x…","originalBody":{"tokenAddress":"0x…","chain":"ethereum"}}'
 ```
+
+Either the chain you sent or the chain the report resolved will do: a buyer who
+omitted it holds a report naming the resolved one, so both forms are accepted.
 
 It returns the archived bytes, identical to what was delivered, with the request,
 delivery timestamp, and settlement transaction or job id attached.
@@ -154,7 +161,8 @@ requires the env vars in `.env.example` (set on the deploy host, never committed
 ## Test
 
 ```bash
-pnpm test        # 86 tests, no network
+pnpm test        # the Node suite, no network
+python3 -m unittest discover -s ops -p 'test_*.py'   # the fulfilment watcher
 pnpm typecheck
 ```
 

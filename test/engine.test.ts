@@ -5,9 +5,9 @@
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { stubUpstream, withStub, ADDR } from "./helpers";
-import { evaluate, fetchSources, SourcesUnavailableError, honeypotCheck as sellability, controlCheck } from "../src/engine/engine";
+import { evaluate, fetchSources, SourcesUnavailableError, honeypotCheck as sellability, controlCheck, activityCheck } from "../src/engine/engine";
 import { taxPct } from "../src/engine/sources/goplus";
-import { comparableLiquidity, finiteUsd, ageInDays } from "../src/engine/sources/dexscreener";
+import { comparableLiquidity, finiteUsd, ageInDays, fetchDexScreener } from "../src/engine/sources/dexscreener";
 import { formatUnits } from "../src/engine/sources/rpc";
 import { preflight } from "../src/dossier/report";
 
@@ -443,5 +443,45 @@ describe("time is an input, recorded once", () => {
     for (const bad of [0, -1, null, undefined, "x"]) {
       assert.equal(ageInDays(bad, asOf), undefined);
     }
+  });
+});
+
+// Missing volume.h24 collapsed to 0 during aggregation, so a report could state
+// "24h volume $0" when DexScreener had simply not supplied the figure, and the
+// activity check counted as covered rather than unknown. Same shape as reading a
+// blank tax as a measured 0%.
+describe("absent volume is unknown, not a measured zero", () => {
+  const addr = "0x" + "a".repeat(40);
+  const shared = (pairs: any[]) => ({ status: "ok" as const, pairs });
+  const p = (vol?: any) => ({
+    chainId: "bsc",
+    baseToken: { address: addr, symbol: "T" },
+    quoteToken: { address: "0x" + "b".repeat(40) },
+    liquidity: { usd: 50_000 },
+    priceUsd: "1",
+    ...(vol === undefined ? {} : { volume: { h24: vol } }),
+  });
+
+  test("no pair reporting volume leaves it absent, not zero", async () => {
+    const m: any = await fetchDexScreener("bsc", addr, shared([p(), p()]));
+    assert.equal(m.status, "ok");
+    assert.equal(m.volume24hUsd, undefined, "a figure nobody supplied is not a measurement");
+  });
+
+  test("a genuine zero is still reported as zero", async () => {
+    const m: any = await fetchDexScreener("bsc", addr, shared([p(0)]));
+    assert.equal(m.volume24hUsd, 0);
+  });
+
+  test("reported volume still sums", async () => {
+    const m: any = await fetchDexScreener("bsc", addr, shared([p(1_000), p(2_500)]));
+    assert.equal(m.volume24hUsd, 3_500);
+  });
+
+  test("the activity check cannot score on a figure it never received", async () => {
+    const m: any = await fetchDexScreener("bsc", addr, shared([p()]));
+    const r = activityCheck({ ...m, ageDays: 100 });
+    assert.equal(r.status, "unknown", "absent volume must not declare a near-dead market");
+    assert.match(r.detail, /did not report 24h volume/);
   });
 });

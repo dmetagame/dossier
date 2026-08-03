@@ -81,10 +81,22 @@ describe("blocks are observable", () => {
 });
 
 describe("mode", () => {
-  test("defaults to observe, so budgets can be watched before they bite", () => {
+  // This defaulted to observe while the budgets were being watched. That made
+  // forgetting the variable indistinguishable from choosing no limit, and
+  // nothing reported which mode was live. The safe state should not depend on
+  // remembering an env var.
+  test("defaults to enforce, so a deploy that forgets the variable is still limited", () => {
     delete process.env.RATE_LIMIT_MODE;
+    assert.equal(rl.mode(), "enforce");
+  });
+
+  test("observing is the exception, and has to be asked for by name", () => {
+    process.env.RATE_LIMIT_MODE = "observe";
     assert.equal(rl.mode(), "observe");
     process.env.RATE_LIMIT_MODE = "enforce";
+    assert.equal(rl.mode(), "enforce");
+    // A typo must fail closed rather than silently disable the limiter.
+    process.env.RATE_LIMIT_MODE = "obserev";
     assert.equal(rl.mode(), "enforce");
     delete process.env.RATE_LIMIT_MODE;
   });

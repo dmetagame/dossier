@@ -22,6 +22,9 @@ import { publicKey, SCHEMA_VERSION, METHODOLOGY_VERSION } from "./attest";
 import { renderVerifyHtml } from "./verify-page";
 import * as ratelimit from "./ratelimit";
 import * as reqlog from "./reqlog";
+import { BASE_HEADERS, NON_DOCUMENT_CSP, documentCsp } from "./security-headers";
+import { VERIFY_INLINE } from "./verify-page";
+import { SITE_INLINE } from "./site";
 import { dossierInputSchema, httpInputSchema } from "./x402-contract";
 
 // Constant-time comparison for the payment-bypass secret. A `===` on a secret
@@ -82,6 +85,18 @@ app.use(async (c, next) => {
       /* logging must never disturb a response */
     }
   }
+});
+
+// Security headers on every response. The verifier renders JSON an attacker
+// chooses, and until now nothing constrained what a page could do if something
+// ever got through. The document policy allows our two inline scripts by hash;
+// everything else, including all JSON, is allowed to execute nothing at all.
+const DOCUMENT_CSP = documentCsp([SITE_INLINE, VERIFY_INLINE]);
+app.use(async (c, next) => {
+  await next();
+  for (const [k, v] of Object.entries(BASE_HEADERS)) c.header(k, v);
+  const type = c.res.headers.get("content-type") ?? "";
+  c.header("Content-Security-Policy", type.includes("text/html") ? DOCUMENT_CSP : NON_DOCUMENT_CSP);
 });
 
 // Rate limiting for the free surface only. Registered before the routes but
@@ -372,8 +387,10 @@ app.on(["GET", "POST"], "/dossier/recovery", async (c) => {
       404,
     );
   }
-  // If the caller also supplied the request, it must be the one that was paid for.
-  if (hash && rec.paramsSha256 !== hash) {
+  // If the caller also supplied the request, it must be the one that was paid
+  // for, in either the form they sent or the form we resolved and printed back
+  // to them.
+  if (hash && rec.paramsSha256 !== hash && rec.resolvedParamsSha256 !== hash) {
     return c.json(
       { error: "proof_mismatch", message: "That transaction did not pay for those request parameters." },
       403,
@@ -421,6 +438,10 @@ app.get("/health", (c) =>
     paymentConfigured: paymentConfigured(),
     paymentLayer: paymentLayer,
     signing: publicKey() ? "enabled" : "unsigned",
+    // Published so a monitor can assert it. The limiter ran in whichever mode an
+    // env var happened to select, and nothing anywhere said which, so a deploy
+    // that lost the variable throttled nobody and looked identical from outside.
+    rateLimit: ratelimit.mode(),
   }),
 );
 
@@ -739,6 +760,12 @@ app.on(["GET", "POST"], "/dossier", async (c) => {
     archive.save({
       id,
       paramsSha256: archive.paramsHash(parsed.data as Record<string, unknown>),
+      // Also index by the chain actually analysed, since that is the one the
+      // report prints and the one our own recovery instructions quote.
+      resolvedParamsSha256: archive.paramsHash({
+        ...(parsed.data as Record<string, unknown>),
+        chain: dossier.token.chain,
+      }),
       request: parsed.data as Record<string, unknown>,
       contentType: json ? "application/json" : "text/html",
       deliverable: body,

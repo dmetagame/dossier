@@ -181,11 +181,14 @@ footer{padding:2.5rem 0 4rem;border-top:1px solid var(--line);color:var(--muted)
   html{scroll-behavior:auto}
 }`;
 
+/** The exact bytes served inside <script>, so the CSP can allow it by hash. */
+export const SITE_INLINE = HERO_BUNDLE.replace(/<\//g, "<\\/");
+
 export function renderSiteHtml(opts: { price: string; agentId: number }): string {
   const { price, agentId } = opts;
   // Inlined script: escape any "</" so a literal </script> in the bundle cannot
   // close the tag early.
-  const inline = HERO_BUNDLE.replace(/<\//g, "<\\/");
+  const inline = SITE_INLINE;
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Dossier — token due diligence, one paid call</title>

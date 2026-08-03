@@ -485,9 +485,12 @@ def deliver(job, buyer, addr, chain, from_ticker=False):
     # now has to be paired with the request itself, which the buyer has: it is
     # printed two lines up in this same message.
     L.append("LOST THIS REPORT? Re-fetch the exact copy sent to you, free:")
+    # Quote the request as it was actually sent, not the chain the report went on
+    # to resolve. The archive indexes both forms now, but printing a body we
+    # never sent was how this command came to return 403 on its own instructions.
     L.append('  POST %s/recovery  body {"jobId":"%s",' % (ENDPOINT, job))
     L.append('    "originalBody":{"tokenAddress":"%s"%s}}' % (
-        addr, (',"chain":"%s"' % tok.get("chain")) if tok.get("chain") else ""))
+        addr, (',"chain":"%s"' % chain) if chain else ""))
     L.append("")
     # NOTHING HERE MAY ASK A BUYER FOR MONEY.
     #

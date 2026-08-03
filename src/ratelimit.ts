@@ -34,8 +34,16 @@ export const limits: Record<string, Limit> = {
   default: { windowMs: 60_000, max: 240 },
 };
 
+/**
+ * Enforcing unless someone deliberately asks otherwise.
+ *
+ * This defaulted to observe, so a deploy that simply forgot RATE_LIMIT_MODE
+ * silently ran with no limit at all, and nothing reported which mode was live.
+ * The safe state should not depend on remembering a variable; observing is the
+ * exception now, and it has to be asked for by name.
+ */
 export function mode(): Mode {
-  return process.env.RATE_LIMIT_MODE === "enforce" ? "enforce" : "observe";
+  return process.env.RATE_LIMIT_MODE === "observe" ? "observe" : "enforce";
 }
 
 /**

@@ -225,7 +225,17 @@ export async function fetchDexScreener(
   // finiteUsd, not `?? 0`: a string from upstream would concatenate under `+`,
   // turning 0 + "9000" + "2000" into "090002000".
   const liquidityUsd = active.reduce((s, p) => s + finiteUsd(p.liquidity?.usd), 0);
-  const volume24hUsd = active.reduce((s, p) => s + finiteUsd(p.volume?.h24), 0);
+  // Absent volume is not zero volume.
+  //
+  // Missing volume.h24 collapsed to 0 during aggregation, so a report could
+  // state "24h volume $0" when DexScreener had simply not supplied the figure,
+  // and the activity check counted as covered rather than unknown. Same mistake
+  // as reading a blank tax as a measured 0%: a source that said nothing became a
+  // number a buyer then acts on.
+  const volumeReported = active.some((p) => p.volume?.h24 !== undefined && p.volume?.h24 !== null);
+  const volume24hUsd = volumeReported
+    ? active.reduce((s, p) => s + finiteUsd(p.volume?.h24), 0)
+    : undefined;
   const txns24h = active.reduce(
     (s, p) => s + finiteUsd(p.txns?.h24?.buys) + finiteUsd(p.txns?.h24?.sells),
     0,

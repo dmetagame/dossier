@@ -298,15 +298,24 @@ function liquidityCheck(market: Market | undefined, sec: Sec): CheckResult {
   return { status: "pass", detail: `Pooled liquidity $${Math.round(market.liquidityUsd)}${lockNote}.` };
 }
 
-function activityCheck(market: Market | undefined): CheckResult {
+export function activityCheck(market: Market | undefined): CheckResult {
   if (market?.status !== "ok") return { status: "unknown", detail: "market activity (no market data)" };
   if ((market.ageDays ?? Infinity) < 3)
     return { status: "warn", detail: `Pair is ${market.ageDays?.toFixed(1)} days old — no track record.` };
-  if ((market.volume24hUsd ?? 0) < 1_000)
-    return { status: "warn", detail: `24h volume $${Math.round(market.volume24hUsd ?? 0)} — near-dead market.` };
+  // Absent volume cannot pass this check and cannot fail it. Defaulting it to
+  // zero declared a near-dead market on a source's silence, and the check was
+  // counted as covered either way.
+  if (market.volume24hUsd === undefined) {
+    return {
+      status: "unknown",
+      detail: "market activity (the market source did not report 24h volume)",
+    };
+  }
+  if (market.volume24hUsd < 1_000)
+    return { status: "warn", detail: `24h volume $${Math.round(market.volume24hUsd)} — near-dead market.` };
   return {
     status: "pass",
-    detail: `24h volume $${Math.round(market.volume24hUsd ?? 0)} across ${market.pairCount} pair(s).`,
+    detail: `24h volume $${Math.round(market.volume24hUsd)} across ${market.pairCount} pair(s).`,
   };
 }
 

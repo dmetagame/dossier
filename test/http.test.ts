@@ -428,3 +428,96 @@ describe("HEAD on the paid route", () => {
     assert.equal((await post("/dossier", { tokenAddress: ADDR.cake, chain: "bsc" })).status, 200);
   });
 });
+
+// A buyer who omitted the chain got recovery instructions, and a report, that
+// both named the chain we resolved. The archive indexed only the request as
+// sent, so the exact command we printed for them returned 403.
+describe("recovery accepts the request in the form the buyer has it", () => {
+  test("the resolved chain proves ownership, not just the one that was sent", async () => {
+    const sent = { tokenAddress: ADDR.cake };
+    await post("/dossier", sent);
+    const rec = archive.byHash(archive.paramsHash(sent));
+    assert.ok(rec, "the delivery should be archived under the request as sent");
+    const jobId = `0x${"d".repeat(64)}`;
+    archive.save({ ...rec!, jobId });
+
+    // What the buyer actually holds: the chain the report and our own
+    // instructions name.
+    const r = await post("/dossier/recovery", {
+      jobId,
+      originalBody: { tokenAddress: ADDR.cake, chain: rec!.request.chain ?? "bsc" },
+    });
+    assert.equal(r.status, 200, "the command we print must not 403");
+  });
+
+  test("the original form still works", async () => {
+    const sent = { tokenAddress: ADDR.cake };
+    const rec = archive.byHash(archive.paramsHash(sent));
+    const jobId = `0x${"e".repeat(64)}`;
+    archive.save({ ...rec!, jobId });
+    const r = await post("/dossier/recovery", { jobId, originalBody: sent });
+    assert.equal(r.status, 200);
+  });
+
+  test("a different token is still refused", async () => {
+    const rec = archive.byHash(archive.paramsHash({ tokenAddress: ADDR.cake }));
+    const jobId = `0x${"f".repeat(64)}`;
+    archive.save({ ...rec!, jobId });
+    const r = await post("/dossier/recovery", {
+      jobId,
+      originalBody: { tokenAddress: ADDR.uni },
+    });
+    assert.equal(r.status, 403);
+  });
+});
+
+// The service shipped with none of these. It mattered most on /verify, which
+// renders JSON an attacker chooses: a crafted ?attestation= link executed script
+// on this origin and nothing constrained what it could do.
+describe("security headers", () => {
+  test("every response carries the baseline", async () => {
+    for (const path of ["/", "/verify", "/health", "/info"]) {
+      const h = (await get(path)).headers;
+      assert.equal(h.get("x-content-type-options"), "nosniff", path);
+      assert.equal(h.get("referrer-policy"), "no-referrer", path);
+      assert.equal(h.get("x-frame-options"), "DENY", path);
+      assert.ok(h.get("content-security-policy"), `${path} has no CSP`);
+    }
+  });
+
+  test("JSON is allowed to execute nothing at all", async () => {
+    const csp = (await get("/health")).headers.get("content-security-policy")!;
+    assert.match(csp, /default-src 'none'/);
+    assert.equal(csp.includes("script-src"), false, "a JSON response needs no script source");
+  });
+
+  test("the document policy allows our own scripts and no one else's", async () => {
+    const csp = (await get("/verify")).headers.get("content-security-policy")!;
+    const scriptSrc = csp.split(";").map((d) => d.trim()).find((d) => d.startsWith("script-src"))!;
+    assert.ok(scriptSrc, "there must be a script-src directive");
+    assert.match(scriptSrc, /'sha256-/);
+    // Scoped to script-src on purpose: style-src carries 'unsafe-inline'
+    // deliberately, because the page's styles are inline and ours. On scripts it
+    // would hand back most of what removing innerHTML took away.
+    assert.equal(scriptSrc.includes("unsafe-inline"), false, "script-src must not be opened up");
+    assert.equal(/https?:/.test(scriptSrc), false, "no third-party script origin");
+    assert.match(csp, /frame-ancestors 'none'/);
+  });
+
+  // A hash that does not match the bytes served silently breaks the page: the
+  // script is simply refused and the verifier stops working.
+  test("the allowed hash is the hash of the script actually served", async () => {
+    const { createHash } = await import("node:crypto");
+    for (const path of ["/", "/verify"]) {
+      const r = await get(path);
+      const body = await r.text();
+      const inline = body.match(/<script>([\s\S]*?)<\/script>/)?.[1];
+      assert.ok(inline, `${path} should inline a script`);
+      const want = `'sha256-${createHash("sha256").update(inline!, "utf8").digest("base64")}'`;
+      assert.ok(
+        r.headers.get("content-security-policy")!.includes(want),
+        `${path} serves a script its own CSP would block`,
+      );
+    }
+  });
+});
