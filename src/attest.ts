@@ -19,9 +19,9 @@
 import { createHash, createPrivateKey, createPublicKey, sign, verify } from "node:crypto";
 
 /** Bump when the meaning of any signed field changes. */
-export const SCHEMA_VERSION = "dossier-attestation/1";
+export const SCHEMA_VERSION = "dossier-attestation/2";
 /** Bump when the scoring rules change, so old reports stay interpretable. */
-export const METHODOLOGY_VERSION = "engine/2026-07-27";
+export const METHODOLOGY_VERSION = "engine/2026-08-03";
 
 // An Ed25519 private key is a 32-byte seed. Carrying PEM through systemd's
 // EnvironmentFile is painful, so the seed travels as 64 hex characters and the
@@ -46,6 +46,18 @@ export interface AttestationPayload {
   reportId: string;
   /** sha256 of the canonicalised request (token, chain), excluding `format`. */
   requestSha256: string;
+  /**
+   * sha256 of the canonical report body, meaning the whole document except this
+   * attestation.
+   *
+   * Without it the signature covered a summary: verdict, coverage, size cap,
+   * check statuses, token, block, source statuses. Liquidity, holders, taxes,
+   * owner, proxy implementation, the written explanations and the token's own
+   * name and supply were all outside it, so any of them could be altered while
+   * the verifier still reported a valid signature. Committing to a hash of the
+   * body makes the signature cover the document instead of describing it.
+   */
+  reportSha256: string;
   token: { chain: string; address: string };
   /** The findings this signature commits to. */
   result: {

@@ -11,6 +11,7 @@ import {
   resetKeys,
   sha256,
   verifyAttestation,
+  SCHEMA_VERSION,
   type AttestationPayload,
 } from "../src/attest";
 
@@ -22,6 +23,7 @@ const payload = (over: Partial<AttestationPayload> = {}): AttestationPayload => 
   methodologyVersion: "engine/2026-07-27",
   reportId: "6a3f1e2c-0000-4000-8000-000000000001",
   requestSha256: sha256("request"),
+  reportSha256: sha256("report-body"),
   token: { chain: "bsc", address: "0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82" },
   result: {
     verdict: "caution",
@@ -169,5 +171,57 @@ describe("without a signing key", () => {
     resetKeys();
     assert.equal(publicKey(), null);
     assert.equal(attest(payload(), "u").signature, undefined);
+  });
+});
+
+// The signature used to cover a summary of the report: verdict, coverage, size
+// cap, check statuses, token, block, source statuses. Liquidity, holders, taxes,
+// owner, proxy implementation, the written explanations and the token's own name
+// and supply all sat outside it, so any of them could be altered while the
+// verifier still announced a valid signature.
+describe("the signature covers the whole report", () => {
+  const body = {
+    title: "Due-Diligence Dossier — CAKE",
+    token: { chain: "bsc", address: "0xabc", liquidityUsd: 1_000_000, holderCount: 500 },
+    security: { proxy: true, ownerRenounced: false },
+    riskVerdict: { verdict: "caution", reasons: ["upgradeable proxy"] },
+  };
+
+  test("the payload commits to a hash of the body", () => {
+    const digest = sha256(canonicalJson(body));
+    const a = attest(payload({ reportSha256: digest }), "https://x/verify");
+    assert.equal(a.payload.reportSha256, digest);
+    assert.equal(verifyAttestation(a).verified, true);
+  });
+
+  test("changing a figure outside the summary breaks the report hash", () => {
+    const digest = sha256(canonicalJson(body));
+    // The exact attack the old scope allowed: liquidity inflated, proxy denied,
+    // owner declared renounced. None of these appear in the signed summary.
+    for (const tampered of [
+      { ...body, token: { ...body.token, liquidityUsd: 50_000_000 } },
+      { ...body, security: { ...body.security, proxy: false } },
+      { ...body, security: { ...body.security, ownerRenounced: true } },
+      { ...body, riskVerdict: { ...body.riskVerdict, reasons: ["nothing of concern"] } },
+    ]) {
+      assert.notEqual(
+        sha256(canonicalJson(tampered)),
+        digest,
+        "an altered report must not hash to the signed value",
+      );
+    }
+  });
+
+  test("the attestation itself is not part of what it commits to", () => {
+    // Otherwise the hash could never be computed: it would depend on itself.
+    const digest = sha256(canonicalJson(body));
+    const a = attest(payload({ reportSha256: digest }), "https://x/verify");
+    const full = { ...body, attestation: a };
+    const { attestation, ...rest } = full;
+    assert.equal(sha256(canonicalJson(rest)), a.payload.reportSha256);
+  });
+
+  test("the schema version moved, so old and new reports are distinguishable", () => {
+    assert.match(SCHEMA_VERSION, /\/2$/);
   });
 });

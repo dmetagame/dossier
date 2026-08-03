@@ -58,7 +58,12 @@ async function run() {
     out.replaceChildren(line(false, "That is not valid JSON."));
     return;
   }
+  // Keep the outer document when a whole report was pasted: the signature now
+  // commits to a hash of it, so the body itself can be checked rather than
+  // trusted. Previously everything outside the attestation was discarded and the
+  // page still announced a valid signature.
   const wholeReport = Boolean(att && att.attestation);
+  const reportBody = wholeReport ? (({ attestation, ...rest }) => rest)(att) : null;
   if (att.attestation) att = att.attestation;
   if (!att || !att.payload) {
     out.replaceChildren(line(false, "No attestation found. Paste the report's attestation object, or the whole JSON report."));
@@ -102,9 +107,22 @@ async function run() {
   // prose explanations, the market numbers, the security flags, or the token's
   // name and supply. Saying "this report is verified" when only the payload was
   // checked would overstate it, so the distinction is on the page.
-  frag.appendChild(line(null, wholeReport
-    ? "Checked: the attestation inside this report. The verdict, coverage, size cap and check statuses are covered. The written explanations and the market and security figures are not."
-    : "Checked: this attestation payload. It covers the verdict, coverage, size cap and check statuses, not the report's prose or its market and security figures."));
+  // Does the document match the hash the signature commits to? This is what
+  // turns "the payload is authentic" into "this report is unaltered".
+  if (reportBody && att.payload && att.payload.reportSha256) {
+    const bodyDigest = hex(await crypto.subtle.digest(
+      "SHA-256", new TextEncoder().encode(canonical(reportBody))));
+    const bodyOk = bodyDigest === att.payload.reportSha256;
+    frag.appendChild(line(bodyOk, bodyOk
+      ? "The whole report matches the hash the signature covers: every figure and explanation in it is as issued."
+      : "The report does NOT match the hash the signature covers: something in the document has been changed."));
+    if (!bodyOk) frag.appendChild(el("div", "mono small", "recomputed " + bodyDigest));
+  } else if (reportBody) {
+    // An older report, signed before the body was covered.
+    frag.appendChild(line(null, "This report predates full-body coverage: its signature covers the verdict, coverage, size cap and check statuses only, not the figures and explanations printed around them."));
+  } else {
+    frag.appendChild(line(null, "Checked: this attestation payload on its own. Paste the whole JSON report to check the document against it as well."));
+  }
 
   const p = att.payload;
   const facts = el("div", "facts");

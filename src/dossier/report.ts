@@ -284,11 +284,23 @@ export async function buildDossier(req: DossierRequest): Promise<Dossier> {
   ];
 
   const reportId = randomUUID();
-  const attestation = attest(
+  // Deferred until the body exists, because the signature now commits to a hash
+  // of the whole report rather than to a summary of it.
+  //
+  // The payload used to carry the verdict, coverage, size cap, check statuses,
+  // token, block and source statuses. Everything else a buyer acts on, the
+  // liquidity and holder figures, the taxes, the owner, the proxy
+  // implementation, the written explanations, the token's own name and supply,
+  // sat outside the signature entirely. Any of it could be altered and the
+  // verifier would still report a valid signature, because it was checking a
+  // payload that never mentioned those fields.
+  const buildAttestation = (reportSha256: string) => attest(
     {
       schemaVersion: SCHEMA_VERSION,
       methodologyVersion: METHODOLOGY_VERSION,
       reportId,
+      /** sha256 of the canonical report body, everything except this attestation. */
+      reportSha256,
       requestSha256: sha256(canonicalJson({ chain, tokenAddress: req.tokenAddress.toLowerCase() })),
       token: { chain, address: req.tokenAddress.toLowerCase() },
       result: {
@@ -313,7 +325,7 @@ export async function buildDossier(req: DossierRequest): Promise<Dossier> {
   if (market.status === "ok") sources.push("DexScreener");
   if (chainFacts.status === "ok") sources.push(`${chain} RPC`);
 
-  return {
+  const body = {
     title: `Due-Diligence Dossier — ${
       (market.status === "ok" ? market.symbol : undefined) ??
       (chainFacts.status === "ok" ? chainFacts.symbol || chainFacts.name : undefined) ??
@@ -361,6 +373,10 @@ export async function buildDossier(req: DossierRequest): Promise<Dossier> {
             capabilities: chainFacts.capabilities,
           }
         : undefined,
-    attestation,
   };
+
+  // Sign a hash of the body, so the signature covers the document rather than a
+  // description of it.
+  const attestation = buildAttestation(sha256(canonicalJson(body)));
+  return { ...body, attestation };
 }

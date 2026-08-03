@@ -10,7 +10,10 @@ import assert from "node:assert/strict";
 import { stubUpstream, tempArchive, ADDR } from "./helpers";
 import { app } from "../src/app";
 import * as archive from "../src/dossier/archive";
-import { verifyAttestation } from "../src/attest";
+import { verifyAttestation, canonicalJson, sha256 } from "../src/attest";
+import { renderVerifyHtml } from "../src/verify-page";
+
+const archiveSha = (o: unknown) => sha256(canonicalJson(o));
 
 const { dir, cleanup } = tempArchive();
 process.env.ARCHIVE_DIR = dir;
@@ -519,5 +522,56 @@ describe("security headers", () => {
         `${path} serves a script its own CSP would block`,
       );
     }
+  });
+});
+
+// The signature has to commit to the report that was actually issued, not to a
+// summary of it and not to some constant. Testing the hashing helper in
+// isolation does not prove the report is wired to it.
+describe("a delivered report is covered by its own signature", () => {
+  test("the signed hash is the hash of the body that was sent", async () => {
+    const r = await post("/dossier", { tokenAddress: ADDR.cake, chain: "bsc", format: "json" });
+    assert.equal(r.status, 200);
+    const { attestation, ...body } = (await r.json()) as Record<string, any>;
+    assert.ok(attestation?.payload?.reportSha256, "the payload must commit to the body");
+    assert.equal(
+      archiveSha(body),
+      attestation.payload.reportSha256,
+      "the signature commits to something other than the report it came with",
+    );
+    // Signing is only configured when SIGNING_KEY is set; the suite runs without
+    // one, so an unsigned report still carries the hash and says why it is
+    // unsigned. Verify the signature only when there is one to verify.
+    if (attestation.signature) {
+      assert.equal(verifyAttestation(attestation as any).verified, true);
+    } else {
+      assert.ok(attestation.unsignedReason, "an unsigned report must say why");
+      assert.ok(attestation.payloadSha256, "and must still carry its hashes");
+    }
+  });
+
+  test("altering anything outside the old summary now breaks it", async () => {
+    const r = await post("/dossier", { tokenAddress: ADDR.cake, chain: "bsc", format: "json" });
+    const { attestation, ...body } = (await r.json()) as Record<string, any>;
+    const signed = attestation.payload.reportSha256;
+    // Every one of these was outside the signature before, and every one is
+    // something a buyer acts on.
+    const tampered = [
+      { ...body, token: { ...body.token, liquidityUsd: 99_000_000 } },
+      { ...body, token: { ...body.token, holderCount: 1 } },
+      { ...body, security: { ...body.security, proxy: !body.security.proxy } },
+      { ...body, security: { ...body.security, ownerRenounced: true } },
+      { ...body, riskVerdict: { ...body.riskVerdict, reasons: ["nothing of concern"] } },
+      { ...body, contract: { ...body.contract, owner: "0xdead" } },
+    ];
+    for (const t of tampered) {
+      assert.notEqual(archiveSha(t), signed, `an altered report still matched: ${JSON.stringify(t).slice(0, 60)}`);
+    }
+  });
+
+  test("the verifier actually recomputes it rather than trusting the payload", () => {
+    const page = renderVerifyHtml("https://dossier.rouma.xyz");
+    assert.match(page, /reportSha256/, "the verifier must know about the body hash");
+    assert.match(page, /canonical\(reportBody\)/, "and must recompute it from the pasted report");
   });
 });
