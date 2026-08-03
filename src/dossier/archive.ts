@@ -18,7 +18,7 @@
 // second buyer asking about the same token silently destroyed the first
 // buyer's record — and with it their only route to recovery.
 
-import { createHash, createHmac, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -51,6 +51,19 @@ export interface ArchiveRecord {
    * without this they had no proof to recover against.
    */
   jobId?: string;
+  /**
+   * SHA-256 of a random per-delivery recovery code. The code itself is never
+   * stored: it goes out once, in the delivery message, and only the buyer holds
+   * it.
+   *
+   * It exists because the previous second factor for job-id recovery was the
+   * request parameters, and those are guessable. "WBTC on ethereum" is what
+   * most buyers of a WBTC report sent, so anyone who enumerated a job id from
+   * the public marketplace could pair it with the obvious request and read a
+   * report they never bought. Absent on records written before this existed,
+   * which keep the parameter check.
+   */
+  recoveryCodeSha256?: string;
 }
 
 // Resolved on use, not at module load. Reading it at load time made the
@@ -83,6 +96,26 @@ function dir(): string | null {
     unusable = d;
     return null;
   }
+}
+
+/**
+ * A recovery code and the hash to file against it.
+ *
+ * 128 bits from the system CSPRNG. The code is returned to the caller so it can
+ * be handed to the buyer; only the hash is ever written to disk, so an attacker
+ * who reads the archive still cannot recover anything with it.
+ */
+export function newRecoveryCode(): { code: string; hash: string } {
+  const code = randomBytes(16).toString("hex");
+  return { code, hash: createHash("sha256").update(code).digest("hex") };
+}
+
+/** Constant-time check of a supplied code against a stored hash. */
+export function recoveryCodeMatches(rec: ArchiveRecord, given: string): boolean {
+  if (!rec.recoveryCodeSha256) return false;
+  const a = Buffer.from(createHash("sha256").update(given).digest("hex"));
+  const b = Buffer.from(rec.recoveryCodeSha256);
+  return a.length === b.length && timingSafeEqual(a, b);
 }
 
 export function newId(): string {
@@ -152,6 +185,7 @@ function macOf(rec: ArchiveRecord): string | undefined {
     deliveredAt: rec.deliveredAt,
     jobId: rec.jobId,
     paymentTransaction: rec.paymentTransaction,
+    recoveryCodeSha256: rec.recoveryCodeSha256,
   });
   return createHmac("sha256", key).update(covered).digest("hex");
 }

@@ -17,6 +17,9 @@ const archiveSha = (o: unknown) => sha256(canonicalJson(o));
 
 const { dir, cleanup } = tempArchive();
 process.env.ARCHIVE_DIR = dir;
+// The internal bypass, which is how the fulfilment daemon fetches a task
+// buyer's report, needs INTERNAL_KEY set before src/app is imported. Imports
+// hoist above any assignment here, so `pnpm test` sets it instead.
 
 let restore: () => void;
 before(() => {
@@ -300,7 +303,7 @@ describe("recovery", () => {
 
   test("the refusal names what to send, so a real buyer is not stranded", async () => {
     const j = await (await get(`/dossier/recovery?jobId=0x${"b".repeat(64)}`)).json();
-    assert.match(j.message, /originalBody|requestParamsSha256/);
+    assert.match(j.message, /recoveryCode/);
     assert.match(j.message, /paymentTransaction/);
   });
 
@@ -310,13 +313,19 @@ describe("recovery", () => {
   test("a transaction alone still recovers, needing no second factor", async () => {
     const r = await get("/dossier/recovery?transaction=0xRECOVERTEST");
     assert.equal(r.status, 200);
-    assert.equal((await r.json()).status, "recovered");
+    const j = (await r.json()) as Record<string, unknown>;
+    assert.equal(j.status, "recovered");
+    // And the response says plainly what that costs. Transfers to the payout
+    // address are on-chain, so an observer can reach this report; a buyer is
+    // told that on the response rather than only in a README they may not read.
+    assert.match(String(j.confidentiality), /observable on-chain|not a confidentiality boundary/);
   });
 
-  // The path the tightening could plausibly have broken, and the one our own
-  // delivery message tells marketplace buyers to use. A buyer knows what they
-  // asked about, so pairing the job id with the request has to keep working.
-  test("a job id paired with the request still recovers the report", async () => {
+  // Records written before per-report codes existed keep the parameter check.
+  // Their buyers were never given a code and hold instructions naming the
+  // request, so removing it would strand them; they expire with the archive
+  // window.
+  test("a job id paired with the request still recovers a pre-code report", async () => {
     const body = { tokenAddress: ADDR.cake, chain: "bsc" };
     const delivered = await (await post("/dossier", body)).text();
     const rec = archive.byHash(archive.paramsHash(body));
@@ -337,6 +346,64 @@ describe("recovery", () => {
       originalBody: { tokenAddress: ADDR.uni },
     });
     assert.equal(wrong.status, 403);
+  });
+
+  // A random per-report code, delivered once in the buyer's message and stored
+  // only as a hash. The parameters it replaces were guessable: "WBTC on
+  // ethereum" is what most buyers of a WBTC report sent, so an enumerated job
+  // id paired with the obvious request read a report nobody had bought.
+  test("a task delivery mints a code, and only the daemon ever sees it", async () => {
+    const jobId = `0x${"d".repeat(64)}`;
+    const r = await app.request("/dossier", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-internal-key": process.env.INTERNAL_KEY ?? "",
+        "x-job-id": jobId,
+      },
+      body: JSON.stringify({ tokenAddress: ADDR.uni, chain: "ethereum", format: "json" }),
+    });
+    assert.equal(r.status, 200);
+    const code = r.headers.get("x-recovery-code");
+    assert.ok(code && /^[0-9a-f]{32}$/.test(code), "a 128-bit code goes back to the daemon");
+
+    // Not in the report. The body is signed and archived, so a code written
+    // there would be inside the very artefact it protects.
+    assert.ok(!(await r.text()).includes(code!), "the code must not be in the deliverable");
+
+    const rec = archive.byJobId(jobId);
+    assert.ok(rec, "the delivery was archived");
+    assert.ok(!JSON.stringify(rec).includes(code!), "and the code itself is never stored");
+    assert.ok(rec!.recoveryCodeSha256, "only its hash is");
+
+    // The code recovers it.
+    const good = await post("/dossier/recovery", { jobId, recoveryCode: code });
+    assert.equal(good.status, 200);
+    assert.equal((await good.json()).status, "recovered");
+  });
+
+  test("a coded report cannot be recovered by guessing the request", async () => {
+    // The whole point of the change. This is the exact pair the audit called
+    // out: a job id anyone can enumerate, plus the request anyone would guess.
+    const jobId = `0x${"e".repeat(64)}`;
+    const body = { tokenAddress: ADDR.uni, chain: "ethereum", format: "json" as const };
+    await app.request("/dossier", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-internal-key": process.env.INTERNAL_KEY ?? "",
+        "x-job-id": jobId,
+      },
+      body: JSON.stringify(body),
+    });
+
+    const guessed = await post("/dossier/recovery", { jobId, originalBody: body });
+    assert.equal(guessed.status, 403, "guessing the request must no longer be enough");
+    assert.equal((await guessed.json()).error, "recovery_code_required");
+
+    const wrongCode = await post("/dossier/recovery", { jobId, recoveryCode: "0".repeat(32) });
+    assert.equal(wrongCode.status, 403);
+    assert.equal((await wrongCode.json()).error, "recovery_code_mismatch");
   });
 
   test("mismatched parameters alongside a valid proof are refused", async () => {

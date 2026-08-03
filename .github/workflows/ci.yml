@@ -45,7 +45,10 @@ jobs:
       # `run()`, which the tests stub, and an unstubbed call raises rather than
       # quietly hitting the network.
       - name: Test the fulfilment watcher
-        run: python3 -m unittest discover -s ops -p 'test_*.py' -v
+        # Warnings are errors. A leaked file handle or an unclosed socket in a
+        # test is the same habit that, in the watcher, runs unattended on a
+        # timer forever. Without this the warnings scroll past and accumulate.
+        run: python3 -W error::ResourceWarning -m unittest discover -s ops -p 'test_*.py' -v
 
       - name: Build the server bundle
         run: pnpm build:server

@@ -446,19 +446,29 @@ def fetch(addr, chain, fmt, job=None):
     # a 503, a payment error or a JSON error page was indistinguishable from a
     # report, and the HTML fetch below could be written to disk and uploaded to
     # the buyer as the document they paid for.
-    cmd += ["-w", "\n%{http_code}", "-d", json.dumps(body)]
+    # Response headers to stderr, which `run` captures separately from the body.
+    # The service mints a one-time recovery code for task deliveries and returns
+    # it here, in a header rather than in the report, because the report itself
+    # is signed and archived: a code written into it would sit inside the very
+    # artefact it protects. We are the only place it exists outside the buyer's
+    # message, so it is never logged and never written to disk.
+    cmd += ["-D", "/dev/stderr", "-w", "\n%{http_code}", "-d", json.dumps(body)]
     r = run(cmd, timeout=120)
     if getattr(r, "failure", None):
-        return {"ok": False, "why": r.failure, "status": None, "body": ""}
+        return {"ok": False, "why": r.failure, "status": None, "body": "", "recoveryCode": None}
     out = r.stdout or ""
     nl = out.rfind("\n")
     status = out[nl + 1:].strip() if nl >= 0 else ""
     body_text = out[:nl] if nl >= 0 else out
+    hit = re.search(r"^x-recovery-code:\s*([0-9a-f]{8,})\s*$",
+                    r.stderr or "", re.I | re.M)
+    rc = hit.group(1) if hit else None
     if not status.isdigit():
-        return {"ok": False, "why": "no status from curl", "status": None, "body": body_text}
+        return {"ok": False, "why": "no status from curl", "status": None,
+                "body": body_text, "recoveryCode": rc}
     code = int(status)
     return {"ok": 200 <= code < 300, "why": None if 200 <= code < 300 else "http:%d" % code,
-            "status": code, "body": body_text}
+            "status": code, "body": body_text, "recoveryCode": rc}
 
 
 def has_deliverable(job):
@@ -670,13 +680,13 @@ def deliver(job, buyer, addr, chain, from_ticker=False, already_messaged=False):
                    "--job-id", job, "--filename", "dossier-%s.html" % safe_sym,
                    "--mime-type", "text/html"], timeout=240) or {}
         return _finish(job, buyer, addr, chain, from_ticker, data, path, sym, up,
-                       already_messaged)
+                       already_messaged, page.get("recoveryCode"))
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 def _finish(job, buyer, addr, chain, from_ticker, data, path, sym, up,
-            already_messaged=False):
+            already_messaged=False, recovery_code=None):
     """Compose the message, send it, and register the deliverable.
 
     Runs inside deliver()'s temp directory so `task-deliverable-save` still has
@@ -726,12 +736,21 @@ def _finish(job, buyer, addr, chain, from_ticker, data, path, sym, up,
     # now has to be paired with the request itself, which the buyer has: it is
     # printed two lines up in this same message.
     L.append("LOST THIS REPORT? Re-fetch the exact copy sent to you, free:")
-    # Quote the request as it was actually sent, not the chain the report went on
-    # to resolve. The archive indexes both forms now, but printing a body we
-    # never sent was how this command came to return 403 on its own instructions.
-    L.append('  POST %s/recovery  body {"jobId":"%s",' % (ENDPOINT, job))
-    L.append('    "originalBody":{"tokenAddress":"%s"%s}}' % (
-        addr, (',"chain":"%s"' % chain) if chain else ""))
+    if recovery_code:
+        # A one-time code, printed here and nowhere else. It replaces pairing the
+        # job id with the request, which was guessable: "WBTC on ethereum" is
+        # what most buyers of a WBTC report sent, and job ids are public, so that
+        # pair let anyone read a report they had not bought.
+        L.append('  POST %s/recovery  body {"jobId":"%s",' % (ENDPOINT, job))
+        L.append('    "recoveryCode":"%s"}' % recovery_code)
+        L.append("  Keep that code. It is not stored here in a form we can read")
+        L.append("  back to you, and this message is the only copy.")
+    else:
+        # Older records, and any delivery where the header did not arrive, still
+        # recover by pairing the job id with the request that paid for it.
+        L.append('  POST %s/recovery  body {"jobId":"%s",' % (ENDPOINT, job))
+        L.append('    "originalBody":{"tokenAddress":"%s"%s}}' % (
+            addr, (',"chain":"%s"' % chain) if chain else ""))
     L.append("")
     # NOTHING HERE MAY ASK A BUYER FOR MONEY.
     #
@@ -826,14 +845,21 @@ def _run_tick():
             if str(t.get("myAgentId")) == ASP
             and t.get("myRole") == "asp"
             and t.get("status") == "accepted"]
-    log("tasks=%d candidates=%d" % (len(tasks), len(todo)))
+    # Count what is actually outstanding, not what is merely accepted. This
+    # printed "candidates=1" every two minutes for a job closed by hand on
+    # 28 July, because the done filter below is silent: a genuinely stuck job and
+    # a long-finished one produced the same line, and telling them apart meant
+    # opening the state file.
+    open_jobs = [t for t in todo if not state.get(t.get("jobId"), {}).get("done")]
+    log("tasks=%d accepted=%d open=%d" % (len(tasks), len(todo), len(open_jobs)))
     # A heartbeat the outside world can see. Uptime checks the web service, the
     # payment challenge, the key and the certificate, and none of that says
     # whether this process still runs: it could be dead since a reboot while
     # every one of those stayed green.
     try:
         with open(HEARTBEAT_FILE, "w") as fh:
-            json.dump({"at": time.time(), "tasks": len(tasks), "candidates": len(todo)}, fh)
+            json.dump({"at": time.time(), "tasks": len(tasks),
+                       "accepted": len(todo), "open": len(open_jobs)}, fh)
     except Exception:
         pass
     for t in todo:

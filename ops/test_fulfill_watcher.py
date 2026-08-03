@@ -23,6 +23,7 @@ nothing to flake in CI.
 import importlib.util
 import json
 import os
+import shutil
 import tempfile
 import time
 import types
@@ -60,6 +61,34 @@ def pair(chain, addr, symbol, liq):
         "baseToken": {"address": addr, "symbol": symbol},
         "liquidity": {"usd": liq},
     }
+
+
+def scratch(case):
+    """A temporary directory that is removed when the test ends.
+
+    Five setUps called mkdtemp and none of them cleaned up, so every run left
+    directories behind. On a box that has already had a full /tmp take out every
+    shell command, a test suite that leaks on each run is not a cosmetic problem.
+    """
+    d = tempfile.mkdtemp(prefix="fw-test-")
+    case.addCleanup(shutil.rmtree, d, True)
+    return d
+
+
+def read_json(path):
+    """Read JSON without leaking the handle.
+
+    `json.load(open(p))` leaves the file open until the garbage collector gets
+    to it. Harmless in a short test run, and exactly the habit that later shows
+    up in the watcher itself, which runs as a long-lived timer.
+    """
+    with open(path) as fh:
+        return json.load(fh)
+
+
+def write_json(path, obj):
+    with open(path, "w") as fh:
+        json.dump(obj, fh)
 
 
 class StubbedRun:
@@ -206,6 +235,8 @@ class TestBuyerFacingMessage(Harness):
     everyone while being true for almost nobody.
     """
 
+    recovery_code = "a1b2c3d4e5f60718"
+
     def deliver_and_capture(self):
         sent = {}
         report = {
@@ -229,6 +260,7 @@ class TestBuyerFacingMessage(Harness):
             "status": 200,
             "body": json.dumps(report) if fmt == "json"
             else "<html><body>report for %s</body></html>" % a,
+            "recoveryCode": self.recovery_code,
         }
         fw.jrun = lambda cmd, timeout=180: {}
         fw.run = lambda cmd, timeout=180: types.SimpleNamespace(stdout="", stderr="", returncode=0, failure=None)
@@ -241,7 +273,7 @@ class TestBuyerFacingMessage(Harness):
         for name in ("fetch", "jrun", "send_message"):
             self.addCleanup(lambda n=name, v=getattr(fw, name): setattr(fw, n, v))
 
-        tmp = tempfile.mkdtemp()
+        tmp = scratch(self)
         cwd = os.getcwd()
         os.chdir(tmp)
         self.addCleanup(os.chdir, cwd)
@@ -266,12 +298,15 @@ class TestBuyerFacingMessage(Harness):
         """A bare job id stopped being proof of purchase on 2026-08-02.
 
         If this message still told buyers to recover with the job id alone, it
-        would be handing them a call that now returns 400.
+        would be handing them a call that returns 400. Which second factor it
+        names depends on whether the delivery minted a code, so this only
+        asserts that one is named; the subclass below pins the code form.
         """
         text = self.deliver_and_capture()
         self.assertIn("/recovery", text)
-        self.assertIn("originalBody", text)
         self.assertIn(WBTC_ETH, text)
+        self.assertTrue("recoveryCode" in text or "originalBody" in text,
+                        "the buyer must be told what to send besides the job id")
 
     def test_states_the_verdict_and_the_contract_it_applies_to(self):
         text = self.deliver_and_capture()
@@ -283,7 +318,7 @@ class TestAskTiming(unittest.TestCase):
     """Grace before asking, then a nudge interval, driven with a controlled clock."""
 
     def setUp(self):
-        self.state = os.path.join(tempfile.mkdtemp(), "state.json")
+        self.state = os.path.join(scratch(self), "state.json")
         self._state_file, fw.STATE_FILE = fw.STATE_FILE, self.state
         self._saved = {n: getattr(fw, n) for n in
                        ("jrun", "has_deliverable", "resolve_token", "read_buyer_reply", "ask_for_token")}
@@ -302,9 +337,9 @@ class TestAskTiming(unittest.TestCase):
             setattr(fw, n, v)
 
     def age(self, seconds):
-        s = json.load(open(self.state))
+        s = read_json(self.state)
         s["0xtest"]["first_seen"] = time.time() - seconds
-        json.dump(s, open(self.state, "w"))
+        write_json(self.state, s)
 
     def test_holds_then_asks_once_then_nudges_on_an_interval(self):
         fw.main()
@@ -321,9 +356,9 @@ class TestAskTiming(unittest.TestCase):
         fw.main()
         self.assertEqual(len(self.asks), 1, "does not re-ask every tick")
 
-        s = json.load(open(self.state))
+        s = read_json(self.state)
         s["0xtest"]["asked_at"] = time.time() - (fw.REASK_SECONDS + 60)
-        json.dump(s, open(self.state, "w"))
+        write_json(self.state, s)
         fw.main()
         self.assertEqual(len(self.asks), 2, "nudges once the interval has passed")
 
@@ -346,7 +381,7 @@ class TestOnlyDeliversWhatWasAsked(unittest.TestCase):
     """
 
     def setUp(self):
-        self.state = os.path.join(tempfile.mkdtemp(), "state.json")
+        self.state = os.path.join(scratch(self), "state.json")
         self._state_file, fw.STATE_FILE = fw.STATE_FILE, self.state
         self._saved = {n: getattr(fw, n) for n in
                        ("jrun", "has_deliverable", "resolve_token", "read_buyer_reply",
@@ -372,15 +407,15 @@ class TestOnlyDeliversWhatWasAsked(unittest.TestCase):
         fw.read_buyer_reply = lambda job, buyer, asked_at=0: (None, None)
         fw.main()
         self.assertEqual(self.delivered, [], "a report nobody asked for must not be sent")
-        self.assertTrue(json.load(open(self.state))["0xjob"]["done"],
+        self.assertTrue(read_json(self.state)["0xjob"]["done"],
                         "and the job should not be reconsidered every tick")
 
     def test_a_token_the_buyer_supplied_is_delivered(self):
         """The flow that genuinely rescued a stalled buyer must survive."""
         fw.resolve_token = lambda title: (None, None, [])
         fw.read_buyer_reply = lambda job, buyer, asked_at=0: (WBTC_ETH, "ethereum")
-        json.dump({"0xjob": {"asked": True, "asked_at": time.time(),
-                             "first_seen": time.time() - 10_000}}, open(self.state, "w"))
+        write_json(self.state, {"0xjob": {"asked": True, "asked_at": time.time(),
+                             "first_seen": time.time() - 10_000}})
         fw.main()
         self.assertEqual(len(self.delivered), 1, "an answered question must still be fulfilled")
         self.assertEqual(self.delivered[0][1], WBTC_ETH)
@@ -388,8 +423,8 @@ class TestOnlyDeliversWhatWasAsked(unittest.TestCase):
     def test_an_unanswered_question_delivers_nothing(self):
         fw.resolve_token = lambda title: (None, None, [])
         fw.read_buyer_reply = lambda job, buyer, asked_at=0: (None, None)
-        json.dump({"0xjob": {"asked": True, "asked_at": time.time(),
-                             "first_seen": time.time() - 10_000}}, open(self.state, "w"))
+        write_json(self.state, {"0xjob": {"asked": True, "asked_at": time.time(),
+                             "first_seen": time.time() - 10_000}})
         fw.main()
         self.assertEqual(self.delivered, [])
 
@@ -511,7 +546,7 @@ class TestStateFailsClosed(unittest.TestCase):
     first_seen record at once, silently, and re-ask every open job."""
 
     def setUp(self):
-        self.d = tempfile.mkdtemp()
+        self.d = scratch(self)
         self._sf, fw.STATE_FILE = fw.STATE_FILE, os.path.join(self.d, "state.json")
         self.addCleanup(lambda: setattr(fw, "STATE_FILE", self._sf))
 
@@ -519,12 +554,14 @@ class TestStateFailsClosed(unittest.TestCase):
         self.assertEqual(fw.load_state(), {})
 
     def test_a_corrupt_file_refuses_rather_than_forgetting(self):
-        open(fw.STATE_FILE, "w").write("{not json")
+        with open(fw.STATE_FILE, "w") as fh:
+            fh.write("{not json")
         with self.assertRaises(fw.StateUnreadable):
             fw.load_state()
 
     def test_the_wrong_shape_is_also_refused(self):
-        open(fw.STATE_FILE, "w").write("[]")
+        with open(fw.STATE_FILE, "w") as fh:
+            fh.write("[]")
         with self.assertRaises(fw.StateUnreadable):
             fw.load_state()
 
@@ -683,7 +720,7 @@ class TestDeliveryIsStaged(unittest.TestCase):
         self._saved = {n: getattr(fw, n) for n in
                        ("fetch", "jrun", "run", "send_message", "STATE_FILE",
                         "has_deliverable", "resolve_token", "read_buyer_reply")}
-        self.state = os.path.join(tempfile.mkdtemp(), "state.json")
+        self.state = os.path.join(scratch(self), "state.json")
         fw.STATE_FILE = self.state
         self.sent = []
         self.saves = []
@@ -754,3 +791,32 @@ class TestDeliveryIsStaged(unittest.TestCase):
         self.assertEqual(len(self.sent), 1, "the buyer must not receive a duplicate report")
         self.assertEqual(len(self.saves), 2, "but the registration is retried")
         self.assertTrue(st2["done"], "and a second failure closes it rather than looping")
+
+
+class TestRecoveryInstructionsUseTheCode(TestBuyerFacingMessage):
+    """The delivery message is the only place the recovery code ever exists.
+
+    Recovery used to be proved by pairing the job id with the request, and both
+    halves are public: job ids come out of the marketplace search, and "WBTC on
+    ethereum" is what most buyers of a WBTC report sent. The service now mints a
+    random code per delivery and stores only its hash, so this message is what
+    carries it to the buyer.
+    """
+
+    def test_the_code_is_printed_where_the_buyer_will_find_it(self):
+        text = self.deliver_and_capture()
+        self.assertIn(self.recovery_code, text)
+        self.assertIn("recoveryCode", text)
+        self.assertNotIn("originalBody", text,
+                         "the guessable form must not be offered beside the code")
+
+    def test_the_buyer_is_told_the_code_cannot_be_reissued(self):
+        text = self.deliver_and_capture().lower()
+        self.assertIn("keep that code", text)
+
+    def test_without_a_code_the_old_instructions_still_ship(self):
+        """Any delivery where the header did not arrive must stay recoverable."""
+        self.recovery_code = None
+        text = self.deliver_and_capture()
+        self.assertIn("originalBody", text)
+        self.assertIn("recovery", text.lower())

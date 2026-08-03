@@ -17,7 +17,7 @@ Free sample of a real generated report: https://dossier.rouma.xyz/dossier/sample
 | Route | Method | Price | What it does |
 |---|---|---|---|
 | `/dossier` | GET, POST | 0.01 USD₮0 | Full due-diligence report (`html` default, `json` optional) |
-| `/dossier/recovery` | GET, POST | free | Re-fetch a report you already paid for: `paymentTransaction` alone, or `jobId` **with** `originalBody`/`requestParamsSha256` |
+| `/dossier/recovery` | GET, POST | free | Re-fetch a report you already paid for: `paymentTransaction` alone, or `jobId` **with** `recoveryCode` |
 | `/dossier/preflight` | GET, POST | free | Coverage check for a token before you pay |
 | `/dossier/sample` | GET | free | Real sample report, cached |
 | `/` | GET | free | Landing page |
@@ -86,22 +86,33 @@ is archived (90 days, 5000 records, pruned) and can be re-fetched:
 curl "https://dossier.rouma.xyz/dossier/recovery?paymentTransaction=0x…"
 
 # bought as a marketplace task: a job id is not proof of purchase on its own,
-# because job ids are publicly enumerable, so send the request it paid for too
+# because job ids are publicly enumerable, so send the code from your delivery
+# message with it
 curl -X POST https://dossier.rouma.xyz/dossier/recovery \
   -H 'content-type: application/json' \
-  -d '{"jobId":"0x…","originalBody":{"tokenAddress":"0x…","chain":"ethereum"}}'
+  -d '{"jobId":"0x…","recoveryCode":"…"}'
 ```
-
-Either the chain you sent or the chain the report resolved will do: a buyer who
-omitted it holds a report naming the resolved one, so both forms are accepted.
 
 It returns the archived bytes, identical to what was delivered, with the request,
 delivery timestamp, and settlement transaction or job id attached.
 
-Recovery **requires one of those two proofs**. A request-parameters hash is deliberately
-refused on its own, because those parameters are guessable for any popular token and
-accepting them would hand a paid report to someone who never bought one. Sending the
-original request as well is checked and must match.
+Recovery **requires one of those two proofs**. The second factor for a job id used to
+be the request itself, and that was too weak: `WBTC on ethereum` is what most buyers of
+a WBTC report sent, so an enumerated job id paired with the obvious request read a
+report nobody had bought. Each task delivery now mints a random 128-bit code, returned
+to the fulfilment daemon in a response header and printed once in the buyer's delivery
+message. Only its SHA-256 is stored, so reading the archive does not yield it, and the
+code never enters the report, which is signed and archived. Records written before this
+keep the parameter check and expire with the 90-day window.
+
+The settlement transaction stays sufficient on its own, deliberately. Transfers to the
+payout address are visible on-chain, so an observer who watches them can reach a report,
+and the recovery response says so in a `confidentiality` field rather than leaving it to
+this file. Requiring a code there would be worse than the leak: the code travels in the
+response, and a buyer who still holds the response does not need recovery at all. The
+transaction hash is what survives losing it. Either the chain you sent or the chain the
+report resolved will do, since a buyer who omitted it holds a report naming the resolved
+one.
 
 The job id exists because a task-level buyer never signs an x402 payment: our fulfilment
 daemon delivers their report into the job channel, so there is no settlement transaction
@@ -162,7 +173,7 @@ requires the env vars in `.env.example` (set on the deploy host, never committed
 
 ```bash
 pnpm test        # the Node suite, no network
-python3 -m unittest discover -s ops -p 'test_*.py'   # the fulfilment watcher
+python3 -W error::ResourceWarning -m unittest discover -s ops -p 'test_*.py'   # the watcher
 pnpm typecheck
 ```
 

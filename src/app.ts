@@ -313,6 +313,7 @@ app.on(["GET", "POST"], "/dossier/recovery", async (c) => {
   const tx = String(p.paymentTransaction || p.transaction || "").trim();
   const jobId = String(p.jobId || p.job || "").trim();
   const givenHash = String(p.requestParamsSha256 || p.requestBodySha256 || "").trim();
+  const code = String(p.recoveryCode || p.code || "").trim();
   let originalBody = p.originalBody as Record<string, unknown> | undefined;
   if (typeof originalBody === "string") {
     try { originalBody = JSON.parse(originalBody); } catch { originalBody = undefined; }
@@ -353,21 +354,26 @@ app.on(["GET", "POST"], "/dossier/recovery", async (c) => {
   // message carries the contract and chain in the same text that points here,
   // so a genuine buyer is already holding it.
   //
-  // This is a bar, not a wall — the parameters remain guessable for a popular
-  // token, which is why a per-report recovery code is the follow-up. It closes
-  // the enumeration path today, for every record, with no migration.
-  if (!tx && !hash) {
+  // The parameters were only ever a bar, not a wall: "WBTC on ethereum" is what
+  // most buyers of a WBTC report sent, so an enumerated job id paired with the
+  // obvious request still read someone else's report. Deliveries now carry a
+  // random per-report code instead, handed to the buyer in the delivery message
+  // and stored here only as a hash.
+  //
+  // Records written before that keep the parameter check, because their buyers
+  // were never given a code and hold instructions that name the request. Those
+  // expire with the 90-day archive window.
+  if (!tx && !hash && !code) {
     return c.json(
       {
         error: "insufficient_proof_of_purchase",
         message:
           "A jobId on its own is not proof of purchase: job ids are publicly enumerable. " +
-          "Send it together with originalBody (the request you paid for) or " +
-          "requestParamsSha256, or send paymentTransaction instead, which needs nothing else. " +
-          "The contract address and chain are printed in the report and in the delivery " +
-          "message that pointed you here.",
+          "Send it together with recoveryCode, the code printed in the delivery message " +
+          "that pointed you here, or send paymentTransaction instead, which needs nothing " +
+          "else.",
         usage: {
-          post: 'POST /dossier/recovery {"jobId":"0x…","originalBody":{"tokenAddress":"0x…","chain":"ethereum"}}',
+          post: 'POST /dossier/recovery {"jobId":"0x…","recoveryCode":"…"}',
           alternative: 'POST /dossier/recovery {"paymentTransaction":"0x…"}',
         },
       },
@@ -389,6 +395,24 @@ app.on(["GET", "POST"], "/dossier/recovery", async (c) => {
       },
       404,
     );
+  }
+  // Job-id recovery, once the record is in hand. A record that carries a code
+  // is proved with the code and with nothing else: accepting the parameters as
+  // an alternative would leave the guessable path open beside the closed one,
+  // which is not a fix.
+  if (!tx && rec.recoveryCodeSha256) {
+    if (!code || !archive.recoveryCodeMatches(rec, code)) {
+      return c.json(
+        {
+          error: code ? "recovery_code_mismatch" : "recovery_code_required",
+          message:
+            "This report is recovered with the recovery code from its delivery message, " +
+            "paired with the jobId. The request parameters are not accepted as proof for " +
+            "this report because they are guessable for a popular token.",
+        },
+        403,
+      );
+    }
   }
   // If the caller also supplied the request, it must be the one that was paid
   // for, in either the form they sent or the form we resolved and printed back
@@ -417,6 +441,22 @@ app.on(["GET", "POST"], "/dossier/recovery", async (c) => {
     signatureCovers:
       "the report's own findings, inputs and source observations — not the payment transaction",
     verifier: `${config.publicOrigin}/verify`,
+    // Said here, on the response itself, rather than only in a README a buyer
+    // may never read. A settlement transaction is enough on its own, and
+    // transfers to our payout address are visible on-chain, so an observer who
+    // watches them can reach a report. Requiring a per-report code here too
+    // would be worse than the leak: the code travels in the response, and a
+    // buyer who still holds the response does not need recovery. Their
+    // transaction hash is what survives losing it, and it is in their wallet.
+    // What that observer reaches is a report on a token somebody else chose,
+    // built from free public data, of which a full sample is published.
+    confidentiality:
+      rec.paymentTransaction && !rec.recoveryCodeSha256
+        ? "This report is recoverable by anyone holding its settlement transaction hash, " +
+          "which is observable on-chain. Recovery is a guard against casual free reports, " +
+          "not a confidentiality boundary. Treat the contents as readable by anyone " +
+          "watching payments to this service."
+        : "This report is recoverable only with the recovery code from its delivery message.",
   });
 });
 
@@ -487,8 +527,20 @@ if (config.devSkipPayment) paymentLayer = "disabled";
 
 if (!config.devSkipPayment && !paymentConfigured()) {
   paymentLayer = "not_configured";
-  const dark = (c: any) =>
-    c.json({ error: "payment layer not configured — service temporarily unavailable" }, 503);
+  const dark = async (c: any, next: any) => {
+    // Our own fulfilment daemon is exempt, and has to be. A task-mode buyer
+    // paid OKX at the task level and never signs an x402 payment at all, so a
+    // missing facilitator credential says nothing about whether they are owed a
+    // report — they are. Going dark on the daemon too meant a credential outage
+    // stopped us serving the one class of buyer whose payment is not in doubt.
+    //
+    // This does not reopen the hole this block exists to close. The bypass is
+    // the same shared secret that already exempts the daemon when payments are
+    // working, so it grants nothing new; every external caller still gets 503
+    // rather than a free report.
+    if (c.get("internal")) return next();
+    return c.json({ error: "payment layer not configured — service temporarily unavailable" }, 503);
+  };
   app.post("/dossier", dark);
   app.get("/dossier", dark);
 }
@@ -787,6 +839,11 @@ app.on(["GET", "POST"], "/dossier", async (c) => {
     // transaction can be attached once the SDK has settled.
     const id = archive.newId();
     const jobId = loggedJob;
+    // A recovery code is minted only for task-mode deliveries, which are the
+    // ones keyed on a publicly enumerable job id. x402 deliveries are keyed on
+    // the settlement transaction and deliberately need no code: see the comment
+    // on the recovery route.
+    const recovery = jobId ? archive.newRecoveryCode() : undefined;
     archive.save({
       id,
       paramsSha256: archive.paramsHash(parsed.data as Record<string, unknown>),
@@ -801,8 +858,15 @@ app.on(["GET", "POST"], "/dossier", async (c) => {
       deliverable: body,
       deliveredAt: new Date().toISOString(),
       ...(jobId ? { jobId } : {}),
+      ...(recovery ? { recoveryCodeSha256: recovery.hash } : {}),
     });
     (c as any).set("archiveId", id);
+    // The code leaves in a header rather than in the report body, which is
+    // signed and archived: putting it there would write the capability into the
+    // very artefact it protects. This header is only ever produced for an
+    // authenticated internal call, so it reaches the fulfilment daemon and
+    // nobody else, and the daemon prints it in the buyer's delivery message.
+    if (recovery) c.header("X-Recovery-Code", recovery.code);
     // Name the artefact. Without this the marketplace saved an HTML report as a
     // .txt file, and a buyer's first sight of the deliverable was a text blob.
     // `inline` so browsers still render it; the filename is only used on save.
