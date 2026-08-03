@@ -65,6 +65,8 @@ export interface RpcFacts {
   decimals?: number;
   /** Human units, already divided by 10**decimals when both are known. */
   totalSupply?: number;
+  /** Exact value as a decimal string; totalSupply may be absent when too large. */
+  totalSupplyExact?: string;
   /** Non-zero EIP-1967 implementation slot. */
   proxyImplementation?: string;
   proxyAdmin?: string;
@@ -179,9 +181,12 @@ async function batch(url: string, calls: RpcCall[], timeoutMs: number): Promise<
   return out;
 }
 
-const call = (to: string, data: string): RpcCall => ({
+// `at` is a block tag. It defaults to "latest" only for callers that have no
+// height yet; the snapshot always passes the height it pinned, so every fact in
+// a report comes from the same block.
+const call = (to: string, data: string, at: string = "latest"): RpcCall => ({
   method: "eth_call",
-  params: [{ to, data }, "latest"],
+  params: [{ to, data }, at],
 });
 
 /**
@@ -190,27 +195,57 @@ const call = (to: string, data: string): RpcCall => ({
  * One batched round trip, then a second only when the address turns out to be a
  * proxy and its implementation's bytecode is the one worth scanning.
  */
+/**
+ * Exact decimal string from a raw integer amount, without going through a float.
+ *
+ * `Number(raw / 10n ** decimals)` truncates before it converts: 150 raw with 2
+ * decimals became 1, not 1.5. Quotient and remainder keep every digit, and large
+ * supplies stay exact instead of silently losing precision past 2^53.
+ */
+export function formatUnits(raw: bigint, decimals: number): string {
+  if (decimals <= 0) return raw.toString();
+  const base = 10n ** BigInt(decimals);
+  const whole = raw / base;
+  const frac = (raw % base).toString().padStart(decimals, "0").replace(/0+$/, "");
+  return frac ? `${whole}.${frac}` : whole.toString();
+}
+
 export async function fetchChainFacts(chain: string, address: string): Promise<RpcSnapshot> {
   const urls = RPC_URLS[chain.toLowerCase()];
   if (!urls) return { status: "unavailable" };
 
   for (const url of urls) {
     try {
-      const [code, name, symbol, decimals, supply, implSlot, adminSlot, owner, getOwner, chainIdHex, blockHex] =
+      // Pin every read to one block.
+      //
+      // All of these used "latest" and the height was asked for in a later
+      // chunk, so owner, implementation slot, bytecode and supply could each
+      // come from a different block during an upgrade or an ownership transfer,
+      // while the report attested to a single height that pinned none of them.
+      // Ask for the height first, then read everything at exactly that tag.
+      const [chainIdHex, blockHex] = await batch(
+        url,
+        [{ method: "eth_chainId", params: [] }, { method: "eth_blockNumber", params: [] }],
+        9000,
+      );
+      // Without a height there is nothing to pin to, so fall back rather than
+      // silently reading "latest" again and calling it pinned.
+      if (!blockHex) throw new Error("no answer to eth_blockNumber");
+      const at = blockHex;
+
+      const [code, name, symbol, decimals, supply, implSlot, adminSlot, owner, getOwner] =
         await batch(
           url,
           [
-            { method: "eth_getCode", params: [address, "latest"] },
-            call(address, SEL.name),
-            call(address, SEL.symbol),
-            call(address, SEL.decimals),
-            call(address, SEL.totalSupply),
-            { method: "eth_getStorageAt", params: [address, SLOT_IMPL, "latest"] },
-            { method: "eth_getStorageAt", params: [address, SLOT_ADMIN, "latest"] },
-            call(address, SEL.owner),
-            call(address, SEL.getOwner),
-            { method: "eth_chainId", params: [] },
-            { method: "eth_blockNumber", params: [] },
+            { method: "eth_getCode", params: [address, at] },
+            call(address, SEL.name, at),
+            call(address, SEL.symbol, at),
+            call(address, SEL.decimals, at),
+            call(address, SEL.totalSupply, at),
+            { method: "eth_getStorageAt", params: [address, SLOT_IMPL, at] },
+            { method: "eth_getStorageAt", params: [address, SLOT_ADMIN, at] },
+            call(address, SEL.owner, at),
+            call(address, SEL.getOwner, at),
           ],
           9000,
         );
@@ -247,7 +282,9 @@ export async function fetchChainFacts(chain: string, address: string): Promise<R
         try {
           const [implCode] = await batch(
             url,
-            [{ method: "eth_getCode", params: [proxyImplementation, "latest"] }],
+            // Same height as everything else: reading the implementation at a
+            // later block could describe a contract the report never analysed.
+            [{ method: "eth_getCode", params: [proxyImplementation, at] }],
             8000,
           );
           if (strip(implCode)) scanned = strip(implCode);
@@ -263,9 +300,17 @@ export async function fetchChainFacts(chain: string, address: string): Promise<R
       const dec = decodeUint(decimals ?? "");
       const decimalsNum = dec !== undefined && dec <= 36n ? Number(dec) : undefined;
       const supplyRaw = decodeUint(supply ?? "");
-      const totalSupply =
+      // BigInt division truncates, so a raw supply of 150 with 2 decimals came
+      // out as 1 rather than 1.5, and a large supply could exceed the safe
+      // integer range on the way to a number. Keep the exact value as a decimal
+      // string, and offer the number only when it is safely representable.
+      const totalSupplyExact =
         supplyRaw !== undefined && decimalsNum !== undefined
-          ? Number(supplyRaw / 10n ** BigInt(decimalsNum))
+          ? formatUnits(supplyRaw, decimalsNum)
+          : undefined;
+      const totalSupply =
+        totalSupplyExact !== undefined && Number.isSafeInteger(Math.trunc(Number(totalSupplyExact)))
+          ? Number(totalSupplyExact)
           : undefined;
 
       const ownerAddr = decodeAddress(owner ?? "") ?? decodeAddress(getOwner ?? "");

@@ -1,5 +1,20 @@
 {
-  "https://bsc-rpc.publicnode.com|[{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_getCode\",\"params\":[\"0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82\",\"latest\"]},{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"eth_call\",\"params\":[{\"to\":\"0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82\",\"data\":\"0x06fdde03\"},\"latest\"]},{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"eth_call\",\"params\":[{\"to\":\"0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82\",\"data\":\"0x95d89b41\"},\"latest\"]},{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"eth_call\",\"params\":[{\"to\":\"0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82\",\"data\":\"0x313ce567\"},\"latest\"]},{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"eth_call\",\"params\":[{\"to\":\"0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82\",\"data\":\"0x18160ddd\"},\"latest\"]},{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"eth_getStorageAt\",\"params\":[\"0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82\",\"0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc\",\"latest\"]},{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"eth_getStorageAt\",\"params\":[\"0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82\",\"0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103\",\"latest\"]},{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"eth_call\",\"params\":[{\"to\":\"0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82\",\"data\":\"0x8da5cb5b\"},\"latest\"]}]": {
+  "https://bsc-rpc.publicnode.com|[{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_chainId\",\"params\":[]},{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"eth_blockNumber\",\"params\":[]}]": {
+    "status": 200,
+    "body": [
+      {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": "0x38"
+      },
+      {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": "0x6c85036"
+      }
+    ]
+  },
+  "https://bsc-rpc.publicnode.com|[{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_getCode\",\"params\":[\"0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82\",\"0x6c85036\"]},{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"eth_call\",\"params\":[{\"to\":\"0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82\",\"data\":\"0x06fdde03\"},\"0x6c85036\"]},{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"eth_call\",\"params\":[{\"to\":\"0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82\",\"data\":\"0x95d89b41\"},\"0x6c85036\"]},{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"eth_call\",\"params\":[{\"to\":\"0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82\",\"data\":\"0x313ce567\"},\"0x6c85036\"]},{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"eth_call\",\"params\":[{\"to\":\"0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82\",\"data\":\"0x18160ddd\"},\"0x6c85036\"]},{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"eth_getStorageAt\",\"params\":[\"0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82\",\"0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc\",\"0x6c85036\"]},{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"eth_getStorageAt\",\"params\":[\"0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82\",\"0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103\",\"0x6c85036\"]},{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"eth_call\",\"params\":[{\"to\":\"0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82\",\"data\":\"0x8da5cb5b\"},\"0x6c85036\"]}]": {
     "status": 200,
     "body": [
       {
@@ -25,7 +40,7 @@
       {
         "jsonrpc": "2.0",
         "id": 5,
-        "result": "0x00000000000000000000000000000000000000000fe060a5c17c2f54c6a3574b"
+        "result": "0x000000000000000000000000000000000000000010114431ce4a54b57403574b"
       },
       {
         "jsonrpc": "2.0",
@@ -44,27 +59,32 @@
       }
     ]
   },
-  "https://bsc-rpc.publicnode.com|[{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_call\",\"params\":[{\"to\":\"0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82\",\"data\":\"0x893d20e8\"},\"latest\"]},{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"eth_chainId\",\"params\":[]},{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"eth_blockNumber\",\"params\":[]}]": {
+  "https://bsc-rpc.publicnode.com|[{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_call\",\"params\":[{\"to\":\"0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82\",\"data\":\"0x893d20e8\"},\"0x6c85036\"]}]": {
     "status": 200,
     "body": [
       {
         "jsonrpc": "2.0",
         "id": 1,
         "result": "0x00000000000000000000000073feaa1ee314f8c655e354234017be2193c9e24e"
+      }
+    ]
+  },
+  "https://ethereum-rpc.publicnode.com|[{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_chainId\",\"params\":[]},{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"eth_blockNumber\",\"params\":[]}]": {
+    "status": 200,
+    "body": [
+      {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": "0x1"
       },
       {
         "jsonrpc": "2.0",
         "id": 2,
-        "result": "0x38"
-      },
-      {
-        "jsonrpc": "2.0",
-        "id": 3,
-        "result": "0x6b4729b"
+        "result": "0x187c476"
       }
     ]
   },
-  "https://ethereum-rpc.publicnode.com|[{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_getCode\",\"params\":[\"0x1f9840a85d5af5bf1d1762f925bdaddc4201f984\",\"latest\"]},{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"eth_call\",\"params\":[{\"to\":\"0x1f9840a85d5af5bf1d1762f925bdaddc4201f984\",\"data\":\"0x06fdde03\"},\"latest\"]},{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"eth_call\",\"params\":[{\"to\":\"0x1f9840a85d5af5bf1d1762f925bdaddc4201f984\",\"data\":\"0x95d89b41\"},\"latest\"]},{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"eth_call\",\"params\":[{\"to\":\"0x1f9840a85d5af5bf1d1762f925bdaddc4201f984\",\"data\":\"0x313ce567\"},\"latest\"]},{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"eth_call\",\"params\":[{\"to\":\"0x1f9840a85d5af5bf1d1762f925bdaddc4201f984\",\"data\":\"0x18160ddd\"},\"latest\"]},{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"eth_getStorageAt\",\"params\":[\"0x1f9840a85d5af5bf1d1762f925bdaddc4201f984\",\"0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc\",\"latest\"]},{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"eth_getStorageAt\",\"params\":[\"0x1f9840a85d5af5bf1d1762f925bdaddc4201f984\",\"0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103\",\"latest\"]},{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"eth_call\",\"params\":[{\"to\":\"0x1f9840a85d5af5bf1d1762f925bdaddc4201f984\",\"data\":\"0x8da5cb5b\"},\"latest\"]}]": {
+  "https://ethereum-rpc.publicnode.com|[{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_getCode\",\"params\":[\"0x1f9840a85d5af5bf1d1762f925bdaddc4201f984\",\"0x187c476\"]},{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"eth_call\",\"params\":[{\"to\":\"0x1f9840a85d5af5bf1d1762f925bdaddc4201f984\",\"data\":\"0x06fdde03\"},\"0x187c476\"]},{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"eth_call\",\"params\":[{\"to\":\"0x1f9840a85d5af5bf1d1762f925bdaddc4201f984\",\"data\":\"0x95d89b41\"},\"0x187c476\"]},{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"eth_call\",\"params\":[{\"to\":\"0x1f9840a85d5af5bf1d1762f925bdaddc4201f984\",\"data\":\"0x313ce567\"},\"0x187c476\"]},{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"eth_call\",\"params\":[{\"to\":\"0x1f9840a85d5af5bf1d1762f925bdaddc4201f984\",\"data\":\"0x18160ddd\"},\"0x187c476\"]},{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"eth_getStorageAt\",\"params\":[\"0x1f9840a85d5af5bf1d1762f925bdaddc4201f984\",\"0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc\",\"0x187c476\"]},{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"eth_getStorageAt\",\"params\":[\"0x1f9840a85d5af5bf1d1762f925bdaddc4201f984\",\"0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103\",\"0x187c476\"]},{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"eth_call\",\"params\":[{\"to\":\"0x1f9840a85d5af5bf1d1762f925bdaddc4201f984\",\"data\":\"0x8da5cb5b\"},\"0x187c476\"]}]": {
     "status": 200,
     "body": [
       {
@@ -113,7 +133,7 @@
       }
     ]
   },
-  "https://ethereum-rpc.publicnode.com|[{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_call\",\"params\":[{\"to\":\"0x1f9840a85d5af5bf1d1762f925bdaddc4201f984\",\"data\":\"0x893d20e8\"},\"latest\"]},{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"eth_chainId\",\"params\":[]},{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"eth_blockNumber\",\"params\":[]}]": {
+  "https://ethereum-rpc.publicnode.com|[{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_call\",\"params\":[{\"to\":\"0x1f9840a85d5af5bf1d1762f925bdaddc4201f984\",\"data\":\"0x893d20e8\"},\"0x187c476\"]}]": {
     "status": 200,
     "body": [
       {
@@ -124,20 +144,25 @@
           "message": "execution reverted",
           "data": "0x"
         }
-      },
-      {
-        "jsonrpc": "2.0",
-        "id": 2,
-        "result": "0x1"
-      },
-      {
-        "jsonrpc": "2.0",
-        "id": 3,
-        "result": "0x1870657"
       }
     ]
   },
-  "https://rpc.xlayer.tech|[{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_getCode\",\"params\":[\"0x779ded0c9e1022225f8e0630b35a9b54be713736\",\"latest\"]},{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"eth_call\",\"params\":[{\"to\":\"0x779ded0c9e1022225f8e0630b35a9b54be713736\",\"data\":\"0x06fdde03\"},\"latest\"]},{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"eth_call\",\"params\":[{\"to\":\"0x779ded0c9e1022225f8e0630b35a9b54be713736\",\"data\":\"0x95d89b41\"},\"latest\"]},{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"eth_call\",\"params\":[{\"to\":\"0x779ded0c9e1022225f8e0630b35a9b54be713736\",\"data\":\"0x313ce567\"},\"latest\"]},{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"eth_call\",\"params\":[{\"to\":\"0x779ded0c9e1022225f8e0630b35a9b54be713736\",\"data\":\"0x18160ddd\"},\"latest\"]},{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"eth_getStorageAt\",\"params\":[\"0x779ded0c9e1022225f8e0630b35a9b54be713736\",\"0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc\",\"latest\"]},{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"eth_getStorageAt\",\"params\":[\"0x779ded0c9e1022225f8e0630b35a9b54be713736\",\"0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103\",\"latest\"]},{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"eth_call\",\"params\":[{\"to\":\"0x779ded0c9e1022225f8e0630b35a9b54be713736\",\"data\":\"0x8da5cb5b\"},\"latest\"]}]": {
+  "https://rpc.xlayer.tech|[{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_chainId\",\"params\":[]},{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"eth_blockNumber\",\"params\":[]}]": {
+    "status": 200,
+    "body": [
+      {
+        "jsonrpc": "2.0",
+        "result": "0xc4",
+        "id": 1
+      },
+      {
+        "jsonrpc": "2.0",
+        "result": "0x3fe4b6a",
+        "id": 2
+      }
+    ]
+  },
+  "https://rpc.xlayer.tech|[{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_getCode\",\"params\":[\"0x779ded0c9e1022225f8e0630b35a9b54be713736\",\"0x3fe4b6a\"]},{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"eth_call\",\"params\":[{\"to\":\"0x779ded0c9e1022225f8e0630b35a9b54be713736\",\"data\":\"0x06fdde03\"},\"0x3fe4b6a\"]},{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"eth_call\",\"params\":[{\"to\":\"0x779ded0c9e1022225f8e0630b35a9b54be713736\",\"data\":\"0x95d89b41\"},\"0x3fe4b6a\"]},{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"eth_call\",\"params\":[{\"to\":\"0x779ded0c9e1022225f8e0630b35a9b54be713736\",\"data\":\"0x313ce567\"},\"0x3fe4b6a\"]},{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"eth_call\",\"params\":[{\"to\":\"0x779ded0c9e1022225f8e0630b35a9b54be713736\",\"data\":\"0x18160ddd\"},\"0x3fe4b6a\"]},{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"eth_getStorageAt\",\"params\":[\"0x779ded0c9e1022225f8e0630b35a9b54be713736\",\"0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc\",\"0x3fe4b6a\"]},{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"eth_getStorageAt\",\"params\":[\"0x779ded0c9e1022225f8e0630b35a9b54be713736\",\"0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103\",\"0x3fe4b6a\"]},{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"eth_call\",\"params\":[{\"to\":\"0x779ded0c9e1022225f8e0630b35a9b54be713736\",\"data\":\"0x8da5cb5b\"},\"0x3fe4b6a\"]}]": {
     "status": 200,
     "body": [
       {
@@ -162,7 +187,7 @@
       },
       {
         "jsonrpc": "2.0",
-        "result": "0x0000000000000000000000000000000000000000000000000000665bdf56cfb6",
+        "result": "0x0000000000000000000000000000000000000000000000000000672bf6446eea",
         "id": 5
       },
       {
@@ -182,7 +207,7 @@
       }
     ]
   },
-  "https://rpc.xlayer.tech|[{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_call\",\"params\":[{\"to\":\"0x779ded0c9e1022225f8e0630b35a9b54be713736\",\"data\":\"0x893d20e8\"},\"latest\"]},{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"eth_chainId\",\"params\":[]},{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"eth_blockNumber\",\"params\":[]}]": {
+  "https://rpc.xlayer.tech|[{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_call\",\"params\":[{\"to\":\"0x779ded0c9e1022225f8e0630b35a9b54be713736\",\"data\":\"0x893d20e8\"},\"0x3fe4b6a\"]}]": {
     "status": 200,
     "body": [
       {
@@ -192,20 +217,10 @@
           "message": "execution reverted"
         },
         "id": 1
-      },
-      {
-        "jsonrpc": "2.0",
-        "result": "0xc4",
-        "id": 2
-      },
-      {
-        "jsonrpc": "2.0",
-        "result": "0x3f55a13",
-        "id": 3
       }
     ]
   },
-  "https://rpc.xlayer.tech|[{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_getCode\",\"params\":[\"0x1ec7df9e74be05cb5a456aca2dc1ac2cec9ab6a3\",\"latest\"]}]": {
+  "https://rpc.xlayer.tech|[{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_getCode\",\"params\":[\"0x1ec7df9e74be05cb5a456aca2dc1ac2cec9ab6a3\",\"0x3fe4b6a\"]}]": {
     "status": 200,
     "body": [
       {
@@ -215,7 +230,7 @@
       }
     ]
   },
-  "https://bsc-rpc.publicnode.com|[{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_getCode\",\"params\":[\"0x1234567890abcdef1234567890abcdef12345678\",\"latest\"]},{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"eth_call\",\"params\":[{\"to\":\"0x1234567890abcdef1234567890abcdef12345678\",\"data\":\"0x06fdde03\"},\"latest\"]},{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"eth_call\",\"params\":[{\"to\":\"0x1234567890abcdef1234567890abcdef12345678\",\"data\":\"0x95d89b41\"},\"latest\"]},{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"eth_call\",\"params\":[{\"to\":\"0x1234567890abcdef1234567890abcdef12345678\",\"data\":\"0x313ce567\"},\"latest\"]},{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"eth_call\",\"params\":[{\"to\":\"0x1234567890abcdef1234567890abcdef12345678\",\"data\":\"0x18160ddd\"},\"latest\"]},{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"eth_getStorageAt\",\"params\":[\"0x1234567890abcdef1234567890abcdef12345678\",\"0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc\",\"latest\"]},{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"eth_getStorageAt\",\"params\":[\"0x1234567890abcdef1234567890abcdef12345678\",\"0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103\",\"latest\"]},{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"eth_call\",\"params\":[{\"to\":\"0x1234567890abcdef1234567890abcdef12345678\",\"data\":\"0x8da5cb5b\"},\"latest\"]}]": {
+  "https://bsc-rpc.publicnode.com|[{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_getCode\",\"params\":[\"0x1234567890abcdef1234567890abcdef12345678\",\"0x6c85036\"]},{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"eth_call\",\"params\":[{\"to\":\"0x1234567890abcdef1234567890abcdef12345678\",\"data\":\"0x06fdde03\"},\"0x6c85036\"]},{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"eth_call\",\"params\":[{\"to\":\"0x1234567890abcdef1234567890abcdef12345678\",\"data\":\"0x95d89b41\"},\"0x6c85036\"]},{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"eth_call\",\"params\":[{\"to\":\"0x1234567890abcdef1234567890abcdef12345678\",\"data\":\"0x313ce567\"},\"0x6c85036\"]},{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"eth_call\",\"params\":[{\"to\":\"0x1234567890abcdef1234567890abcdef12345678\",\"data\":\"0x18160ddd\"},\"0x6c85036\"]},{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"eth_getStorageAt\",\"params\":[\"0x1234567890abcdef1234567890abcdef12345678\",\"0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc\",\"0x6c85036\"]},{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"eth_getStorageAt\",\"params\":[\"0x1234567890abcdef1234567890abcdef12345678\",\"0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103\",\"0x6c85036\"]},{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"eth_call\",\"params\":[{\"to\":\"0x1234567890abcdef1234567890abcdef12345678\",\"data\":\"0x8da5cb5b\"},\"0x6c85036\"]}]": {
     "status": 200,
     "body": [
       {
@@ -260,23 +275,13 @@
       }
     ]
   },
-  "https://bsc-rpc.publicnode.com|[{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_call\",\"params\":[{\"to\":\"0x1234567890abcdef1234567890abcdef12345678\",\"data\":\"0x893d20e8\"},\"latest\"]},{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"eth_chainId\",\"params\":[]},{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"eth_blockNumber\",\"params\":[]}]": {
+  "https://bsc-rpc.publicnode.com|[{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_call\",\"params\":[{\"to\":\"0x1234567890abcdef1234567890abcdef12345678\",\"data\":\"0x893d20e8\"},\"0x6c85036\"]}]": {
     "status": 200,
     "body": [
       {
         "jsonrpc": "2.0",
         "id": 1,
         "result": "0x"
-      },
-      {
-        "jsonrpc": "2.0",
-        "id": 2,
-        "result": "0x38"
-      },
-      {
-        "jsonrpc": "2.0",
-        "id": 3,
-        "result": "0x6b472b8"
       }
     ]
   }

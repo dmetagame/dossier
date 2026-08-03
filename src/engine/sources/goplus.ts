@@ -72,7 +72,7 @@ export async function fetchGoPlus(chain: string, address: string): Promise<GoPlu
   const url = `https://api.gopluslabs.io/api/v1/token_security/${chainId}?contract_addresses=${address}`;
   // One respectful retry on 429; a still-failing source is "unavailable",
   // never silently equated with "no data about this token".
-  let json: { result?: Record<string, any> } | null = null;
+  let json: { code?: number; message?: string; result?: Record<string, any> } | null = null;
   let provenance: Provenance = { url };
   for (let attempt = 0; attempt < 2 && !json; attempt++) {
     try {
@@ -82,14 +82,43 @@ export async function fetchGoPlus(chain: string, address: string): Promise<GoPlu
         continue;
       }
       if (!res.ok) return { status: "unavailable" };
-      json = (await res.json()) as { result?: Record<string, any> };
+      const body = await res.text();
+      // Hash what the source actually said. The provenance in a signed report
+      // claimed to pin each source's response, and for GoPlus it carried only a
+      // URL: `createHash` was imported here and never used.
+      provenance = {
+        url,
+        retrievedAt: new Date().toISOString(),
+        responseSha256: createHash("sha256").update(body).digest("hex"),
+      };
+      try {
+        json = JSON.parse(body) as { code?: number; message?: string; result?: Record<string, any> };
+      } catch {
+        // A 200 carrying unparseable bytes is an upstream fault, not evidence.
+        return { status: "unavailable", provenance };
+      }
     } catch {
       return { status: "unavailable" };
     }
   }
-  if (!json) return { status: "unavailable" };
-  const entry = json.result?.[address.toLowerCase()];
-  if (!entry) return { status: "not_found" };
+  if (!json) return { status: "unavailable", provenance };
+
+  // GoPlus answers application errors with HTTP 200 and a non-success code:
+  // rate-limit envelopes, service errors, schema changes. Treating any 200
+  // without our token as "no security record" turned an outage into knowledge
+  // about the token, which is precisely the tri-state guarantee this engine
+  // exists to keep.
+  if (json.code !== undefined && json.code !== 1) {
+    return { status: "unavailable", provenance };
+  }
+  if (!json.result || typeof json.result !== "object") {
+    // A success code with no result object is malformed, not an empty answer.
+    return { status: json.code === 1 ? "not_found" : "unavailable", provenance };
+  }
+  const entry = json.result[address.toLowerCase()];
+  // Only here is "not_found" earned: the API answered successfully, returned a
+  // result map, and this token is simply not in it.
+  if (!entry) return { status: "not_found", provenance };
 
   const pct = taxPct;
   const flag = (v: unknown): boolean | undefined => (v === "1" ? true : v === "0" ? false : undefined);

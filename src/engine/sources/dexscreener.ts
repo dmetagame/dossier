@@ -163,10 +163,37 @@ export interface MarketSnapshot {
   pairCount?: number;
 }
 
+/**
+ * Age in days at a fixed evaluation time, or unknown.
+ *
+ * A materially future creation timestamp is upstream nonsense rather than a
+ * negative age, and zero is a real measurement, so this returns undefined only
+ * when it genuinely does not know. The old truthiness check also dropped an
+ * exactly-zero age from the report while the risk check still scored it.
+ */
+export function ageInDays(pairCreatedAt: unknown, asOf: number): number | undefined {
+  const t = typeof pairCreatedAt === "number" ? pairCreatedAt : Number(pairCreatedAt);
+  if (!Number.isFinite(t) || t <= 0) return undefined;
+  const days = (asOf - t) / 86_400_000;
+  // Tolerate a little clock skew, reject anything meaningfully in the future.
+  if (days < -1) return undefined;
+  return days < 0 ? 0 : days;
+}
+
 export async function fetchDexScreener(
   chain: string,
   address: string,
   shared?: TokenPairs,
+  /**
+   * The one evaluation time for the whole report.
+   *
+   * Pair age used Date.now() at the moment this ran, and the three-day boundary
+   * changes the activity result, so the same captured upstream response could
+   * score differently on different days and an independent verifier could not
+   * reproduce a report without knowing when it was written. One timestamp,
+   * chosen once per report and recorded, makes the arithmetic replayable.
+   */
+  asOf: number = Date.now(),
 ): Promise<MarketSnapshot> {
   // Reuse the caller's single fetch when it has one. Fetching independently is
   // what let the resolver rank chains on one observation and the analyser

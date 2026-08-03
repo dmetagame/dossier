@@ -29,10 +29,33 @@ function record(): () => void {
   const real = globalThis.fetch;
   globalThis.fetch = (async (input: any, init?: any) => {
     const url = typeof input === "string" ? input : input.href ?? String(input);
+    const key = init?.method === "POST" ? `${url}|${init.body}` : null;
+
+    // Replay a request we have already recorded in this run rather than asking
+    // the chain again.
+    //
+    // Reads are pinned to a block height that is fetched first, and the
+    // height request has an identical body every time. Two cases on the same
+    // chain therefore shared that key: the second capture overwrote it with a
+    // newer height while the first case's reads stayed recorded against the
+    // older one, leaving a fixture whose block tags did not match any recorded
+    // response. Serving the first answer for the rest of the run pins every
+    // case on a chain to one block, which is what the engine now does anyway.
+    // Only the height request is replayed, and only because its body is
+    // identical every time. Replaying reads too would serve a failed attempt
+    // back to its own retry, so a blip could never recover.
+    const isHeightRequest = key !== null && String(init.body).includes("eth_blockNumber");
+    if (key && isHeightRequest && rpc[key]) {
+      return new Response(JSON.stringify(rpc[key].body), {
+        status: rpc[key].status,
+        headers: { "content-type": "application/json" },
+      });
+    }
+
     const res = await real(input, init);
-    if (init?.method === "POST") {
+    if (key) {
       const clone = res.clone();
-      rpc[`${url}|${init.body}`] = { status: res.status, body: await clone.json() };
+      rpc[key] = { status: res.status, body: await clone.json() };
     }
     return res;
   }) as typeof fetch;

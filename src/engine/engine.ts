@@ -47,7 +47,7 @@ export async function fetchSources(
   const startedAt = Date.now();
   const [sec, market, chainFacts] = await Promise.all([
     goplusSupports(chain) ? fetchGoPlus(chain, tokenAddress) : Promise.resolve({ status: "not_found" } as const),
-    fetchDexScreener(chain, tokenAddress, sharedPairs),
+    fetchDexScreener(chain, tokenAddress, sharedPairs, startedAt),
     rpcSupports(chain)
       ? fetchChainFacts(chain, tokenAddress)
       : Promise.resolve({ status: "unavailable" } as const),

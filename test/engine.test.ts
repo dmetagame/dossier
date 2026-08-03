@@ -7,7 +7,8 @@ import assert from "node:assert/strict";
 import { stubUpstream, withStub, ADDR } from "./helpers";
 import { evaluate, fetchSources, SourcesUnavailableError, honeypotCheck as sellability, controlCheck } from "../src/engine/engine";
 import { taxPct } from "../src/engine/sources/goplus";
-import { comparableLiquidity, finiteUsd } from "../src/engine/sources/dexscreener";
+import { comparableLiquidity, finiteUsd, ageInDays } from "../src/engine/sources/dexscreener";
+import { formatUnits } from "../src/engine/sources/rpc";
 import { preflight } from "../src/dossier/report";
 
 let restore: () => void;
@@ -325,5 +326,122 @@ describe("a report describes one DexScreener observation, not two", () => {
       globalThis.fetch = realFetch;
     }
     assert.equal(calls.filter((u) => u.includes("/dex/tokens/")).length, 1);
+  });
+});
+
+describe("upstream faults are never mistaken for facts", () => {
+  // GoPlus answers application errors with HTTP 200 and a non-success code:
+  // rate-limit envelopes, service errors, schema changes. Treating any 200
+  // without our token as "no security record" turns an outage into knowledge
+  // about the token, which is the guarantee this engine is built on.
+  test("a 200 carrying a GoPlus error code is unavailable, not not_found", async () => {
+    const real = globalThis.fetch;
+    globalThis.fetch = (async (u: any, init?: any) => {
+      if (String(u).includes("gopluslabs")) {
+        return new Response(JSON.stringify({ code: 4029, message: "rate limited", result: {} }), {
+          status: 200, headers: { "content-type": "application/json" },
+        });
+      }
+      return real(u, init);
+    }) as any;
+    try {
+      const { fetchGoPlus } = await import("../src/engine/sources/goplus");
+      const r = await fetchGoPlus("bsc", ADDR.cake);
+      assert.equal(r.status, "unavailable", "an error envelope is not an empty answer");
+    } finally { globalThis.fetch = real; }
+  });
+
+  test("a success envelope without our token is genuinely not_found", async () => {
+    const real = globalThis.fetch;
+    globalThis.fetch = (async (u: any, init?: any) => {
+      if (String(u).includes("gopluslabs")) {
+        return new Response(JSON.stringify({ code: 1, message: "OK", result: {} }), {
+          status: 200, headers: { "content-type": "application/json" },
+        });
+      }
+      return real(u, init);
+    }) as any;
+    try {
+      const { fetchGoPlus } = await import("../src/engine/sources/goplus");
+      assert.equal((await fetchGoPlus("bsc", ADDR.cake)).status, "not_found");
+    } finally { globalThis.fetch = real; }
+  });
+
+  test("GoPlus provenance now records what the source actually said", async () => {
+    const r = await fetchSources("bsc", ADDR.cake);
+    if (r.sec.status === "ok") {
+      assert.ok(r.sec.provenance?.responseSha256, "a signed report claims to pin each response");
+      assert.match(r.sec.provenance!.responseSha256!, /^[a-f0-9]{64}$/);
+    }
+  });
+});
+
+describe("report facts are pinned, not sampled", () => {
+  // Owner, implementation slot, bytecode and supply each used "latest" while the
+  // height was read in a later chunk, so during an upgrade or an ownership
+  // transfer they could come from different blocks while the report attested to
+  // a single height that pinned none of them.
+  test("every chain read happens at one block, and it is the attested one", async () => {
+    const bodies: string[] = [];
+    const real = globalThis.fetch;
+    globalThis.fetch = (async (u: any, init?: any) => {
+      if (init?.method === "POST") bodies.push(String(init.body));
+      return real(u, init);
+    }) as any;
+    let facts: any;
+    try {
+      const { fetchChainFacts } = await import("../src/engine/sources/rpc");
+      facts = await fetchChainFacts("bsc", ADDR.cake);
+    } finally { globalThis.fetch = real; }
+    assert.equal(facts.status, "ok");
+    const tag = "0x" + facts.blockNumber.toString(16);
+    const reads = bodies.filter((b) => !b.includes("eth_blockNumber"));
+    assert.ok(reads.length > 0, "there should be reads to check");
+    for (const b of reads) {
+      assert.ok(b.includes(tag), `a read used a different block than the attested ${tag}`);
+      assert.equal(b.includes('"latest"'), false, "no read may float to latest");
+    }
+  });
+
+  test("total supply keeps every digit", () => {
+    // BigInt division truncated first: 150 raw at 2 decimals became 1, not 1.5.
+    assert.equal(formatUnits(150n, 2), "1.5");
+    assert.equal(formatUnits(1n, 18), "0.000000000000000001");
+    assert.equal(formatUnits(10n ** 30n, 18), "1000000000000");
+    assert.equal(formatUnits(0n, 18), "0");
+    assert.equal(formatUnits(123n, 0), "123");
+  });
+});
+
+describe("time is an input, recorded once", () => {
+  // Pair age used Date.now() where it ran, and the three-day boundary changes
+  // the activity result, so the same captured response could score differently
+  // on different days and no verifier could reproduce it.
+  const day = 86_400_000;
+  test("age is measured against the evaluation time it is given", () => {
+    const asOf = 1_800_000_000_000;
+    assert.equal(ageInDays(asOf - 3 * day, asOf), 3);
+    assert.equal(ageInDays(asOf - day / 2, asOf), 0.5);
+  });
+
+  test("the same response scores identically whenever it is replayed", () => {
+    const created = 1_700_000_000_000;
+    const asOf = created + 10 * day;
+    assert.equal(ageInDays(created, asOf), ageInDays(created, asOf));
+    assert.notEqual(ageInDays(created, asOf), ageInDays(created, asOf + 5 * day));
+  });
+
+  test("a zero age is a measurement, not an absence", () => {
+    const asOf = 1_800_000_000_000;
+    assert.equal(ageInDays(asOf, asOf), 0);
+  });
+
+  test("a materially future timestamp is unknown rather than negative", () => {
+    const asOf = 1_800_000_000_000;
+    assert.equal(ageInDays(asOf + 5 * day, asOf), undefined);
+    assert.equal(ageInDays(asOf + day / 4, asOf), 0, "small clock skew is tolerated");
+    for (const bad of [0, -1, null, undefined, "x"]) {
+      assert.equal(ageInDays(bad, asOf), undefined);
+    }
   });
 });
