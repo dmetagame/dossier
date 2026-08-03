@@ -198,6 +198,15 @@ What it holds the service to:
   hostile values cannot inject markup.
 - **The limiter** — never touches a paid path, cannot be evaded by a spoofed
   `X-Forwarded-For`, and leaves a log line when it blocks someone.
+- **The method contract** — GET and POST work; HEAD, PUT, PATCH, DELETE and
+  OPTIONS all land >= 400, which is what makes them structurally unchargeable.
+- **The pages satisfy their own CSP** — every inline script the server actually
+  serves is hashed in the header it serves beside it, and `script-src` allows
+  neither `unsafe-inline` nor `unsafe-eval`. A script that drifts from its hash
+  breaks the page in every browser while every server-side test still passes.
+- **A credential outage** (`payment-outage.test.ts`) — external callers get 503
+  and never a free report, while the fulfilment daemon can still serve a task
+  buyer whose payment never depended on our facilitator credentials.
 
 `scripts/benchmark.ts` is separate and does hit live APIs: established tokens
 (CAKE, UNI, LINK, AAVE, PEPE) must never `abort`, live-sampled thin tokens must
