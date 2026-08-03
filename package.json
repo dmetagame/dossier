@@ -2,7 +2,7 @@
   "name": "dossier",
   "version": "0.1.0",
   "private": true,
-  "description": "Pre-transaction verdict engine for AI agents \u2014 paid A2MCP service on OKX.AI",
+  "description": "Pre-transaction verdict engine for AI agents — paid A2MCP service on OKX.AI",
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/server.ts",
@@ -16,7 +16,7 @@
     "test": "DEV_SKIP_PAYMENT=1 tsx --test test/*.test.ts"
   },
   "dependencies": {
-    "@hono/node-server": "^1.13.7",
+    "@hono/node-server": "^2.0.12",
     "@okxweb3/x402-core": "^0.1.0",
     "@okxweb3/x402-evm": "^0.2.1",
     "@okxweb3/x402-hono": "^0.1.1",
