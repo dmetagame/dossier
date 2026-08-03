@@ -59,6 +59,20 @@ jobs:
           echo "  rateLimit -> $m"
           [ "$m" = "enforce" ] || { echo "::error::rate limiting is '$m', not enforce"; exit 1; }
 
+      - name: The fulfilment watcher is still alive
+        run: |
+          set -euo pipefail
+          # The timer runs every 120s. Anything past ten minutes means it has
+          # stopped ticking: task-mode buyers who ask a question get no answer,
+          # and every other check on this page stays green while that happens.
+          age=$(curl -sS --max-time 30 "$BASE/health" | python3 -c "import json,sys; print(json.load(sys.stdin).get('fulfilmentAgeSeconds'))")
+          echo "  fulfilmentAgeSeconds -> $age"
+          if [ "$age" = "None" ]; then
+            echo "::error::the fulfilment watcher has no heartbeat: it has not run since the file was last removed"
+            exit 1
+          fi
+          [ "$age" -lt 600 ] || { echo "::error::the fulfilment watcher last ticked ${age}s ago; the timer is not running"; exit 1; }
+
       - name: The service reports its own payment layer as ready
         run: |
           set -euo pipefail

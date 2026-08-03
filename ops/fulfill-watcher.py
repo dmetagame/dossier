@@ -15,13 +15,14 @@ Per job with role=asp, agent 7012, status=accepted and no ASP deliverable yet:
   5. save a local deliverable record
 If the token cannot be resolved, ask the buyer once over A2A instead.
 """
-import json, os, re, subprocess, sys, time
+import datetime, fcntl, json, os, re, shutil, subprocess, sys, tempfile, time
 
 ASP = "7012"
 ENDPOINT = "https://dossier.rouma.xyz/dossier"
 HOME = os.path.expanduser("~")
 KEY_FILE = os.path.join(HOME, ".okx-agent-task", "internal-key.txt")
 STATE_FILE = os.path.join(HOME, ".okx-agent-task", "fulfill-watcher-state.json")
+HEARTBEAT_FILE = os.path.join(HOME, ".okx-agent-task", "fulfill-watcher-heartbeat.json")
 # How long to let the buyer's own paid replay land before messaging them.
 #
 # This guards a real race: the replay runs seconds after the task is created, and
@@ -109,14 +110,43 @@ def log(*a):
 
 
 def run(cmd, timeout=180):
+    """Run a command, distinguishing the ways it can fail.
+
+    This used to catch only timeouts, so a missing binary or a permission error
+    raised out of whatever was calling it and stopped the whole tick, while a
+    non-zero exit was indistinguishable from success because almost every caller
+    read stdout and ignored returncode. An HTTP 500 body and a valid empty answer
+    looked the same.
+    """
     try:
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        r.failure = None if r.returncode == 0 else "exit:%d" % r.returncode
+        return r
     except subprocess.TimeoutExpired:
-        return subprocess.CompletedProcess(cmd, 1, "", "timeout")
+        r = subprocess.CompletedProcess(cmd, 1, "", "timeout")
+        r.failure = "timeout"
+        return r
+    except FileNotFoundError:
+        # A missing executable is a deployment fault, not an answer about a job.
+        r = subprocess.CompletedProcess(cmd, 127, "", "not found: %s" % cmd[0])
+        r.failure = "missing-binary"
+        return r
+    except OSError as e:
+        r = subprocess.CompletedProcess(cmd, 1, "", str(e)[:200])
+        r.failure = "spawn-failed"
+        return r
 
 
 def jrun(cmd, timeout=180):
+    """Parsed JSON from a command, or None when it did not succeed.
+
+    A non-zero exit no longer parses: an error written to stdout that happens to
+    contain braces used to come back as though it were data.
+    """
     r = run(cmd, timeout)
+    if getattr(r, "failure", None):
+        log("  command failed (%s): %s" % (r.failure, " ".join(str(c) for c in cmd[:3])))
+        return None
     m = re.search(r"\{.*\}", r.stdout, re.S)
     if not m:
         return None
@@ -126,16 +156,41 @@ def jrun(cmd, timeout=180):
         return None
 
 
+class StateUnreadable(Exception):
+    """State exists but could not be read. Not the same as having none."""
+
+
 def load_state():
-    try:
-        return json.load(open(STATE_FILE))
-    except Exception:
+    """Load the tick state, or refuse to run.
+
+    Any read error returned an empty dict, so a truncated or corrupt file made
+    the watcher forget every done, asked and first_seen record at once, silently.
+    The next tick would then re-ask every open job and re-deliver anything it
+    could resolve. A missing file is a genuine fresh start; an unreadable one is
+    a fault, and the safe response is to stop rather than to act as though
+    nothing had ever happened.
+    """
+    if not os.path.exists(STATE_FILE):
         return {}
+    try:
+        with open(STATE_FILE) as fh:
+            data = json.load(fh)
+    except Exception as e:
+        raise StateUnreadable(str(e)[:200])
+    if not isinstance(data, dict):
+        raise StateUnreadable("state is %s, expected an object" % type(data).__name__)
+    return data
 
 
 def save_state(s):
     tmp = STATE_FILE + ".tmp"
-    json.dump(s, open(tmp, "w"))
+    # Flushed and fsynced before the rename, so a crash mid-write leaves either
+    # the old state or the new one, never a half-written file that the loader
+    # would then have to refuse.
+    with open(tmp, "w") as fh:
+        json.dump(s, fh)
+        fh.flush()
+        os.fsync(fh.fileno())
     os.replace(tmp, STATE_FILE)
 
 
@@ -246,6 +301,39 @@ def xlayer_lookup(word):
     return addr, "xlayer"
 
 
+# Words a buyer may use for a chain we support, mapped to its canonical id.
+CHAIN_WORDS = {
+    "ethereum": "ethereum", "eth": "ethereum", "mainnet": "ethereum",
+    "bsc": "bsc", "bnb": "bsc", "binance": "bsc",
+    "base": "base",
+    "arbitrum": "arbitrum", "arb": "arbitrum",
+    "polygon": "polygon", "matic": "polygon",
+    "xlayer": "xlayer",
+}
+
+
+def chain_in_title(title):
+    """The chain the buyer named in the job title, if they named one.
+
+    "WBTC on Base" used to resolve to Ethereum: the canonical table answered on
+    the ticker alone and nothing in the pipeline ever read the qualifier. The
+    buyer had said which chain they meant, in the only field they get, and we
+    delivered a report on a different deployment of the same ticker.
+
+    Two words are deliberately not in the table. "bitcoin" and "ether" name
+    assets rather than chains, and "eth" only survives because a bare ETH ticker
+    is already handled by the canonical table before this is consulted.
+    """
+    t = (title or "").lower()
+    for w, chain in CHAIN_WORDS.items():
+        # Only as a qualifier: "on base", "base chain", "(base)". A bare word is
+        # too easily part of the token's own name, and "base" is the worst of
+        # them, appearing in "base token", "database", "coinbase".
+        if re.search(r"\bon\s+%s\b|\b%s[\s-]*(chain|network|mainnet)\b|[\(\[]%s[\)\]]" % (w, w, w), t):
+            return chain
+    return None
+
+
 def resolve_token(title):
     """0x address in the title wins; otherwise resolve a symbol via DexScreener.
 
@@ -257,9 +345,13 @@ def resolve_token(title):
     ticker matched several distinct tokens and the buyer must say which one:
     delivering a confident verdict on the wrong asset is worse than asking.
     """
+    want = chain_in_title(title)
     m = re.search(r"0x[a-fA-F0-9]{40}", title or "")
     if m:
-        return m.group(0), None, []
+        # An explicit chain beside an explicit address settles it outright; the
+        # same address is deployed on several chains often enough that letting
+        # the service auto-detect would override what the buyer just told us.
+        return m.group(0), want, []
     words = [w.strip(".,:;!?()[]'\"") for w in (title or "").split()]
     cands = [w for w in words if w and w.lower() not in STOPWORDS and len(w) <= 12]
     # Majors resolve from the canonical table first, before DexScreener gets a
@@ -271,6 +363,13 @@ def resolve_token(title):
     for w in cands:
         addr, chain = canonical_lookup(w)
         if addr:
+            if want and want != chain:
+                # The buyer named a different chain than this ticker's canonical
+                # home. Their word wins: fall through to the search below, which
+                # is filtered to the chain they asked for.
+                log("  %s is canonically on %s but the title says %s; searching %s"
+                    % (w, chain, want, want))
+                break
             log("  %s resolved to its canonical %s deployment %s" % (w, chain, addr))
             return addr, chain, []
     # Whether DexScreener actually answered. An outage must not be mistaken for
@@ -295,6 +394,8 @@ def resolve_token(title):
             chain = (p.get("chainId") or "").lower()
             if chain not in SUPPORTED_CHAINS:
                 continue
+            if want and chain != want:
+                continue
             if not re.fullmatch(r"0x[a-fA-F0-9]{40}", addr):
                 continue
             if (base.get("symbol") or "").lower() != w.lower():
@@ -318,7 +419,7 @@ def resolve_token(title):
     # DexScreener answered and knows nothing that trades under this ticker. That
     # is the normal shape for an X Layer-native asset, so check our own chain
     # before falling back to asking the buyer a question they should not need.
-    if searched_ok:
+    if searched_ok and want in (None, "xlayer"):
         for w in cands:
             addr, chain = xlayer_lookup(w)
             if addr:
@@ -341,13 +442,47 @@ def fetch(addr, chain, fmt, job=None):
     # decide whether there is a report worth sending at all.
     if job:
         cmd += ["-H", "x-job-id: " + job]
-    cmd += ["-d", json.dumps(body)]
-    return run(cmd, timeout=120).stdout
+    # Ask curl for the status too. Without it the body was all we saw, so a 404,
+    # a 503, a payment error or a JSON error page was indistinguishable from a
+    # report, and the HTML fetch below could be written to disk and uploaded to
+    # the buyer as the document they paid for.
+    cmd += ["-w", "\n%{http_code}", "-d", json.dumps(body)]
+    r = run(cmd, timeout=120)
+    if getattr(r, "failure", None):
+        return {"ok": False, "why": r.failure, "status": None, "body": ""}
+    out = r.stdout or ""
+    nl = out.rfind("\n")
+    status = out[nl + 1:].strip() if nl >= 0 else ""
+    body_text = out[:nl] if nl >= 0 else out
+    if not status.isdigit():
+        return {"ok": False, "why": "no status from curl", "status": None, "body": body_text}
+    code = int(status)
+    return {"ok": 200 <= code < 300, "why": None if 200 <= code < 300 else "http:%d" % code,
+            "status": code, "body": body_text}
 
 
 def has_deliverable(job):
+    """True, False, or None when we could not find out.
+
+    This read `"originalName" in stdout`, so an auth failure, a timeout, a schema
+    change or a missing binary all came back as "no deliverable" — and the caller
+    then asked the buyer again, or delivered again, on the strength of a lookup
+    that never happened. Not knowing is now its own answer, and callers skip the
+    job rather than act on it.
+    """
     r = run([ONCHAINOS, "agent", "task-deliverable-list", "--job-id", job, "--role", "asp"])
-    return "originalName" in r.stdout
+    if getattr(r, "failure", None):
+        log("  could not check deliverables for %s (%s); leaving it alone" % (job[:12], r.failure))
+        return None
+    try:
+        data = (json.loads(re.search(r"\{.*\}", r.stdout, re.S).group(0)) or {}).get("data") or {}
+    except Exception:
+        log("  deliverable list for %s was unreadable; leaving it alone" % job[:12])
+        return None
+    items = data.get("deliverables")
+    if not isinstance(items, list):
+        return None
+    return len(items) > 0
 
 
 def send_message(job, buyer, text):
@@ -364,11 +499,49 @@ ASK_MARKER = "[dossier:need-token]"
 OURS = ("DOSSIER REPORT", ASK_MARKER)
 
 
-def read_buyer_reply(job, buyer):
+def sent_at(m):
+    """Epoch seconds for a history row, or None if it carries no usable time.
+
+    The daemon serialises XMTP's `sentAt` Date, so it arrives as an ISO string;
+    older rows have been seen with epoch numbers. Anything unparseable returns
+    None and is treated as untimed rather than as time zero, which would let a
+    stale message pass a freshness check.
+    """
+    v = m.get("sentAt")
+    if isinstance(v, (int, float)):
+        # Milliseconds if it is large enough to be a plausible ms timestamp.
+        return float(v) / 1000.0 if v > 1e11 else float(v)
+    if not isinstance(v, str) or not v.strip():
+        return None
+    t = v.strip().replace("Z", "+00:00")
+    try:
+        return datetime.datetime.fromisoformat(t).timestamp()
+    except ValueError:
+        return None
+
+
+def read_buyer_reply(job, buyer, asked_at=0):
     """Look for a token the buyer supplied in reply to our question.
 
-    Returns (address, chain) or (None, None). Only messages we did not send are
-    considered, so our own question text can never be read back as an answer.
+    Returns (address, chain) or (None, None).
+
+    Two bindings, both of which used to be missing:
+
+    * **Sender.** A reply must come from an inbox that is not ours. The rows
+      carry `senderInboxId`, but that is an XMTP inbox id and not the agent id
+      we know the buyer by, so there is nothing to compare it against directly.
+      We learn our own the only way that needs no extra call: the message
+      carrying our ask marker is one we certainly sent, so its inbox is ours and
+      every other inbox in a two-party job group is the buyer's. Matching on
+      identity rather than on our text also fixes the converse bug, where a
+      buyer who quoted our question back had their answer discarded with it.
+
+    * **Time.** A reply must be newer than the question it answers. Without
+      this, an address the buyer mentioned in an earlier, unrelated turn of the
+      conversation counted as an answer to a question asked afterwards.
+
+    Both fail closed. If no row identifies our own inbox, or a candidate row has
+    no readable timestamp, we do not deliver on it.
     """
     r = run([OKXA2A, "session", "history", "--job-id", job,
              "--toAgentId", str(buyer), "--limit", "30", "--json"])
@@ -378,16 +551,38 @@ def read_buyer_reply(job, buyer):
         return None, None
     if not isinstance(msgs, list):
         return None, None
-    for m in reversed(msgs):
+
+    def body(m):
         raw = m.get("content") or ""
         try:
-            text = json.loads(raw).get("content") or ""
+            return json.loads(raw).get("content") or ""
         except Exception:
-            text = raw
-        if any(mark in text for mark in OURS):
+            return raw
+
+    # The *first* message carrying our marker is ours: we asked the question
+    # before anyone could quote it back. Taking every marker-bearing sender
+    # instead would enrol the buyer's own inbox the moment they quoted us, and
+    # then discard the answer attached to the quote.
+    marked = [m for m in msgs
+              if isinstance(m, dict) and m.get("senderInboxId")
+              and any(k in body(m) for k in OURS)]
+    marked.sort(key=lambda m: (sent_at(m) is None, sent_at(m) or 0))
+    if not marked:
+        # We asked, so one of these rows must be ours. If we cannot tell which,
+        # we cannot tell a reply from an echo of our own question either.
+        log("  cannot identify our own inbox in the history; not reading a reply")
+        return None, None
+    ours = {marked[0]["senderInboxId"]}
+
+    for m in reversed(msgs):
+        if not isinstance(m, dict) or m.get("senderInboxId") in ours:
             continue
-        hit = re.search(r"0x[a-fA-F0-9]{40}", text)
+        when = sent_at(m)
+        if when is None or when <= asked_at:
+            continue
+        hit = re.search(r"0x[a-fA-F0-9]{40}", body(m))
         if hit:
+            text = body(m)
             chain = None
             for c in SUPPORTED_CHAINS:
                 if re.search(r"\b%s\b" % c, text, re.I):
@@ -421,27 +616,73 @@ def ask_for_token(job, buyer, title, alts=None):
         '{"tokenAddress":"0x..."}.' % (ASK_MARKER, title, why, ENDPOINT)))
 
 
-def deliver(job, buyer, addr, chain, from_ticker=False):
-    raw = fetch(addr, chain, "json")
+# Every stage failed or never ran: nothing reached the buyer, so a later tick is
+# free to try the whole thing again.
+NOTHING_SENT = {"uploaded": False, "messaged": False, "recorded": False}
+
+
+def deliver(job, buyer, addr, chain, from_ticker=False, already_messaged=False):
+    got = fetch(addr, chain, "json")
+    if not got["ok"]:
+        log("  service did not answer the JSON request (%s); aborting this job" % got["why"])
+        return NOTHING_SENT
     try:
-        data = json.loads(raw)
+        data = json.loads(got["body"])
     except Exception:
         log("  service did not return JSON; aborting this job")
-        return False
+        return NOTHING_SENT
     if "riskVerdict" not in data:
-        log("  service error:", raw[:160])
-        return False
+        log("  service error:", got["body"][:160])
+        return NOTHING_SENT
 
-    html = fetch(addr, chain, "html", job)
+    # The HTML is a second, independent request, so it can observe a different
+    # upstream state than the JSON did. Its status and shape are checked before
+    # anything is written or uploaded: a transient 404, 503 or error page used to
+    # be saved as dossier-*.html and handed to the buyer as their paid report.
+    page = fetch(addr, chain, "html", job)
+    if not page["ok"]:
+        log("  HTML request failed (%s); not uploading anything" % page["why"])
+        return NOTHING_SENT
+    html = page["body"]
+    if "<html" not in html[:2000].lower() or "riskVerdict" in html[:200]:
+        log("  HTML response was not a report; not uploading it")
+        return NOTHING_SENT
     sym = (data.get("token") or {}).get("symbol") or "token"
+    # The document must be about the token we just priced, not whatever the
+    # second request happened to resolve.
+    if addr.lower() not in html.lower():
+        log("  HTML did not mention %s; refusing to upload a mismatched report" % addr[:12])
+        return NOTHING_SENT
     safe_sym = re.sub(r"[^A-Za-z0-9_-]", "", str(sym)) or "token"
-    path = "/tmp/dossier-%s-%s.html" % (safe_sym, job[:10])
-    open(path, "w").write(html)
 
-    up = jrun([OKXA2A, "file", "upload", "--file-path", path, "--agent-id", ASP,
-               "--job-id", job, "--filename", "dossier-%s.html" % safe_sym,
-               "--mime-type", "text/html"], timeout=240) or {}
+    # A private directory with an unguessable name, mode 0700, removed when this
+    # is done. The old path was /tmp/dossier-<symbol>-<first 10 of job>.html:
+    # predictable, world-readable by umask, never cleaned up, and open to being
+    # pre-created as a symlink by any other local process.
+    tmpdir = tempfile.mkdtemp(prefix="dossier-")
+    try:
+        path = os.path.join(tmpdir, "dossier-%s.html" % safe_sym)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            fh.write(html)
 
+        up = jrun([OKXA2A, "file", "upload", "--file-path", path, "--agent-id", ASP,
+                   "--job-id", job, "--filename", "dossier-%s.html" % safe_sym,
+                   "--mime-type", "text/html"], timeout=240) or {}
+        return _finish(job, buyer, addr, chain, from_ticker, data, path, sym, up,
+                       already_messaged)
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def _finish(job, buyer, addr, chain, from_ticker, data, path, sym, up,
+            already_messaged=False):
+    """Compose the message, send it, and register the deliverable.
+
+    Runs inside deliver()'s temp directory so `task-deliverable-save` still has
+    a file to read. It used to run after the directory had been removed, which
+    made every registration fail against a path that no longer existed.
+    """
     v = data["riskVerdict"]
     tok = data.get("token") or {}
     L = []
@@ -511,16 +752,60 @@ def deliver(job, buyer, addr, chain, from_ticker=False):
     L.append("")
     L.append("Endpoint, if you want the document outside the task: POST %s" % ENDPOINT)
 
-    ok = send_message(job, buyer, "\n".join(L))
-    run([ONCHAINOS, "agent", "task-deliverable-save", "--job-id", job, "--role", "asp",
-         "--file", path, "--title", "Due-diligence dossier: %s" % sym,
-         "--short-id", job[:6] + "-" + job[-4:]])
-    log("  delivered %s verdict=%s message_ok=%s" % (sym, v.get("verdict"), ok))
-    return ok
+    # Three stages, reported separately. `deliver` used to return the result of
+    # the message send alone, so a job counted as done when the upload had
+    # produced no fileKey and when the deliverable was never registered — the
+    # two things OKX review actually looks for. Worse, the single bool meant a
+    # retry could only redo everything, which would send the buyer a second copy
+    # of a message they already had.
+    uploaded = bool(up.get("fileKey"))
+    # On a registration-only retry the buyer already has this report. Sending it
+    # again would be the duplicate-message failure the staging exists to avoid.
+    messaged = True if already_messaged else send_message(job, buyer, "\n".join(L))
+    rec = run([ONCHAINOS, "agent", "task-deliverable-save", "--job-id", job, "--role", "asp",
+               "--file", path, "--title", "Due-diligence dossier: %s" % sym,
+               "--short-id", job[:6] + "-" + job[-4:]])
+    recorded = rec.failure is None
+    if not recorded:
+        log("  deliverable not registered (%s): %s" % (rec.failure, (rec.stderr or "")[:160]))
+    log("  delivered %s verdict=%s uploaded=%s messaged=%s recorded=%s"
+        % (sym, v.get("verdict"), uploaded, messaged, recorded))
+    return {"uploaded": uploaded, "messaged": messaged, "recorded": recorded}
 
 
 def main():
-    state = load_state()
+    # One watcher at a time.
+    #
+    # The timer fires every two minutes and a tick can take longer, so two runs
+    # could overlap: both read the same state, both see no deliverable, both send
+    # the buyer the same message and upload the same file, and the second write
+    # of the state file discards whatever the first recorded.
+    lock_path = STATE_FILE + ".lock"
+    try:
+        lock_fd = os.open(lock_path, os.O_WRONLY | os.O_CREAT, 0o600)
+    except OSError as e:
+        log("could not open the lock file (%s); skipping this tick" % e)
+        return
+    try:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            log("another watcher is still running; skipping this tick")
+            return
+        _run_tick()
+    finally:
+        os.close(lock_fd)
+
+
+def _run_tick():
+    try:
+        state = load_state()
+    except StateUnreadable as e:
+        # Failing closed: a corrupt state file would otherwise look like a clean
+        # slate and re-ask every open job.
+        log("STATE UNREADABLE (%s); refusing to run. Move %s aside to start fresh."
+            % (e, STATE_FILE))
+        return
     data = jrun([ONCHAINOS, "agent", "active-tasks"])
     if not data or not data.get("ok"):
         log("could not list tasks; will retry next tick")
@@ -542,12 +827,27 @@ def main():
             and t.get("myRole") == "asp"
             and t.get("status") == "accepted"]
     log("tasks=%d candidates=%d" % (len(tasks), len(todo)))
+    # A heartbeat the outside world can see. Uptime checks the web service, the
+    # payment challenge, the key and the certificate, and none of that says
+    # whether this process still runs: it could be dead since a reboot while
+    # every one of those stayed green.
+    try:
+        with open(HEARTBEAT_FILE, "w") as fh:
+            json.dump({"at": time.time(), "tasks": len(tasks), "candidates": len(todo)}, fh)
+    except Exception:
+        pass
     for t in todo:
         job = t["jobId"]
         st = state.get(job, {})
         if st.get("done"):
             continue
-        if has_deliverable(job):
+        seen = has_deliverable(job)
+        if seen is None:
+            # We could not find out. Acting on that would mean asking or
+            # delivering because a lookup failed, which is how a served buyer
+            # gets chased.
+            continue
+        if seen:
             state[job] = {"done": True, "why": "already had deliverable"}
             save_state(state)
             continue
@@ -562,7 +862,7 @@ def main():
         # If the title was unusable we asked the buyer; a job is never closed on
         # the question alone, so their answer is picked up on a later tick.
         if not addr and st.get("asked"):
-            addr, chain = read_buyer_reply(job, buyer)
+            addr, chain = read_buyer_reply(job, buyer, st.get("asked_at", 0))
             if addr:
                 from_buyer = True
                 log("  buyer supplied token", addr[:12], "chain", chain)
@@ -614,16 +914,43 @@ def main():
         try:
             # Re-check immediately before sending: another path (an AI session)
             # may have delivered since the top of this loop.
-            if has_deliverable(job):
+            recheck = has_deliverable(job)
+            if recheck is None:
+                continue
+            if recheck:
                 state[job] = {"done": True, "why": "delivered by another path"}
                 save_state(state)
                 continue
-            ok = deliver(job, buyer, addr, chain, from_ticker=not re.search(r'0x[a-fA-F0-9]{40}', title or ''))
+            res = deliver(job, buyer, addr, chain,
+                          from_ticker=not re.search(r'0x[a-fA-F0-9]{40}', title or ''),
+                          already_messaged=bool(st.get("served_at")))
         except Exception as e:
             log("  error:", repr(e)[:200])
-            ok = False
-        if ok:
+            res = NOTHING_SENT
+        # A job is done when the buyer has the report AND it is registered as a
+        # deliverable, not when the message send returned true. The two failure
+        # shapes need different treatment, which is why they are now separate:
+        #
+        #   nothing sent   -> leave the job open; a later tick retries in full.
+        #   sent, unrecorded -> the buyer has their report, so retrying the whole
+        #     delivery would send them a duplicate. Record that they were served,
+        #     retry only the registration, and close the job either way after
+        #     that: a missing marketplace record is our problem, not theirs, and
+        #     it must never become a reason to message them twice.
+        if res.get("messaged") and res.get("recorded"):
             state[job] = {"done": True, "at": time.time()}
+            save_state(state)
+        elif res.get("messaged"):
+            served = st.get("served_at") or time.time()
+            if st.get("served_at"):
+                log("  registration failed again; closing the job, the buyer has the report")
+                state[job] = {"done": True, "at": time.time(),
+                              "why": "delivered to the buyer, deliverable not registered",
+                              "served_at": served}
+            else:
+                log("  buyer served but the deliverable was not registered; "
+                    "will retry the registration only")
+                state[job] = {**st, "served_at": served}
             save_state(state)
 
 

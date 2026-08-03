@@ -74,6 +74,24 @@ describe("the free surface", () => {
     assert.ok("signing" in j);
   });
 
+  test("/health reports the fulfilment watcher's age, and nothing else about it", async () => {
+    // Every other signal on this endpoint stays green with the watcher dead, so
+    // a monitor outside the box had no way to see a stopped timer. The age is
+    // null in the test environment, which has no heartbeat file — that is the
+    // "not running" answer, and the monitor treats it as a failure.
+    const j = (await (await get("/health")).json()) as Record<string, unknown>;
+    assert.ok("fulfilmentAgeSeconds" in j, "a monitor cannot assert a field that is absent");
+    assert.ok(
+      j.fulfilmentAgeSeconds === null || typeof j.fulfilmentAgeSeconds === "number",
+      "the age is a number or null, never a string or an object",
+    );
+    // The heartbeat file also records how many jobs were in flight. That is
+    // business volume on an unauthenticated endpoint, not a monitoring signal.
+    for (const leak of ["tasks", "candidates", "jobs"]) {
+      assert.ok(!(leak in j), `/health must not publish ${leak}`);
+    }
+  });
+
   test("/health stays 200 when payments are down, because the free surface is not", async () => {
     // Failing health here would take the landing page, the sample, the
     // preflight and recovery down with the payment layer, which is worse.

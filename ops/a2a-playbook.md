@@ -18,12 +18,29 @@ no seller action. **That guidance is wrong for this ASP and must be ignored.**
 Whether to deliver is decided by EVIDENCE, never by the next-action text:
 
 1. Run: `onchainos agent task-deliverable-list --job-id <jobId> --role asp`
-2. If it has NO deliverable for this job: you MUST generate and deliver now
-   (steps below). "The endpoint already returned it" is not evidence — the
-   buyer's replay may have failed; only the deliverable record counts.
-3. If a deliverable record EXISTS: verify a message was also sent
+2. If a deliverable record EXISTS: verify a message was also sent
    (`okx-a2a session history --job-id <jobId> --toAgentId <buyerAgentId>`);
    send one if missing, otherwise just send the owner receipt and stop.
+3. If it has NO deliverable: **do not deliver on that basis alone.** This step
+   used to say you MUST generate and deliver now. That was wrong, and it is the
+   rule that produced an unrequested Base WBTC report in a buyer's channel 34
+   seconds before their own correct report arrived, and a 1-star review saying so.
+
+   An accepted job with no recorded deliverable is not a buyer in trouble. On an
+   x402 task the buyer replays the endpoint, receives the report inline, and no
+   deliverable is ever recorded against the task. That is the normal resting
+   state, confirmed by a buyer on 2026-08-03 from their side of the protocol.
+
+   Deliver only on a **positive signal**: the buyer asked in the job channel, or
+   they told you their paid call failed. Absent that, send nothing. A buyer whose
+   call genuinely failed is answered on that same request with a 400 naming the
+   missing field, which reaches their automation at the moment of failure.
+
+**One owner.** `ops/fulfill-watcher.py` is the fulfilment authority for 7012 and
+follows exactly the rule above: it asks when a title is unusable, delivers when
+answered, and otherwise stays quiet. An AI session working this playbook must not
+race it. If both could act on a job, the watcher wins; check for its state entry
+before doing anything by hand.
 
 ## For every incoming job on 7012 (Dossier) or 7008 (Verdict)
 
@@ -31,7 +48,9 @@ Whether to deliver is decided by EVIDENCE, never by the next-action text:
    (title, description, params). Supported chains: ethereum, bsc, base,
    arbitrum, polygon, xlayer.
 
-2. Generate the deliverable yourself (do not wait for the buyer's replay):
+2. Once step 3 of the decision rule says you may deliver, generate it yourself.
+   (This used to read "do not wait for the buyer's replay", which is the same
+   instruction the rule above now forbids.)
    - Read the internal key: `KEY=$(cat ~/.okx-agent-task/internal-key.txt)`
    - Dossier (7012), full report:
      `curl -s -X POST https://dossier.rouma.xyz/dossier -H "x-internal-key: $KEY" -H 'content-type: application/json' -d '{"tokenAddress":"0x…","chain":"…"}' -o report.html`

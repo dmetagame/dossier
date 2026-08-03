@@ -1,5 +1,8 @@
 import { Hono } from "hono";
 import { timingSafeEqual } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { paymentMiddleware, x402ResourceServer } from "@okxweb3/x402-hono";
 import { ExactEvmScheme } from "@okxweb3/x402-evm/exact/server";
 import { OKXFacilitatorClient } from "@okxweb3/x402-core";
@@ -431,9 +434,36 @@ function parseArchived(rec: archive.ArchiveRecord): unknown {
 // Stays 200 while the process is serving, even if payments are down: the free
 // surface is unaffected and killing a healthy process would make things worse.
 // The paid path is monitored separately, by asking it for a 402.
+/**
+ * How long ago the fulfilment watcher last completed a tick, in seconds.
+ *
+ * The watcher answers buyers' questions and delivers reports on task-mode jobs.
+ * Nothing outside the box could see whether it was still running: every check
+ * here — the site, the payment challenge, the signing key, the certificate —
+ * stays green with the timer dead since the last reboot, which is exactly the
+ * failure that would silently strand every task buyer.
+ *
+ * Only the age is published. The file also records how many jobs were in flight,
+ * and that is our business volume, not a monitoring signal.
+ */
+function fulfilmentAgeSeconds(): number | null {
+  try {
+    const raw = readFileSync(
+      join(homedir(), ".okx-agent-task", "fulfill-watcher-heartbeat.json"),
+      "utf8",
+    );
+    const at = JSON.parse(raw)?.at;
+    if (typeof at !== "number" || !Number.isFinite(at)) return null;
+    return Math.max(0, Math.round(Date.now() / 1000 - at));
+  } catch {
+    return null;
+  }
+}
+
 app.get("/health", (c) =>
   c.json({
     ok: true,
+    fulfilmentAgeSeconds: fulfilmentAgeSeconds(),
     devSkipPayment: config.devSkipPayment,
     paymentConfigured: paymentConfigured(),
     paymentLayer: paymentLayer,
