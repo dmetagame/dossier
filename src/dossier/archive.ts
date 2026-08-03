@@ -18,7 +18,7 @@
 // second buyer asking about the same token silently destroyed the first
 // buyer's record — and with it their only route to recovery.
 
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -35,6 +35,11 @@ export interface ArchiveRecord {
    * we printed for them.
    */
   resolvedParamsSha256?: string;
+  /**
+   * Keyed authentication over this record's identity and content. Absent on
+   * records written before the key existed, and on deploys with no key at all.
+   */
+  mac?: string;
   request: Record<string, unknown>;
   contentType: string;
   deliverable: string;
@@ -108,11 +113,74 @@ function file(id: string): string | null {
   return join(d, id + ".json");
 }
 
+/**
+ * Authentication for an archive record, keyed by a secret held outside the
+ * archive directory.
+ *
+ * Every record on disk was trusted because the file mode said 0600. That is a
+ * statement about who may write, not about what was written: anything that can
+ * write into ARCHIVE_DIR could repoint a settlement transaction at a different
+ * report, swap the delivered bytes, or fabricate a record wholesale, and
+ * recovery would serve the result as the document that buyer paid for. The
+ * report's own attestation does not help, because it says nothing about which
+ * transaction or job the report belongs to.
+ *
+ * The MAC covers exactly the fields that decide identity and content. It is
+ * verified on every read, and a record that fails is treated as absent rather
+ * than served with a warning.
+ *
+ * Keyed from ARCHIVE_MAC_KEY, falling back to SIGNING_KEY so an existing deploy
+ * gains this without new configuration. With neither, records are written
+ * unauthenticated and read without complaint, because refusing to serve a
+ * legitimately paid report over a missing local key would be the worse failure.
+ */
+function macKey(): Buffer | null {
+  const k = process.env.ARCHIVE_MAC_KEY || process.env.SIGNING_KEY || "";
+  return k ? createHash("sha256").update("dossier-archive-mac:" + k).digest() : null;
+}
+
+function macOf(rec: ArchiveRecord): string | undefined {
+  const key = macKey();
+  if (!key) return undefined;
+  // Content and identity, nothing that is expected to change after the fact.
+  const covered = canonical({
+    id: rec.id,
+    paramsSha256: rec.paramsSha256,
+    resolvedParamsSha256: rec.resolvedParamsSha256,
+    contentType: rec.contentType,
+    deliverableSha256: createHash("sha256").update(rec.deliverable).digest("hex"),
+    deliveredAt: rec.deliveredAt,
+    jobId: rec.jobId,
+    paymentTransaction: rec.paymentTransaction,
+  });
+  return createHmac("sha256", key).update(covered).digest("hex");
+}
+
+/** Stable ordering, so a MAC does not depend on key insertion order. */
+function canonical(o: Record<string, unknown>): string {
+  const e = Object.entries(o).filter(([, v]) => v !== undefined && v !== null).sort(([a], [b]) => (a < b ? -1 : 1));
+  return JSON.stringify(e);
+}
+
+/**
+ * True when a record is authentic, or when this deploy holds no key at all.
+ * A record written before the key existed carries no MAC and is accepted; one
+ * that carries a MAC must match it.
+ */
+export function macValid(rec: ArchiveRecord): boolean {
+  const key = macKey();
+  if (!key) return true;
+  if (!rec.mac) return true;
+  const expected = macOf(rec);
+  return typeof expected === "string" && expected === rec.mac;
+}
+
 export function save(rec: ArchiveRecord): void {
   const f = file(rec.id);
   if (!f) return;
   try {
-    writeFileSync(f, JSON.stringify(rec), { mode: 0o600 });
+    const stamped: ArchiveRecord = { ...rec, mac: macOf(rec) };
+    writeFileSync(f, JSON.stringify(stamped), { mode: 0o600 });
     // Keep a live index current rather than discarding it: a delivery saved
     // after the index was built must still be recoverable immediately.
     if (index && rec.jobId) setJob(index, rec.jobId, rec, rec.id + ".json");
@@ -133,6 +201,11 @@ export function linkTransaction(id: string, tx: string): void {
     if (!existsSync(f)) return;
     const rec = JSON.parse(readFileSync(f, "utf8")) as ArchiveRecord;
     rec.paymentTransaction = tx;
+    // The transaction is part of what the MAC covers, so it has to be
+    // recomputed here. Leaving it stale makes the record fail authentication on
+    // the next read, which would strand every x402 buyer: their settlement is
+    // always linked after the report was written.
+    rec.mac = macOf(rec);
     writeFileSync(f, JSON.stringify(rec), { mode: 0o600 });
     if (index) index.tx.set(tx.toLowerCase(), id + ".json");
   } catch {
@@ -148,7 +221,15 @@ function readAll(): ArchiveRecord[] {
     for (const name of readdirSync(d)) {
       if (!name.endsWith(".json")) continue;
       try {
-        out.push(JSON.parse(readFileSync(join(d, name), "utf8")) as ArchiveRecord);
+        const rec = JSON.parse(readFileSync(join(d, name), "utf8")) as ArchiveRecord;
+        // Same rule as the keyed lookups: a record that fails authentication is
+        // not a record. Enforcing it in one read path and not the other would
+        // leave the second serving whatever was written into the directory.
+        if (!macValid(rec)) {
+          console.error("[archive] record failed authentication, skipping it:", name);
+          continue;
+        }
+        out.push(rec);
       } catch {
         /* skip unreadable record */
       }
@@ -221,7 +302,15 @@ function readByName(name: string): ArchiveRecord | null {
   const d = dir();
   if (!d) return null;
   try {
-    return JSON.parse(readFileSync(join(d, name), "utf8")) as ArchiveRecord;
+    const rec = JSON.parse(readFileSync(join(d, name), "utf8")) as ArchiveRecord;
+    // A record that fails its MAC is treated as absent, not served with a
+    // caveat. Anything that could rewrite it could also rewrite a warning, and
+    // handing back a document we cannot vouch for is the failure this guards.
+    if (!macValid(rec)) {
+      console.error("[archive] record failed authentication, refusing to serve it:", name);
+      return null;
+    }
+    return rec;
   } catch {
     return null;
   }
