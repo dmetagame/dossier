@@ -53,8 +53,19 @@ before doing anything by hand.
    instruction the rule above now forbids.)
    - Read the internal key: `KEY=$(cat ~/.okx-agent-task/internal-key.txt)`
    - Dossier (7012), full report:
-     `curl -s -X POST https://dossier.rouma.xyz/dossier -H "x-internal-key: $KEY" -H 'content-type: application/json' -d '{"tokenAddress":"0x…","chain":"…"}' -o report.html`
+     `curl -s -D headers.txt -X POST https://dossier.rouma.xyz/dossier -H "x-internal-key: $KEY" -H "x-job-id: <jobId>" -H 'content-type: application/json' -d '{"tokenAddress":"0x…","chain":"…"}' -o report.html`
      Also fetch `"format":"json"` for the summary numbers.
+   - **`x-job-id` is not optional.** It is what stamps the job onto the archived
+     copy, and without it the buyer cannot recover their report by any route: a
+     task buyer signs no x402 payment, so the job id is their only proof of
+     purchase. A delivery made without this header was verified unrecoverable on
+     2026-08-03 — `/dossier/recovery` answered `not_found_in_archive` for a job
+     whose report had just been delivered and registered.
+   - The response carries `X-Recovery-Code`, a one-time code minted for this
+     delivery. Read it out of `headers.txt` and print it in the buyer's message
+     (see step 3b). It is stored here only as a hash, so this message is the
+     only copy that will ever exist. Never log it and never write it to a file
+     that outlives the job.
    - There is no `/verdict`. This step used to name it for agent 7008; the route
      was removed along with that agent and now 404s, so anyone working through
      this runbook hit a dead end. `/dossier` with `"format":"json"` returns the
@@ -73,7 +84,12 @@ before doing anything by hand.
         1. the verdict line (verdict, confidence, safe position size),
         2. every key finding as plain text (the report's "Key findings" list),
         3. the attachment params (fileKey/digest/salt/nonce/secret/filename),
-        4. the exact x402 replay request (method, URL, JSON body).
+        4. the recovery instructions, in this exact form:
+           `POST https://dossier.rouma.xyz/dossier/recovery  body {"jobId":"<jobId>","recoveryCode":"<the code from the header>"}`
+           and a line telling them to keep the code, because it cannot be
+           reissued. Do not offer the older `originalBody` form: it is refused
+           for any delivery that minted a code.
+        5. the exact x402 replay request (method, URL, JSON body).
         A buyer who reads only the message text still receives the analysis.
         Format numbers for humans: thousands separators, and prices in plain
         decimal never scientific notation (a sub-micro price prints as
