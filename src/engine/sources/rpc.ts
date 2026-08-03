@@ -332,8 +332,11 @@ export async function fetchChainFacts(chain: string, address: string): Promise<R
         blockNumber,
         provenance,
       };
-    } catch {
-      // Try the next endpoint for this chain before giving up.
+    } catch (e) {
+      // Try the next endpoint before giving up, but say why. A silent fallback
+      // hid a live regression: the snapshot reported unavailable in production
+      // while every one of these calls succeeded by hand from the same box.
+      console.error("[rpc]", chain, url, String((e as Error)?.message ?? e).slice(0, 200));
     }
   }
   return { status: "unavailable" };
