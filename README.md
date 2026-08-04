@@ -291,6 +291,14 @@ so it is not archived. Giving it its own record made it the newest one for the j
 buyer who recovered got back the message they were already holding instead of their
 document. The recovery code is attached to the report itself.
 
+The marketplace agrees. `onchainos agent complete` refuses an x402 task whose replay
+never succeeded, with `x402_no_deliverable`, **even when a deliverable is registered and
+the report has been delivered into the job channel** (verified 2026-08-04 on two live
+jobs). Completion is gated on the buyer's own 2xx, not on anything we push. So the A2A
+channel can rescue a buyer's *report*, but it cannot close their *task*: a buyer whose
+replay failed has to replay successfully before the job can complete, and no amount of
+seller-side delivery substitutes for that.
+
 An `okx-a2a` daemon (on an always-on VPS, not in this repo) additionally watches accepted
 jobs and can send the report summary plus retrieval details to the buyer as an A2A/XMTP
 message — a best-effort courtesy channel, not a substitute for the endpoint pull.

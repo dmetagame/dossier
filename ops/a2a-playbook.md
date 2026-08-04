@@ -143,6 +143,15 @@ after a buyer answers a direct question is a broken service.
 
 5. Finish with `onchainos agent user-notify` (receipt to the owner).
 
+6. Do not expect the job to reach `complete` because you delivered. OKX gates
+   x402 completion on the buyer's own successful replay (`replaySuccess`), not
+   on the deliverable: `onchainos agent complete` answers `x402_no_deliverable`
+   for a job that has a registered deliverable and a delivered message, if the
+   buyer's replay 4xx'd. Verified 2026-08-04 on two live jobs. If a buyer asks
+   why their task is still open after receiving the report, that is the reason,
+   and the fix is on their side: replay the endpoint with a valid body. Never
+   suggest they pay again; the replay uses the payment they already signed.
+
 ## Environment facts (do not rediscover)
 
 - `onchainos` is at `~/.local/bin/onchainos`; `okx-a2a` at `~/.npm-global/bin/okx-a2a`.
