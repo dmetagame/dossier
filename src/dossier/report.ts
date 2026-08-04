@@ -282,6 +282,12 @@ export async function buildDossier(req: DossierRequest): Promise<Dossier> {
       status: chainFacts.status,
       url: chainFacts.status === "ok" ? chainFacts.provenance?.url : undefined,
       retrievedAt: chainFacts.status === "ok" ? chainFacts.provenance?.retrievedAt : undefined,
+      // This line was missing while the two above had it, so the chain section
+      // was the one source the attestation did not commit to the content of,
+      // even after the RPC source started hashing its reads. Populating the
+      // provenance is only half the job: the observation is what the signature
+      // actually covers, and it is what a verifier reads.
+      responseSha256: chainFacts.status === "ok" ? chainFacts.provenance?.responseSha256 : undefined,
     },
   ];
 

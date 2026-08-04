@@ -541,6 +541,23 @@ describe("independent verification", () => {
     assert.ok(sources.includes("goplus"));
     assert.ok(sources.includes("dexscreener"));
     assert.ok(sources.some((s: string) => s.endsWith("-rpc")));
+
+    // Every source the report claims to hash, hashed in the thing that is
+    // actually signed. The RPC source populated its provenance and the
+    // observation builder simply did not copy the field across, so the chain
+    // section was the one source the signature did not commit to the content
+    // of. A test on the source alone passed throughout: the observation is
+    // what the signature covers and what a verifier reads, so this asserts
+    // there rather than one layer down.
+    for (const o of att.payload.observations) {
+      if (o.status !== "ok") continue;
+      assert.match(
+        o.responseSha256 ?? "",
+        /^[0-9a-f]{64}$/,
+        `${o.source} is signed without committing to what it returned`,
+      );
+      assert.ok(o.retrievedAt, `${o.source} has no retrieval time`);
+    }
   });
 
   test("the attestation verifies with the published key", async () => {
