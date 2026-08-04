@@ -48,6 +48,11 @@ Pitch line: "One POST before your agent trades. It answers: proceed or not, and 
 
 ## Submission assets checklist (drafted by Jul 24, not Jul 27)
 
+> **The evidence for these lives in `submission/submission-record.md`.** Ticking a
+> box here is not proof; that file has the URL and timestamp fields that are.
+> As of 2026-08-04 the first two are still outstanding, and an external audit
+> called it the most important non-code gap in the entry.
+
 - [ ] X submission post (≤90s demo attached, #OKXAI, explains use case)
 - [ ] Google form answers (ASP name, service link, X post link)
 - [ ] Listing copy that survives OKX QA: two-part description, no GitHub links, no tech-stack words, no disclaimers, ≤400 chars

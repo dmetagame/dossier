@@ -23,6 +23,8 @@
 // Every fallback below was checked from the deploy host, which is the only place
 // whose answer matters: eth.llamarpc.com and base.llamarpc.com both 403 from
 // there, and polygon-rpc.com 401s, so none of them are listed.
+import { createHash } from "node:crypto";
+
 const RPC_URLS: Record<string, string[]> = {
   ethereum: ["https://ethereum-rpc.publicnode.com", "https://rpc.ankr.com/eth"],
   bsc: [
@@ -275,12 +277,44 @@ export async function fetchChainFacts(chain: string, address: string): Promise<R
       };
       const chainId = num(chainIdHex);
       const blockNumber = num(blockHex);
-      const provenance = { url, retrievedAt: new Date().toISOString() };
+
+      // Every raw value this source read, in order, at the one pinned block.
+      const reads: (string | undefined)[] = [
+        chainIdHex, blockHex, code, name, symbol, decimals,
+        supply, implSlot, adminSlot, owner, getOwner,
+      ];
+      /**
+       * Provenance including a hash of what was actually read.
+       *
+       * GoPlus and DexScreener hash the bytes they were handed, and the report
+       * says of every source that it records the time it was read and a SHA-256
+       * of its response. This one recorded only the endpoint and the time, so
+       * that sentence was true of two sources out of three, and an independent
+       * verifier had nothing to check the chain section against.
+       *
+       * There is no single response body to hash here: this is several batched
+       * calls, not one document. What the report actually rests on is the
+       * ordered results at a pinned block height, so that is what is hashed,
+       * together with the height and the address. A verifier re-reading the same
+       * address at the same block gets the same values in the same order and can
+       * recompute this exactly.
+       *
+       * Built as a function rather than an object because the proxy path below
+       * reads one more value, and a hash taken before it would cover less than
+       * the report used.
+       */
+      const prov = () => ({
+        url,
+        retrievedAt: new Date().toISOString(),
+        responseSha256: createHash("sha256")
+          .update(JSON.stringify({ at, address: address.toLowerCase(), reads }))
+          .digest("hex"),
+      });
 
       const bytecode = strip(code);
       if (bytecode.length === 0) {
         // Real knowledge: nothing is deployed here.
-        return { status: "ok", isContract: false, chainId, blockNumber, provenance };
+        return { status: "ok", isContract: false, chainId, blockNumber, provenance: prov() };
       }
 
       const impl = decodeAddress(implSlot ?? "");
@@ -300,6 +334,7 @@ export async function fetchChainFacts(chain: string, address: string): Promise<R
             [{ method: "eth_getCode", params: [proxyImplementation, at] }],
             8000,
           );
+          reads.push(implCode);
           if (strip(implCode)) scanned = strip(implCode);
         } catch {
           /* keep the proxy's bytecode; capabilities stay best-effort */
@@ -343,7 +378,7 @@ export async function fetchChainFacts(chain: string, address: string): Promise<R
         bytecodeBytes: Math.floor(bytecode.length / 2),
         chainId,
         blockNumber,
-        provenance,
+        provenance: prov(),
       };
     } catch (e) {
       // Try the next endpoint before giving up, but say why. A silent fallback

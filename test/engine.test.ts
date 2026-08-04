@@ -403,6 +403,42 @@ describe("report facts are pinned, not sampled", () => {
     }
   });
 
+  test("the chain section is hashed, like every other source the report claims to hash", async () => {
+    // The report says of each source that it records the time it was read and a
+    // SHA-256 of its response. That was true of GoPlus and DexScreener and not
+    // of this one, which recorded only the endpoint and the time, so the
+    // sentence covered two sources out of three and a verifier had nothing to
+    // check the chain section against.
+    const { fetchChainFacts } = await import("../src/engine/sources/rpc");
+    const a = await fetchChainFacts("bsc", ADDR.cake);
+    assert.equal(a.status, "ok");
+    assert.match(
+      a.provenance?.responseSha256 ?? "",
+      /^[0-9a-f]{64}$/,
+      "a source the report says is hashed must actually be hashed",
+    );
+    assert.ok(a.provenance?.url, "and still says where it came from");
+
+    // Replaying the same fixtures at the same block must reproduce it, or the
+    // hash is a random number rather than a commitment.
+    const b = await fetchChainFacts("bsc", ADDR.cake);
+    assert.equal(
+      a.provenance?.responseSha256,
+      b.provenance?.responseSha256,
+      "the same reads at the same block hash to the same value",
+    );
+    // A different address on the SAME chain, so the pinned block is identical
+    // and only the reads differ. Comparing across chains proved nothing: the
+    // block heights differ, so a hash that committed to the height alone and
+    // ignored every value read would have passed.
+    const other = await fetchChainFacts("bsc", ADDR.nowhere);
+    assert.notEqual(
+      a.provenance?.responseSha256,
+      other.provenance?.responseSha256,
+      "the hash must commit to what was read, not just to where and when",
+    );
+  });
+
   test("total supply keeps every digit", () => {
     // BigInt division truncated first: 150 raw at 2 decimals became 1, not 1.5.
     assert.equal(formatUnits(150n, 2), "1.5");
@@ -443,6 +479,63 @@ describe("time is an input, recorded once", () => {
     for (const bad of [0, -1, null, undefined, "x"]) {
       assert.equal(ageInDays(bad, asOf), undefined);
     }
+  });
+
+  // The four tests above pass whether or not anything calls `ageInDays`, and for
+  // months nothing did: `fetchDexScreener` computed age inline from the live
+  // clock while the helper sat beside it, tested and unused. A helper can only
+  // be as load-bearing as its call site, so these check the snapshot the report
+  // is actually built from.
+  test("the snapshot's age comes from the evaluation time, not the wall clock", async () => {
+    const asOf = 1_800_000_000_000;
+    const created = asOf - 30 * day;
+    const pairs = {
+      status: "ok",
+      provenance: { url: "https://api.dexscreener.com/…", retrievedAt: "2027-01-15T00:00:00.000Z" },
+      pairs: [
+        {
+          chainId: "bsc",
+          baseToken: { address: ADDR.cake, symbol: "Cake" },
+          quoteToken: { symbol: "WBNB" },
+          liquidity: { usd: 5_000_000 },
+          volume: { h24: 1_000_000 },
+          txns: { h24: { buys: 100, sells: 100 } },
+          priceUsd: "2",
+          priceNative: "1",
+          pairCreatedAt: created,
+        },
+      ],
+    } as any;
+
+    const a = await fetchDexScreener("bsc", ADDR.cake, pairs, asOf);
+    assert.equal(a.ageDays, 30, "the age is measured from the time the report was given");
+
+    const b = await fetchDexScreener("bsc", ADDR.cake, pairs, asOf);
+    assert.deepEqual(a, b, "the same data at the same instant is the same snapshot");
+
+    const later = await fetchDexScreener("bsc", ADDR.cake, pairs, asOf + 5 * day);
+    assert.equal(later.ageDays, 35, "and a different instant is a different age");
+  });
+
+  test("a pool created at the evaluation instant reaches the report as zero", async () => {
+    // Inline, the falsy-zero guard dropped an exactly-zero age from the report
+    // while the risk checks still scored it, so the document omitted the figure
+    // its own verdict rested on.
+    const asOf = 1_800_000_000_000;
+    const pairs = {
+      status: "ok",
+      provenance: { url: "https://api.dexscreener.com/…", retrievedAt: "2027-01-15T00:00:00.000Z" },
+      pairs: [
+        {
+          chainId: "bsc",
+          baseToken: { address: ADDR.cake, symbol: "Cake" },
+          liquidity: { usd: 5_000_000 },
+          volume: { h24: 1_000_000 },
+          pairCreatedAt: asOf,
+        },
+      ],
+    } as any;
+    assert.equal((await fetchDexScreener("bsc", ADDR.cake, pairs, asOf)).ageDays, 0);
   });
 });
 

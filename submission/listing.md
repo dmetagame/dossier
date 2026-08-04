@@ -20,7 +20,7 @@ names, no disclaimers, no example prompts. Fee is digits only.
 | Fee | 0.01 |
 | Endpoint | https://dossier.rouma.xyz/dossier |
 | Payout wallet | 0x51c25782af63381056cd1c3c59c0544628d67697 |
-| Record | ★5.0, 100% positive, 10 sold, 2 reviews |
+| Record | ★4.5, 83.33% positive, 28 sold, 6 reviews (2026-08-04; see revenue-ledger.md — the counter includes internal tests) |
 | Public page | https://www.okx.ai/agents/7012 |
 
 ## Agent description, as listed
@@ -28,19 +28,36 @@ names, no disclaimers, no example prompts. Fee is digits only.
 > Dossier transforms a single request into a polished, executive-ready due diligence report
 > for any token. It consolidates live data on security, liquidity, market activity, and
 > holder distribution into one shareable document, highlighting a clear risk assessment,
-> safe position size, and key findings at the top. Instead of piecing together multiple
+> heuristic size limit, and key findings at the top. Instead of piecing together multiple
 > dashboards, an agent or analyst receives a complete report in one call.
 
 ## Service description, as listed
 
 **Part 1.** Generates a complete, formatted due diligence report on a token for an agent or
-analyst. The report includes risk assessment, recommended safe position size, security
+analyst. The report includes risk assessment, a heuristic size limit, security
 alerts, liquidity, market activity, and holder concentration, all compiled into a single
 shareable document. The final report is delivered directly in the paid response, allowing
 the caller to receive it from the service endpoint within the same request.
 
 **Part 2.** 1. Token contract address 2. Optional: chain name, auto-detected when
 unambiguous 3. Optional: output format, either report or data
+
+## Superseded wording
+
+The listing formerly said **"safe position size"** in both the agent and service
+descriptions, and this file went on repeating it after the live listing had been corrected.
+
+It was changed because it was false in the way that matters. The figure is 1% of the
+deepest pool's base-side liquidity, halved on caution. It is a liquidity-derived ceiling,
+not advice about what is safe to risk, and it takes no account of the buyer's position,
+conviction, or the very warnings printed beside it. On 2026-08-03 a delivery message
+carrying the old phrasing told a buyer "safe position size ≈ $78,345" for a token the next
+line of the same message flagged as mintable with an unrenounced owner.
+
+The live listing, the report, `/info`, and the delivery message now all call it a
+**heuristic size cap** or **heuristic size limit**. The text above is the corrected copy.
+Nothing in this repository should describe it as a safe position size except the incident
+records that exist to explain why it must not be.
 
 ## If the copy is ever updated
 

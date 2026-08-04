@@ -5,8 +5,26 @@ record; this file records what exists and how it was made.
 
 ## The deliverable
 
-`dossier-demo-narrated-90s.mp4` in `~/Downloads`. 1920x1080, 30fps, exactly 90.00s,
-**with narration already mixed in** (AAC, 48kHz stereo, normalised to -16 LUFS).
+`dossier-demo-narrated-90s.mp4`. 1920x1080, 30fps, exactly 90.00s, **with narration
+already mixed in** (AAC, 48kHz stereo, normalised to -16 LUFS).
+
+Identified rather than merely located, because "in `~/Downloads`" is not evidence and an
+external audit on 2026-08-04 concluded from it that the file was lost:
+
+| | |
+|---|---|
+| Path | `/mnt/c/Users/predator triton/Downloads/dossier-demo-narrated-90s.mp4` |
+| Size | 9,001,329 bytes |
+| Modified | 2026-07-27 21:43 |
+| SHA-256 | `fa562bc30b772ab42ba10b78f90ab8a4807bd17c01e431fb62ae48e826eb4b4c` |
+
+It is on the **Windows** side of this WSL machine, not in the Linux home, which is why a
+workspace scan of `~/Downloads` finds nothing. The hash is what makes a later copy provably
+the same file; the path is a convenience that will eventually stop being true.
+
+**A local path is still not submission evidence.** The finished video needs a durable
+public URL, and that URL belongs in `form-answers.md` next to the X post. Until then the
+only proof this file is the submitted one is the hash above.
 
 Narration is a neural voice, `en-GB-RyanNeural` at -4% rate, generated line by line and
 placed on its own cue so the pauses land where the picture changes. That matches how the

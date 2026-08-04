@@ -264,7 +264,20 @@ export async function fetchDexScreener(
     deepestPoolUsd: Math.max(...active.map((p) => p.liquidity?.usd ?? 0), 0) || undefined,
     volume24hUsd,
     txns24h,
-    ageDays: deepest.pairCreatedAt ? (Date.now() - deepest.pairCreatedAt) / 86_400_000 : undefined,
+    // `ageInDays(…, asOf)`, not an inline Date.now(). The helper above was
+    // written for exactly this line, thoroughly unit-tested, and then called by
+    // nothing: production kept computing age from the live clock, so identical
+    // upstream data produced a different `ageDays` on every run and could cross
+    // the three-day activity boundary between two runs of the same report. That
+    // contradicts the one claim this service is built on — same token, same
+    // data, same verdict — and it is the reason `asOf` is threaded down here
+    // from the engine in the first place.
+    //
+    // Routing through the helper also puts its two other decisions into
+    // production for the first time: an exactly-zero age is a real measurement
+    // rather than a falsy value to drop, and a materially future timestamp is
+    // upstream nonsense rather than a negative age.
+    ageDays: ageInDays(deepest.pairCreatedAt, asOf),
     pairCount: active.length,
   };
 }

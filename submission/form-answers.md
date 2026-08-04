@@ -15,9 +15,9 @@ Updated 2026-07-27, after the external review and the work that followed it.
 | Endpoint | https://dossier.rouma.xyz/dossier |
 | Site | https://dossier.rouma.xyz |
 | Status | Listed, eligible for task recommendations, online |
-| Marketplace record | ★5.0, 100% positive, 10 sold, 2 written reviews |
-| X post | [fill in after posting] |
-| Demo video | [fill in after upload] |
+| Marketplace record | ★4.5, 83.33% positive, 28 sold, 6 written reviews (2026-08-04). See `revenue-ledger.md`: 11 of the 28 are external, from 6 distinct buyers |
+| X post | [outstanding — record it in `submission-record.md`, not here] |
+| Demo video | [outstanding — record it in `submission-record.md`, not here] |
 | Build direction | Professional Asset Creation (OKX priority ASP direction 1) |
 | Categories to target | Best Product (primary), Revenue Rocket (secondary) |
 
@@ -115,9 +115,13 @@ Their review, left on the listing:
 
 ## Notes to self, not for the form
 
-- "10 sold" is the marketplace counter and includes our own test tasks. Two of those
-  purchases came from external buyers. If asked about traction directly, say two external
-  buyers and be straight about it.
+- The marketplace counter includes our own test tasks. **This note used to say "two
+  external buyers", which is now badly out of date and understates the entry.** The
+  actual record as of 2026-08-04, compiled from on-chain job ids in
+  `submission/revenue-ledger.md`: 28 completed tasks, of which **11 are from 6 distinct
+  external buyers** totalling **4.03 USD₮0**, and 17 are our own. Agent **#1757 bought
+  five times**, which is the number worth quoting: a repeat external buyer says more than
+  any first-purchase count. Never present "28 sold" as organic traction.
 - Rotate the OKX API credentials once the deadline passes. They went through a chat
   transcript on 21 July and again on 27 July.
 - The companion agent Verdict (#7008) is parked and is not part of this entry.
