@@ -902,6 +902,14 @@ def _run_tick():
         # If the title was unusable we asked the buyer; a job is never closed on
         # the question alone, so their answer is picked up on a later tick.
         if not addr and st.get("asked"):
+            # Arm the cache from whatever conversation is to hand, not only
+            # from a fresh ask. Any history containing one of our own messages
+            # identifies us, and a delivery does that as well as a question. A
+            # job stranded before the cache existed is exactly the case that
+            # cannot wait for its own next ask, and this is one extra call made
+            # only while the cache is empty.
+            if not state.get(INBOX_KEY, {}).get("inbox"):
+                learn_inbox(state, job, buyer)
             addr, chain = read_buyer_reply(
                 job, buyer, st.get("asked_at", 0),
                 st.get("our_inbox") or state.get(INBOX_KEY, {}).get("inbox"))

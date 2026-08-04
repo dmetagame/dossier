@@ -970,3 +970,56 @@ class TestAStuckJobHealsItself(unittest.TestCase):
         self.seed({})
         fw.main()
         self.assertEqual(self.delivered, [])
+
+
+class TestTheCacheArmsFromAnyConversation(unittest.TestCase):
+    """Identity is learned from any message of ours, not only from a question.
+
+    `learn_inbox` was called at ask time only, so a job that had already asked
+    and been answered could never acquire an id, and the cache stayed empty until
+    some unrelated job happened to ask. Both markers identify us equally well and
+    a delivered report is in the history just as a question is.
+    """
+
+    OURS = "inbox-dossier"
+    THEM = "inbox-buyer"
+
+    def setUp(self):
+        self.state = os.path.join(scratch(self), "state.json")
+        self._state_file, fw.STATE_FILE = fw.STATE_FILE, self.state
+        self._saved = {n: getattr(fw, n) for n in
+                       ("jrun", "has_deliverable", "resolve_token", "deliver", "run")}
+        self.addCleanup(lambda: setattr(fw, "STATE_FILE", self._state_file))
+        self.addCleanup(lambda: [setattr(fw, n, v) for n, v in self._saved.items()])
+
+        self.asked_at = time.time() - 600
+        self.delivered = []
+        fw.jrun = lambda cmd, timeout=180: {"ok": True, "data": {"tasks": [{
+            "jobId": "0xstuck2", "myAgentId": "7012", "myRole": "asp",
+            "status": "accepted", "counterpartyAgentId": "9444",
+            "title": "Due diligence report please"}]}}
+        fw.has_deliverable = lambda job: False
+        fw.resolve_token = lambda title: (None, None, [])
+        fw.deliver = lambda job, buyer, addr, chain, from_ticker=False, already_messaged=False: (
+            self.delivered.append(addr) or {"uploaded": True, "messaged": True, "recorded": True})
+
+        def at(off):
+            return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(self.asked_at + off)) + "Z"
+
+        # A history holding an earlier delivery of ours and the buyer's reply.
+        self.rows = [
+            {"id": "a", "senderInboxId": self.OURS,
+             "content": "DOSSIER REPORT - UNI (ethereum)", "sentAt": at(-100)},
+            {"id": "b", "senderInboxId": self.THEM,
+             "content": "use %s" % WBTC_ETH, "sentAt": at(60)},
+        ]
+        fw.run = lambda cmd, timeout=180: types.SimpleNamespace(
+            stdout=json.dumps(self.rows), stderr="", returncode=0, failure=None)
+        write_json(self.state, {"0xstuck2": {"asked": True, "asked_at": self.asked_at,
+                                             "first_seen": self.asked_at - 300}})
+
+    def test_a_past_delivery_identifies_us_and_arms_the_cache(self):
+        fw.main()
+        self.assertEqual(read_json(self.state)[fw.INBOX_KEY]["inbox"], self.OURS)
+        self.assertEqual(self.delivered, [WBTC_ETH],
+                         "and the reply that was unreadable becomes readable")
