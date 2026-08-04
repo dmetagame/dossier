@@ -208,6 +208,10 @@ What it holds the service to:
 - **A credential outage** (`payment-outage.test.ts`) — external callers get 503
   and never a free report, while the fulfilment daemon can still serve a task
   buyer whose payment never depended on our facilitator credentials.
+- **The ways a client actually calls** — a paid GET with a query string, a paid
+  POST with a JSON body, and `X-PAYMENT` as well as `PAYMENT-SIGNATURE`. This
+  service has already answered a paid caller 400 once for replaying in a shape
+  it did not read, so every supported shape is pinned rather than assumed.
 - **"Invalid" is not "unknown"** — a facilitator that answers `isValid: false`
   gets a 402, because that is a refusal. A facilitator that answers nothing at
   all gets a 503 that says which call went unanswered, whether anything was

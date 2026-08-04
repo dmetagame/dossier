@@ -313,6 +313,94 @@ describe("a paid call", () => {
   });
 });
 
+describe("the ways a buyer's client actually calls", () => {
+  // Not hypothetical. This service already shipped a bug in this exact class:
+  // paid callers whose client replayed with GET and a query string were
+  // answered 400 and got no report, because only a POST body was read. Every
+  // other paid test in this file replays the way our own tooling does, which is
+  // the way least likely to find the next one.
+
+  test("a paid POST carrying the parameters in a JSON body", async () => {
+    // What the README's own curl example does, and what most buyers send.
+    const unpaid = await app.request("/dossier", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ tokenAddress: ADDR.cake }),
+    });
+    assert.equal(unpaid.status, 402);
+    const required = b64.decode(unpaid.headers.get("payment-required")!);
+
+    const r = await app.request("/dossier", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "payment-signature": payment(required),
+      },
+      body: JSON.stringify({ tokenAddress: ADDR.cake }),
+    });
+    assert.equal(r.status, 200, "a paid POST with a body must be served");
+    assert.ok((await r.text()).includes("<html"));
+    assert.deepEqual(fac.ops(), ["verify", "settle"]);
+    assert.equal(
+      b64.decode(r.headers.get("payment-response")!).transaction,
+      fac.tx,
+      "and settles like any other paid call",
+    );
+  });
+
+  test("a client that sends x-payment instead of payment-signature", async () => {
+    // The SDK accepts either name. Ours had only ever been called with one, so
+    // the other was a supported path with nothing holding it.
+    const { required } = await challenge();
+    const r = await app.request(`/dossier?tokenAddress=${ADDR.cake}`, {
+      headers: { "x-payment": payment(required) },
+    });
+    assert.equal(r.status, 200, "the header alias is not a second-class caller");
+    assert.deepEqual(fac.ops(), ["verify", "settle"]);
+  });
+
+  test("the alias never displaces a real payment-signature", async () => {
+    // Precedence has to be one-directional and boring. If the alias could
+    // overwrite the header the OKX protocol actually specifies, adding a junk
+    // `x-payment` to an otherwise good request would break it.
+    const { required } = await challenge();
+    const r = await app.request(`/dossier?tokenAddress=${ADDR.cake}`, {
+      headers: {
+        "payment-signature": payment(required),
+        "x-payment": "not-a-payment-at-all",
+      },
+    });
+    assert.equal(r.status, 200);
+    assert.deepEqual(fac.ops(), ["verify", "settle"]);
+  });
+
+  test("an unreadable alias is just an unpaid call", async () => {
+    const r = await app.request(`/dossier?tokenAddress=${ADDR.cake}`, {
+      headers: { "x-payment": "}}}not base64 or json{{{" },
+    });
+    assert.equal(r.status, 402, "garbage under either name is not a payment");
+    assert.deepEqual(fac.ops(), [], "and is never sent to the facilitator");
+  });
+
+  test("a paid POST whose body and query disagree: the body wins", async () => {
+    // Both are read, and a client that carries the parameters twice must not
+    // get a report on a token it did not name in the body it signed for.
+    const { required } = await challenge();
+    const r = await app.request(`/dossier?tokenAddress=${ADDR.uni}&chain=ethereum`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "payment-signature": payment(required),
+      },
+      body: JSON.stringify({ tokenAddress: ADDR.cake, chain: "bsc" }),
+    });
+    assert.equal(r.status, 200);
+    const html = (await r.text()).toLowerCase();
+    assert.ok(html.includes(ADDR.cake), "the body's token is the one reported on");
+    assert.equal(html.includes(ADDR.uni), false, "and the query's is not");
+  });
+});
+
 describe("what must never be charged", () => {
   test("a payment the facilitator rejects gets no report", async () => {
     const { required } = await challenge();

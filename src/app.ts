@@ -162,6 +162,34 @@ app.use(async (c, next) => {
   );
 });
 
+// `X-PAYMENT` is the header name in the original x402 spec; OKX's protocol uses
+// `PAYMENT-SIGNATURE`. A generic x402 client sends the first, and this service
+// advertises itself as an x402 service at a public URL, so both arrive.
+//
+// The SDK looks like it accepts either — its Hono adapter builds a context with
+// `getHeader("payment-signature") || getHeader("x-payment")` — but that field is
+// never read: `requiresPayment` only asks whether the route is priced, and
+// `extractPayment` reads `payment-signature` alone. So a buyer who signs a
+// payment and sends it under the spec's own name is answered as though they had
+// not paid at all, and gets a challenge back for a payment they already made.
+//
+// This is the same failure this service already shipped once, when a paid caller
+// replaying with GET and a query string was answered 400 because only a POST
+// body was read. Nothing settles on that path, so nobody is charged, but they
+// get no report and every reason to conclude the service is broken.
+//
+// Normalised here rather than handled downstream, so exactly one name reaches
+// the payment layer and the alias cannot diverge from it. It widens who can pay
+// us and weakens nothing: the payload still goes to the facilitator, which is
+// what decides whether it is a real payment.
+app.use(async (c, next) => {
+  const alias = c.req.header("x-payment");
+  if (alias && !c.req.header("payment-signature")) {
+    c.req.raw.headers.set("payment-signature", alias);
+  }
+  return next();
+});
+
 // Our own fulfilment daemon identifies itself with a shared secret. Resolved
 // once, here, so the payment bypass and the job-id capture below cannot drift
 // apart in what they consider an internal call.
