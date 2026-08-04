@@ -1023,3 +1023,77 @@ class TestTheCacheArmsFromAnyConversation(unittest.TestCase):
         self.assertEqual(read_json(self.state)[fw.INBOX_KEY]["inbox"], self.OURS)
         self.assertEqual(self.delivered, [WBTC_ETH],
                          "and the reply that was unreadable becomes readable")
+
+
+class TestTheOneCallOutward(unittest.TestCase):
+    """`run()` itself, against real processes.
+
+    Every other test in this file replaces `run()`, which is what makes them
+    offline and deterministic. The cost is that the function they all stand on
+    was never executed: its four failure classes were asserted only by reading
+    it. Those classes decide whether the watcher treats a fault as an answer
+    about a job, and a misread there is how a deployment problem turns into a
+    buyer being told their token does not exist.
+
+    So this class stubs nothing. It spawns processes that really succeed, really
+    exit non-zero, really are missing, really cannot be executed, and really run
+    long.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def test_a_command_that_works_reports_no_failure(self):
+        r = fw.run(["/bin/sh", "-c", "printf hello"])
+        self.assertIsNone(r.failure)
+        self.assertEqual(r.stdout, "hello")
+        self.assertEqual(r.returncode, 0)
+
+    def test_a_non_zero_exit_is_named_with_its_code(self):
+        r = fw.run(["/bin/sh", "-c", "exit 3"])
+        self.assertEqual(r.failure, "exit:3")
+
+    def test_output_on_a_failing_command_is_still_a_failure(self):
+        # The specific regression: onchainos writes errors to stdout, so a
+        # caller reading stdout and ignoring returncode could not tell an error
+        # from an answer.
+        r = fw.run(["/bin/sh", "-c", 'printf %s "{\\"error\\":\\"nope\\"}"; exit 1'])
+        self.assertEqual(r.failure, "exit:1")
+        self.assertIn("error", r.stdout)
+
+    def test_a_missing_binary_is_a_deployment_fault(self):
+        r = fw.run([os.path.join(self.tmp, "no-such-binary")])
+        self.assertEqual(r.failure, "missing-binary")
+        self.assertEqual(r.returncode, 127)
+
+    def test_a_file_that_cannot_be_executed_is_a_spawn_failure(self):
+        # Distinct from a missing binary: the path exists, so this is not a
+        # typo in a command, and reporting it as one would send the wrong
+        # person looking in the wrong place.
+        path = os.path.join(self.tmp, "not-executable")
+        with open(path, "w") as fh:
+            fh.write("#!/bin/sh\ntrue\n")
+        os.chmod(path, 0o600)
+        r = fw.run([path])
+        self.assertEqual(r.failure, "spawn-failed")
+
+    def test_a_command_that_hangs_is_killed_and_named(self):
+        started = time.time()
+        r = fw.run(["/bin/sh", "-c", "sleep 30"], timeout=0.5)
+        self.assertEqual(r.failure, "timeout")
+        self.assertLess(time.time() - started, 10, "the timeout must actually fire")
+
+    def test_a_failure_never_parses_as_json(self):
+        # jrun is where a failed command becomes data, or must not. A non-zero
+        # exit whose output happens to contain braces used to come back as
+        # though it were the answer.
+        self.assertIsNone(
+            fw.jrun(["/bin/sh", "-c", 'printf %s "{\\"jobs\\":[]}"; exit 1']))
+        self.assertIsNone(fw.jrun([os.path.join(self.tmp, "no-such-binary")]))
+        self.assertIsNone(fw.jrun(["/bin/sh", "-c", "sleep 30"], timeout=0.5))
+
+    def test_json_is_found_in_a_noisy_but_successful_output(self):
+        r = fw.jrun(["/bin/sh", "-c",
+                     'printf %s "loading...\n{\\"ok\\":true}\ndone"'])
+        self.assertEqual(r, {"ok": True})

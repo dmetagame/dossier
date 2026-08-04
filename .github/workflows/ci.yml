@@ -12,7 +12,7 @@ on:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -49,6 +49,21 @@ jobs:
         # test is the same habit that, in the watcher, runs unattended on a
         # timer forever. Without this the warnings scroll past and accumulate.
         run: python3 -W error::ResourceWarning -m unittest discover -s ops -p 'test_*.py' -v
+
+      # /verify renders JSON an attacker chooses, and its defence is that every
+      # value goes in through textContent rather than innerHTML. No string
+      # search over the served HTML can tell that apart from the innerHTML
+      # version that shipped before: both produce the same bytes, and only a
+      # browser decides whether they execute. So one runs here.
+      #
+      # Kept out of `pnpm test` so the everyday loop needs no browser, which
+      # means this step is the only thing keeping it alive. Do not drop it to
+      # save a minute.
+      - name: Install a browser
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Test the verifier in a browser
+        run: pnpm test:browser
 
       - name: Build the server bundle
         run: pnpm build:server

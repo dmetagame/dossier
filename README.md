@@ -172,7 +172,8 @@ requires the env vars in `.env.example` (set on the deploy host, never committed
 ## Test
 
 ```bash
-pnpm test        # the Node suite, no network
+pnpm test          # the Node suite, no network
+pnpm test:browser  # /verify in real chromium (needs `pnpm exec playwright install chromium`)
 python3 -W error::ResourceWarning -m unittest discover -s ops -p 'test_*.py'   # the watcher
 pnpm typecheck
 ```
@@ -207,13 +208,36 @@ What it holds the service to:
 - **A credential outage** (`payment-outage.test.ts`) — external callers get 503
   and never a free report, while the fulfilment daemon can still serve a task
   buyer whose payment never depended on our facilitator credentials.
+- **The paid path itself** (`settlement.test.ts`) — the real x402 middleware
+  against a sandbox facilitator, with no credentials involved. Verify runs
+  before the handler and settle after it; the report is archived before money
+  moves; a rejected payment, an invalid request, a 404, a paid HEAD and an
+  unreachable facilitator all reach settle zero times; the receipt is linked to
+  the archived report and recovers it; and a settlement that fails *after* the
+  report was built hands the buyer an error rather than the document.
+- **The verifier in a browser** (`pnpm test:browser`) — real chromium, so
+  "escaped" can be told apart from "executed". Every field of a hostile
+  attestation, pasted or carried in an `?attestation=` link, renders as text and
+  runs nothing; the CSP refuses a script the page did not ship with; a real
+  report passes all three checks and a tampered one fails the right one.
+- **The watcher's one call outward** (`TestTheOneCallOutward`) — `run()` against
+  real processes rather than a stub: success, non-zero exit, missing binary,
+  unexecutable file and a hang each land in their own class.
 
 `scripts/benchmark.ts` is separate and does hit live APIs: established tokens
 (CAKE, UNI, LINK, AAVE, PEPE) must never `abort`, live-sampled thin tokens must
 never `proceed`. Run it by hand, not in CI.
 
-CI (`.github/workflows/ci.yml`) runs typecheck, the suite, a build, a check that
-`src/generated` matches its sources, and a smoke test of the built bundle.
+CI (`.github/workflows/ci.yml`) runs typecheck, the Node suite, the watcher
+suite, the browser suite, a build, a check that `src/generated` matches its
+sources, and a smoke test of the built bundle. The browser step is the only
+thing that runs `pnpm test:browser`, since it is deliberately out of `pnpm test`
+to keep the everyday loop browser-free.
+
+What no test here can prove, and only a real purchase can: that OKX accepts our
+credentials, that our HMAC signing is right, and that USD₮0 actually moves. The
+facilitator is stubbed at `fetch` rather than driven with live keys, because a
+settlement credential in CI is a worse exposure than the bugs it would catch.
 
 ## Deploy
 

@@ -1,9 +1,10 @@
 // The HTTP contract a buyer and an OKX validator actually see.
 //
 // Runs with DEV_SKIP_PAYMENT=1 (set by `pnpm test`), so the paid routes are
-// reachable without facilitator credentials. The one thing that cannot be
-// exercised here is the signed 402 challenge itself, which needs live OKX
-// credentials; its published shape is covered by x402-contract.test.ts.
+// reachable without the payment middleware in the way. The middleware itself —
+// the challenge, verification, settlement, and what happens when any of that
+// fails — is exercised in settlement.test.ts against a sandbox facilitator; the
+// published shape of the challenge is covered by x402-contract.test.ts.
 
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
