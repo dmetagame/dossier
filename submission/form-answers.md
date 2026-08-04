@@ -16,8 +16,8 @@ Updated 2026-07-27, after the external review and the work that followed it.
 | Site | https://dossier.rouma.xyz |
 | Status | Listed, eligible for task recommendations, online |
 | Marketplace record | ★4.5, 83.33% positive, 28 sold, 6 written reviews (2026-08-04). See `revenue-ledger.md`: 11 of the 28 are external, from 6 distinct buyers |
-| X post | [outstanding — record it in `submission-record.md`, not here] |
-| Demo video | [outstanding — record it in `submission-record.md`, not here] |
+| X post | https://x.com/Herboobakar/status/2081858337553973363 |
+| Demo video | https://youtu.be/6Uq1ZCxPQ2o |
 | Build direction | Professional Asset Creation (OKX priority ASP direction 1) |
 | Categories to target | Best Product (primary), Revenue Rocket (secondary) |
 

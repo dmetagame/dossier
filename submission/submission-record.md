@@ -1,25 +1,39 @@
 # Submission record
 
-The audit of 2026-08-04 called this the most important non-code gap, and it is
+The audit of 2026-08-04 called this the most important non-code gap, and it was
 right: the listing being live proves the product exists, not that the entry was
-submitted. Nothing in this repository currently proves the final step happened.
+submitted.
 
-**This file is deliberately unfinished.** Every blank below needs a real value
-from the person who performs the action. Do not fill any of them in from memory,
-and do not treat a plausible reconstruction as a record — the whole point is that
-it is checkable by someone who was not there.
+Filled in 2026-08-04. Each row below says how it was checked, because "the owner
+told me" and "an independent endpoint returned it" are different kinds of
+evidence and the difference is the whole point of this file.
 
 ## Required
 
-| Item | Value | Status |
+| Item | Value | How it was checked |
 |---|---|---|
-| X post URL | | **outstanding** |
-| X post contains `#OKXAI` | | **outstanding** |
-| X post published at (UTC) | | **outstanding** |
-| Demo video public URL | | **outstanding** |
-| Demo length (must be ≤ 90s) | 90.00s | ✅ verified |
-| Google Form submitted at (UTC) | | **outstanding** |
-| Google Form confirmation (screenshot path or confirmation id) | | **outstanding** |
+| X post URL | https://x.com/Herboobakar/status/2081858337553973363 | ✅ verified via X's own oembed endpoint |
+| X post author | Rouma (@Herboobakar) | ✅ same |
+| X post published | 27 July 2026 | ✅ same |
+| X post contains `#OKXAI` | yes, as a linked hashtag | ✅ same, present in the returned markup |
+| X post has media attached | yes (`pic.twitter.com/tGlup8jXya`) | ✅ same |
+| Demo video public URL | https://youtu.be/6Uq1ZCxPQ2o | ✅ verified via YouTube oembed, HTTP 200 |
+| Demo video title / channel | "dossier demo" / Issa Abubakar | ✅ same |
+| Demo length (must be ≤ 90s) | 90.00s in the source file | ⚠️ verified on the local master, not on the upload — oembed returns no duration |
+| Uploaded video is the same cut as the local master | | ⚠️ **not verifiable from here.** A YouTube stream cannot be hashed against `fa562bc3…` |
+| Google Form submitted | yes | ⚠️ **stated by the owner, no artifact.** See below |
+
+### The form submission has no artifact
+
+The owner states the form was submitted. There is no confirmation id, timestamp
+or screenshot recorded, so this row rests on their word rather than on anything a
+third party could check.
+
+That is very probably fine — it is their submission and they performed it. It is
+recorded this way rather than ticked because the entire reason this file exists
+is that the previous audit could not tell a completed step from an assumed one.
+If a confirmation email or screenshot still exists, adding its timestamp here
+closes the last gap in the entry.
 
 ## Already verifiable, no action needed
 
@@ -32,6 +46,26 @@ it is checkable by someone who was not there.
 | Marketplace record (2026-08-04) | ★4.5, 83.33% positive, 28 sold, 6 reviews |
 | External revenue | 11 tasks, 6 distinct buyers, 4.03 USD₮0 — see `revenue-ledger.md` |
 | Demo file SHA-256 | `fa562bc30b772ab42ba10b78f90ab8a4807bd17c01e431fb62ae48e826eb4b4c` |
+
+## The X post quotes the old price
+
+The post says **"0.5 USD₮0 per call over x402 on X Layer"**. It was published on
+27 July; the price dropped to 0.01 on 28 July, the day after. The live listing,
+the challenge, `/info` and this repository all say 0.01.
+
+Same shape as the demo narration and the same direction of error: it quotes a
+price *higher* than we charge, so no reader is misled into expecting a better
+deal than exists. The difference is that a post can be corrected additively with
+a short reply, where the video would have to be re-rendered and re-uploaded.
+
+**Owner's decision required.** A one-line reply — "Price is now 0.01 USD₮0 per
+call, down from the 0.5 quoted above" — costs nothing, is visible to anyone who
+reads the thread, and does not alter the submitted post. Doing nothing is also
+defensible. What would not be defensible is repeating the 0.5 figure anywhere
+new.
+
+Everything else in the post still holds: the refusal to guess, settlement only on
+success, the free preflight, and the signed report are all still exactly true.
 
 ## Known defect in the submitted demo
 

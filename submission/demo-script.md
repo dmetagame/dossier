@@ -22,9 +22,9 @@ It is on the **Windows** side of this WSL machine, not in the Linux home, which 
 workspace scan of `~/Downloads` finds nothing. The hash is what makes a later copy provably
 the same file; the path is a convenience that will eventually stop being true.
 
-**A local path is still not submission evidence.** The finished video needs a durable
-public URL, and that URL belongs in `form-answers.md` next to the X post. Until then the
-only proof this file is the submitted one is the hash above.
+**Published at https://youtu.be/6Uq1ZCxPQ2o** ("dossier demo", channel Issa Abubakar),
+verified public on 2026-08-04. The hash above identifies the local master; a YouTube stream
+cannot be hashed against it, so "the upload is this cut" is asserted rather than proved.
 
 Narration is a neural voice, `en-GB-RyanNeural` at -4% rate, generated line by line and
 placed on its own cue so the pauses land where the picture changes. That matches how the
