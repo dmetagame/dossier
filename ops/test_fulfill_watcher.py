@@ -1097,3 +1097,153 @@ class TestTheOneCallOutward(unittest.TestCase):
         r = fw.jrun(["/bin/sh", "-c",
                      'printf %s "loading...\n{\\"ok\\":true}\ndone"'])
         self.assertEqual(r, {"ok": True})
+
+
+class TestAWedgedJobIsVisibleFromOutside(unittest.TestCase):
+    """The heartbeat has to answer a question someone would actually ask.
+
+    It carried `at`, `tasks`, `accepted` and `open`, and /health published only
+    the age of `at`. That proves the process is running, which is the question
+    nobody needed answered: a watcher ticking every 120s over a job it asked
+    about an hour ago and can no longer read looks identical, from outside, to an
+    idle one. That is the shape of the 2026-08-03 deadlock, and the only way it
+    was found was by opening the state file on the box.
+    """
+
+    def setUp(self):
+        d = scratch(self)
+        self.state = os.path.join(d, "state.json")
+        self.beat = os.path.join(d, "heartbeat.json")
+        self._saved = {n: getattr(fw, n) for n in
+                       ("jrun", "has_deliverable", "resolve_token", "deliver", "run",
+                        "STATE_FILE", "HEARTBEAT_FILE")}
+        self.addCleanup(lambda: [setattr(fw, n, v) for n, v in self._saved.items()])
+        fw.STATE_FILE, fw.HEARTBEAT_FILE = self.state, self.beat
+
+        self.jobs = [{"jobId": "0xwedged", "myAgentId": "7012", "myRole": "asp",
+                      "status": "accepted", "counterpartyAgentId": "9444",
+                      "title": "Due diligence report please"}]
+        fw.jrun = lambda cmd, timeout=180: {"ok": True, "data": {"tasks": self.jobs}}
+        fw.has_deliverable = lambda job: False
+        fw.resolve_token = lambda title: (None, None, [])
+        fw.deliver = lambda *a, **k: {"uploaded": True, "messaged": True, "recorded": True}
+        fw.run = lambda cmd, timeout=180: types.SimpleNamespace(
+            stdout="[]", stderr="", returncode=0, failure=None)
+
+    def test_the_age_of_the_oldest_open_job_is_published(self):
+        write_json(self.state, {"0xwedged": {"asked": True, "asked_at": time.time() - 3600,
+                                             "first_seen": time.time() - 3600}})
+        fw.main()
+        beat = read_json(self.beat)
+        self.assertEqual(beat["open"], 1)
+        self.assertGreaterEqual(beat["oldestOpenSeconds"], 3500,
+                                "an hour-old job must say so on the heartbeat")
+
+    def test_a_finished_job_is_not_a_stall(self):
+        write_json(self.state, {"0xwedged": {"done": True, "first_seen": time.time() - 9999}})
+        fw.main()
+        beat = read_json(self.beat)
+        self.assertEqual(beat["open"], 0)
+        self.assertEqual(beat["oldestOpenSeconds"], 0,
+                         "a long-closed job must not read as a permanent stall")
+
+    def test_nothing_outstanding_reads_as_zero_not_as_missing(self):
+        self.jobs = []
+        write_json(self.state, {})
+        fw.main()
+        self.assertEqual(read_json(self.beat)["oldestOpenSeconds"], 0)
+
+
+class TestACachedInboxIsCheckedNotTrusted(unittest.TestCase):
+    """A wrong cached id is worse than an empty one, and nothing said so.
+
+    `learn_inbox` returned the moment a value was present, which made it
+    write-once: it filled an empty cache and could never correct a wrong one. An
+    empty cache is self-healing, and that is what the function is for. A stale
+    one is a permanent wrong answer in the place that decides which messages in a
+    conversation belong to the buyer, so it either ignores a real reply or treats
+    one of our own messages as one.
+    """
+
+    OURS = "inbox-dossier"
+    OTHER = "inbox-someone-else"
+    THEM = "inbox-buyer"
+
+    def setUp(self):
+        d = scratch(self)
+        self.state = os.path.join(d, "state.json")
+        self.beat = os.path.join(d, "heartbeat.json")
+        self._saved = {n: getattr(fw, n) for n in
+                       ("jrun", "has_deliverable", "resolve_token", "deliver", "run",
+                        "STATE_FILE", "HEARTBEAT_FILE")}
+        self.addCleanup(lambda: [setattr(fw, n, v) for n, v in self._saved.items()])
+        fw.STATE_FILE, fw.HEARTBEAT_FILE = self.state, self.beat
+
+        self.asked_at = time.time() - 600
+        self.history_calls = []
+        fw.jrun = lambda cmd, timeout=180: {"ok": True, "data": {"tasks": [{
+            "jobId": "0xcheck", "myAgentId": "7012", "myRole": "asp",
+            "status": "accepted", "counterpartyAgentId": "9444",
+            "title": "Due diligence report please"}]}}
+        fw.has_deliverable = lambda job: False
+        fw.resolve_token = lambda title: (None, None, [])
+        fw.deliver = lambda *a, **k: {"uploaded": True, "messaged": True, "recorded": True}
+        # A conversation whose only message of ours was sent by OURS.
+        self.rows = [{"id": "a", "senderInboxId": self.OURS,
+                      "content": "DOSSIER REPORT - UNI (ethereum)",
+                      "sentAt": self.asked_at - 100}]
+
+        def run(cmd, timeout=180):
+            self.history_calls.append(cmd)
+            return types.SimpleNamespace(stdout=json.dumps(self.rows), stderr="",
+                                         returncode=0, failure=None)
+        fw.run = run
+
+    def seed(self, cache):
+        write_json(self.state, {"0xcheck": {"asked": True, "asked_at": self.asked_at,
+                                            "first_seen": self.asked_at - 300},
+                                fw.INBOX_KEY: cache})
+
+    def test_a_cache_that_still_matches_is_left_alone(self):
+        self.seed({"inbox": self.OURS, "at": 1, "checked_at": 1})
+        fw.main()
+        cache = read_json(self.state)[fw.INBOX_KEY]
+        self.assertEqual(cache["inbox"], self.OURS)
+        self.assertNotIn("mismatch", cache)
+        self.assertGreater(cache["checked_at"], 1, "and the check is recorded as done")
+
+    def test_a_cache_that_no_longer_matches_is_reported_and_kept(self):
+        self.seed({"inbox": self.OTHER, "at": 1, "checked_at": 1})
+        fw.main()
+        cache = read_json(self.state)[fw.INBOX_KEY]
+        self.assertEqual(cache["inbox"], self.OTHER,
+                         "one disagreeing observation must not repoint every delivery")
+        self.assertEqual(cache["mismatch"], self.OURS)
+        self.assertTrue(read_json(self.beat)["inboxMismatch"],
+                        "and it has to be visible without opening the state file")
+
+    def test_a_recently_checked_cache_costs_nothing(self):
+        # The reason this is rare rather than every tick: it is a `session
+        # history` call per open job, forever, to re-confirm something that
+        # changes approximately never.
+        self.seed({"inbox": self.OURS, "at": time.time(), "checked_at": time.time()})
+        fw.main()
+        checks = [c for c in self.history_calls
+                  if "history" in c and "10" in c]
+        self.assertEqual(checks, [], "a fresh cache must not be re-checked on every tick")
+
+    def test_nothing_to_check_against_is_not_a_mismatch(self):
+        self.rows = [{"id": "m", "senderInboxId": self.THEM, "content": "hello",
+                      "sentAt": self.asked_at + 60}]
+        self.seed({"inbox": self.OURS, "at": 1, "checked_at": 1})
+        fw.main()
+        cache = read_json(self.state)[fw.INBOX_KEY]
+        self.assertNotIn("mismatch", cache,
+                         "a conversation with nothing of ours in it proves nothing")
+        self.assertEqual(cache["inbox"], self.OURS)
+
+    def test_a_resolved_mismatch_clears_itself(self):
+        self.seed({"inbox": self.OURS, "at": 1, "checked_at": 1, "mismatch": self.OTHER})
+        fw.main()
+        self.assertNotIn("mismatch", read_json(self.state)[fw.INBOX_KEY])
+        self.assertFalse(read_json(self.beat)["inboxMismatch"])

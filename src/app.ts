@@ -577,27 +577,58 @@ function parseArchived(rec: archive.ArchiveRecord): unknown {
  * stays green with the timer dead since the last reboot, which is exactly the
  * failure that would silently strand every task buyer.
  *
- * Only the age is published. The file also records how many jobs were in flight,
- * and that is our business volume, not a monitoring signal.
+ * The count of jobs in flight is deliberately not published: that is our
+ * business volume, not a monitoring signal. Two things about them are.
  */
-function fulfilmentAgeSeconds(): number | null {
+function fulfilment(): {
+  ageSeconds: number | null;
+  oldestOpenSeconds: number | null;
+  inboxMismatch: boolean;
+} {
   try {
     const raw = readFileSync(
       join(homedir(), ".okx-agent-task", "fulfill-watcher-heartbeat.json"),
       "utf8",
     );
-    const at = JSON.parse(raw)?.at;
-    if (typeof at !== "number" || !Number.isFinite(at)) return null;
-    return Math.max(0, Math.round(Date.now() / 1000 - at));
+    const beat = JSON.parse(raw);
+    const at = beat?.at;
+    const oldest = beat?.oldestOpenSeconds;
+    return {
+      ageSeconds:
+        typeof at === "number" && Number.isFinite(at)
+          ? Math.max(0, Math.round(Date.now() / 1000 - at))
+          : null,
+      // How long the longest-outstanding job has been outstanding. A watcher
+      // that is alive and one that has a job wedged in "asked, waiting for a
+      // reply it cannot read" are indistinguishable from the age alone: both
+      // tick every 120s forever. That is the shape the 2026-08-03 deadlock
+      // took, and it was found by reading the state file on the box, which is
+      // not a monitoring strategy. Volume is private; a stall is not, because a
+      // stalled job is a buyer who paid and is waiting.
+      oldestOpenSeconds:
+        typeof oldest === "number" && Number.isFinite(oldest) ? oldest : null,
+      // The watcher decides which messages in a conversation are the buyer's by
+      // comparing against a cached inbox id. If that id ever stops matching
+      // what the conversations say, replies get misattributed, and the failure
+      // is otherwise completely silent.
+      inboxMismatch: beat?.inboxMismatch === true,
+    };
   } catch {
-    return null;
+    return { ageSeconds: null, oldestOpenSeconds: null, inboxMismatch: false };
   }
 }
 
 app.get("/health", (c) =>
   c.json({
     ok: true,
-    fulfilmentAgeSeconds: fulfilmentAgeSeconds(),
+    ...(() => {
+      const f = fulfilment();
+      return {
+        fulfilmentAgeSeconds: f.ageSeconds,
+        oldestOpenJobSeconds: f.oldestOpenSeconds,
+        inboxMismatch: f.inboxMismatch,
+      };
+    })(),
     devSkipPayment: config.devSkipPayment,
     paymentConfigured: paymentConfigured(),
     paymentLayer: paymentLayer,

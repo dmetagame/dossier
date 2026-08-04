@@ -91,9 +91,26 @@ describe("the free surface", () => {
     );
     // The heartbeat file also records how many jobs were in flight. That is
     // business volume on an unauthenticated endpoint, not a monitoring signal.
-    for (const leak of ["tasks", "candidates", "jobs"]) {
+    for (const leak of ["tasks", "candidates", "jobs", "open", "accepted"]) {
       assert.ok(!(leak in j), `/health must not publish ${leak}`);
     }
+  });
+
+  test("/health says whether a job is wedged, not just whether the watcher lives", async () => {
+    // The age alone cannot tell a healthy watcher from one ticking every 120s
+    // over a job it asked about an hour ago and can no longer read. Both look
+    // identical from outside, and that is the shape the 2026-08-03 deadlock
+    // took: it was found by reading the state file on the box.
+    const j = (await (await get("/health")).json()) as Record<string, unknown>;
+    assert.ok("oldestOpenJobSeconds" in j, "a monitor cannot assert a field that is absent");
+    assert.ok(
+      j.oldestOpenJobSeconds === null || typeof j.oldestOpenJobSeconds === "number",
+      "a duration is a number or null, never a string",
+    );
+    // How long the longest-outstanding job has waited is a stall signal. How
+    // many there are is still volume, and still nobody's business.
+    assert.equal(typeof j.inboxMismatch, "boolean", "and the silent-failure flag is always present");
+    assert.equal(j.inboxMismatch, false, "with nothing wrong, it says so rather than being absent");
   });
 
   test("/health stays 200 when payments are down, because the free surface is not", async () => {

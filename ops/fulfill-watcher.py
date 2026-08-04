@@ -648,16 +648,62 @@ def our_inbox(job, buyer):
 INBOX_KEY = "__our_inbox__"
 
 
+# How often a cached inbox id is checked against reality. Every tick would cost
+# a `session history` call per open job forever, to re-confirm something that
+# changes approximately never.
+INBOX_RECHECK_SECONDS = 24 * 60 * 60
+
+
 def learn_inbox(state, job, buyer):
-    """Record our inbox id if we do not have it yet. Cheap and idempotent."""
-    if state.get(INBOX_KEY, {}).get("inbox"):
-        return
+    """Record our inbox id, and notice when the one we hold has gone wrong.
+
+    This used to return the moment a value was present, which made it a
+    write-once cache: it filled an empty one and could never correct a wrong
+    one. An empty cache is a self-healing condition, which is what this function
+    is for. A *stale* one is a permanent wrong answer, and it fails in the
+    direction that matters — the watcher decides which messages in a
+    conversation are the buyer's by comparing against this id, so a wrong value
+    means either ignoring a real reply or treating our own message as one.
+
+    If our XMTP identity is ever re-created, that is exactly what happens, and
+    nothing anywhere would have said so.
+
+    A mismatch does not overwrite the cached value. One disagreeing observation
+    is not enough to repoint the thing every delivery depends on, and a wrong
+    automatic flip would break replies that currently work. It is recorded and
+    published on the heartbeat instead, so a person decides.
+
+    Returns True when the state was changed and needs saving. The caller that
+    arms opportunistically has no other reason to save on that tick, so without
+    this the recheck ran, learned something, and threw it away.
+    """
+    cached = state.get(INBOX_KEY, {})
+    if cached.get("inbox"):
+        # Verified rarely rather than never.
+        if time.time() - cached.get("checked_at", cached.get("at", 0)) < INBOX_RECHECK_SECONDS:
+            return False
+        seen = our_inbox(job, buyer)
+        if not seen:
+            # No conversation to check against says nothing about the cache.
+            return False
+        cached["checked_at"] = time.time()
+        if seen == cached["inbox"]:
+            cached.pop("mismatch", None)
+        else:
+            cached["mismatch"] = seen
+            log("  WARNING: our cached inbox id no longer matches this conversation")
+            log("    cached %s" % cached["inbox"])
+            log("    seen   %s" % seen)
+            log("    keeping the cached value; replies may be misattributed until this is resolved")
+        state[INBOX_KEY] = cached
+        return True
     inbox = our_inbox(job, buyer)
     if inbox:
-        state[INBOX_KEY] = {"inbox": inbox, "at": time.time()}
+        state[INBOX_KEY] = {"inbox": inbox, "at": time.time(), "checked_at": time.time()}
         log("  learned our own inbox id; replies are readable from now on")
-    else:
-        log("  could not learn our own inbox id; replies may be unreadable")
+        return True
+    log("  could not learn our own inbox id; replies may be unreadable")
+    return False
 
 
 def ask_for_token(job, buyer, title, alts=None):
@@ -868,12 +914,47 @@ def _run_tick():
     # payment challenge, the key and the certificate, and none of that says
     # whether this process still runs: it could be dead since a reboot while
     # every one of those stayed green.
-    try:
-        with open(HEARTBEAT_FILE, "w") as fh:
-            json.dump({"at": time.time(), "tasks": len(tasks),
-                       "accepted": len(todo), "open": len(open_jobs)}, fh)
-    except Exception:
-        pass
+    #
+    # `oldest_open` is the one number that distinguishes a healthy watcher from
+    # a wedged one. The heartbeat already proved the process was alive, which is
+    # the question nobody needed answered: a watcher ticking every 120s over a
+    # job it asked about an hour ago and can no longer read looks exactly like
+    # an idle one from outside. That is the deadlock of 2026-08-03, and the only
+    # way anyone found it was by opening the state file.
+    #
+    # Age is measured from `first_seen` rather than from `asked_at`, so a job
+    # that never got as far as asking is counted too. A stall before the
+    # question is still a buyer waiting.
+    def heartbeat(st8):
+        """What the outside world can see about this watcher.
+
+        Written twice: once here, so a tick that dies part-way through still
+        proves the process is alive, and again at the end, so the counts reflect
+        what this tick actually did. Written only at the end, a crash would look
+        like a stopped timer; written only here, a mismatch discovered during the
+        tick would be reported one tick late and a resolved one would keep
+        alarming after it was fixed.
+        """
+        now = time.time()
+        still_open = [t for t in todo
+                      if t.get("jobId") != INBOX_KEY
+                      and not st8.get(t.get("jobId"), {}).get("done")]
+        ages = [now - st8.get(t["jobId"], {}).get("first_seen", now)
+                for t in still_open if t.get("jobId")]
+        try:
+            with open(HEARTBEAT_FILE, "w") as fh:
+                json.dump({"at": now, "tasks": len(tasks),
+                           "accepted": len(todo), "open": len(still_open),
+                           # The one number that tells a wedged watcher from an
+                           # idle one. See TestAWedgedJobIsVisibleFromOutside.
+                           "oldestOpenSeconds": int(max(ages)) if ages else 0,
+                           # Set when our cached inbox id stopped matching what
+                           # the conversations say it is. See `learn_inbox`.
+                           "inboxMismatch": bool(st8.get(INBOX_KEY, {}).get("mismatch"))}, fh)
+        except Exception:
+            pass
+
+    heartbeat(state)
     for t in todo:
         job = t["jobId"]
         if job == INBOX_KEY:
@@ -906,10 +987,16 @@ def _run_tick():
             # from a fresh ask. Any history containing one of our own messages
             # identifies us, and a delivery does that as well as a question. A
             # job stranded before the cache existed is exactly the case that
-            # cannot wait for its own next ask, and this is one extra call made
-            # only while the cache is empty.
-            if not state.get(INBOX_KEY, {}).get("inbox"):
-                learn_inbox(state, job, buyer)
+            # cannot wait for its own next ask.
+            #
+            # Called unconditionally, because `learn_inbox` now owns the
+            # decision: it returns immediately unless the cache is empty or the
+            # value is a day old. Guarding on emptiness here meant the recheck
+            # could only ever happen at the moment of asking a new question,
+            # which is the rarest event this watcher has — a cache that went
+            # stale would simply never be looked at again.
+            if learn_inbox(state, job, buyer):
+                save_state(state)
             addr, chain = read_buyer_reply(
                 job, buyer, st.get("asked_at", 0),
                 st.get("our_inbox") or state.get(INBOX_KEY, {}).get("inbox"))
@@ -1004,6 +1091,8 @@ def _run_tick():
                     "will retry the registration only")
                 state[job] = {**st, "served_at": served}
             save_state(state)
+
+    heartbeat(state)
 
 
 if __name__ == "__main__":

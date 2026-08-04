@@ -230,6 +230,13 @@ What it holds the service to:
   attestation, pasted or carried in an `?attestation=` link, renders as text and
   runs nothing; the CSP refuses a script the page did not ship with; a real
   report passes all three checks and a tampered one fails the right one.
+- **A wedged job is visible from outside** — `/health` publishes how long the
+  longest-outstanding job has been waiting, and whether our cached XMTP inbox id
+  has stopped matching the conversations. The heartbeat only ever proved the
+  watcher was *alive*, which is the question nobody needed answered: a watcher
+  ticking every 120s over a job it can no longer read looks exactly like an idle
+  one. Job counts stay private; a stall does not, because a stalled job is a
+  buyer who paid and is waiting.
 - **The watcher's one call outward** (`TestTheOneCallOutward`) — `run()` against
   real processes rather than a stub: success, non-zero exit, missing binary,
   unexecutable file and a hang each land in their own class.

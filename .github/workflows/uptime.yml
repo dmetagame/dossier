@@ -73,6 +73,33 @@ jobs:
           fi
           [ "$age" -lt 600 ] || { echo "::error::the fulfilment watcher last ticked ${age}s ago; the timer is not running"; exit 1; }
 
+      - name: No job is wedged, and our own identity still checks out
+        run: |
+          set -euo pipefail
+          # The step above proves the watcher is *alive*, which is the question
+          # nobody needed answered. A watcher ticking every 120s over a job it
+          # asked about an hour ago and can no longer read passes it exactly like
+          # an idle one does. That is the shape of the 2026-08-03 deadlock, and
+          # the only reason anyone found it was by opening the state file.
+          #
+          # The threshold is deliberately loose. A job is legitimately open while
+          # the watcher holds 240s for the buyer's own replay, and then for as
+          # long as a buyer reasonably takes to answer a question. An hour is not
+          # a buyer thinking; it is nobody coming.
+          h=$(curl -sS --max-time 30 "$BASE/health")
+          oldest=$(echo "$h" | python3 -c "import json,sys; print(json.load(sys.stdin).get('oldestOpenJobSeconds'))")
+          echo "  oldestOpenJobSeconds -> $oldest"
+          if [ "$oldest" != "None" ] && [ "$oldest" -gt 3600 ]; then
+            echo "::error::a job has been outstanding for ${oldest}s: a buyer has paid and is waiting"
+            exit 1
+          fi
+          # The watcher decides which messages in a conversation belong to the
+          # buyer by comparing against a cached inbox id. If ours ever stops
+          # matching, replies are misattributed and nothing else says so.
+          mismatch=$(echo "$h" | python3 -c "import json,sys; print(json.load(sys.stdin).get('inboxMismatch'))")
+          echo "  inboxMismatch -> $mismatch"
+          [ "$mismatch" != "True" ] || { echo "::error::our cached XMTP inbox id no longer matches the conversations; buyer replies may be misattributed"; exit 1; }
+
       - name: The service reports its own payment layer as ready
         run: |
           set -euo pipefail
