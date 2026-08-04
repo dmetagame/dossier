@@ -286,6 +286,11 @@ one paraphrasing the verdict into the buyer's inbox.
 The text carries a single substitution marker, `ATTACHMENT_BLOCK`, replaced with the
 encrypted-attachment parameters that only exist after the upload. Nothing else is edited.
 
+The message is a view of a report that was already delivered, not a delivery of its own,
+so it is not archived. Giving it its own record made it the newest one for the job, and a
+buyer who recovered got back the message they were already holding instead of their
+document. The recovery code is attached to the report itself.
+
 An `okx-a2a` daemon (on an always-on VPS, not in this repo) additionally watches accepted
 jobs and can send the report summary plus retrieval details to the buyer as an A2A/XMTP
 message — a best-effort courtesy channel, not a substitute for the endpoint pull.

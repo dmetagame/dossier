@@ -200,6 +200,26 @@ describe("archive records are authenticated, not just permissioned", () => {
     assert.equal(back!.paymentTransaction, "0xLINKTEST");
   }));
 
+  test("attaching a recovery code keeps the record readable", () => withKey(() => {
+    // Same shape as linkTransaction: the code hash is covered by the MAC, so it
+    // has to be recomputed on attach. A stale MAC makes the record fail
+    // authentication on the next read, which would strand the buyer whose
+    // message just told them to recover with that very code.
+    const jobId = "0x" + "ab".repeat(32);
+    const r = rec({ jobId });
+    archive.save(r);
+    const code = archive.attachRecoveryCode(jobId);
+    assert.ok(code, "there is a delivered report to attach to");
+    const back = archive.byJobId(jobId);
+    assert.ok(back, "an attached record must still authenticate and be findable");
+    assert.ok(archive.recoveryCodeMatches(back!, code!), "and the code must verify against it");
+    assert.equal(back!.deliverable, r.deliverable, "the document is unchanged");
+  }));
+
+  test("attaching to a job with nothing delivered mints nothing", () => withKey(() => {
+    assert.equal(archive.attachRecoveryCode("0x" + "cd".repeat(32)), null);
+  }));
+
   test("a deploy with no key still reads its own records", () => {
     // Refusing to serve a legitimately paid report over a missing local key
     // would be the worse failure.

@@ -227,6 +227,39 @@ export function save(rec: ArchiveRecord): void {
   }
 }
 
+/**
+ * Mint a recovery code and file it against the report already delivered for
+ * this job, rather than against a new record.
+ *
+ * The delivery message is fetched as a second call, after the report. Archiving
+ * it as its own record made it the newest one for the job, so `byJobId` returned
+ * the message instead of the document: a buyer who recovered got back the text
+ * they were already holding. Verified on job 0xc4716819, which recovered 1095
+ * bytes of message where the report should have been.
+ *
+ * Returns the code, or null when there is nothing to attach it to.
+ */
+export function attachRecoveryCode(jobId: string): string | null {
+  const rec = byJobId(jobId);
+  if (!rec) return null;
+  const f = file(rec.id);
+  if (!f || !existsSync(f)) return null;
+  try {
+    const { code, hash } = newRecoveryCode();
+    const stored = JSON.parse(readFileSync(f, "utf8")) as ArchiveRecord;
+    stored.recoveryCodeSha256 = hash;
+    // Covered by the MAC, so it has to be recomputed. Leaving it stale makes the
+    // record fail authentication on the next read, which is the same bug that
+    // once stranded every x402 buyer.
+    stored.mac = macOf(stored);
+    writeFileSync(f, JSON.stringify(stored), { mode: 0o600 });
+    if (index) setJob(index, jobId, stored, stored.id + ".json");
+    return code;
+  } catch {
+    return null;
+  }
+}
+
 /** Attach the settlement transaction once the SDK has settled the payment. */
 export function linkTransaction(id: string, tx: string): void {
   const f = file(id);

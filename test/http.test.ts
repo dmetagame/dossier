@@ -387,13 +387,23 @@ describe("recovery", () => {
     // assembled from JSON by whoever is sending, that is where "safe position
     // size" came from.
     const jobId = `0x${"f".repeat(64)}`;
+    const hdrs = {
+      "content-type": "application/json",
+      "x-internal-key": process.env.INTERNAL_KEY ?? "",
+      "x-job-id": jobId,
+    };
+    // The real order, and the only one that yields a code: the report is
+    // delivered first, then the message that describes it. A message for a job
+    // with no delivered report has no record to attach a capability to, and
+    // says so by printing the older instructions instead.
+    await app.request("/dossier", {
+      method: "POST",
+      headers: hdrs,
+      body: JSON.stringify({ tokenAddress: ADDR.uni, chain: "ethereum" }),
+    });
     const r = await app.request("/dossier", {
       method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-internal-key": process.env.INTERNAL_KEY ?? "",
-        "x-job-id": jobId,
-      },
+      headers: hdrs,
       body: JSON.stringify({ tokenAddress: ADDR.uni, chain: "ethereum", format: "message" }),
     });
     assert.equal(r.status, 200);
@@ -410,6 +420,40 @@ describe("recovery", () => {
     assert.equal(code, r.headers.get("x-recovery-code"));
     const back = await post("/dossier/recovery", { jobId, recoveryCode: code });
     assert.equal(back.status, 200, "the code printed in the message must work");
+    // And it must return the report, not the message. Archiving the message as
+    // its own record made it the newest one for the job, so recovery handed the
+    // buyer back the text they were already holding: job 0xc4716819 recovered
+    // 1095 bytes of message where its document should have been.
+    const j = (await back.json()) as Record<string, any>;
+    assert.equal(j.contentType, "text/html", "recovery must return the document");
+    assert.ok(
+      String(j.deliverable).includes("<html"),
+      "a buyer recovering wants the report, not the message they already have",
+    );
+  });
+
+  test("fetching the message does not displace the report it describes", async () => {
+    const jobId = `0x${"1a".repeat(32)}`;
+    const hdrs = {
+      "content-type": "application/json",
+      "x-internal-key": process.env.INTERNAL_KEY ?? "",
+      "x-job-id": jobId,
+    };
+    const body = { tokenAddress: ADDR.cake, chain: "bsc" };
+    // The real order: the report is fetched and uploaded, then the message.
+    await app.request("/dossier", { method: "POST", headers: hdrs, body: JSON.stringify(body) });
+    const before = archive.byJobId(jobId);
+    assert.equal(before?.contentType, "text/html");
+
+    await app.request("/dossier", {
+      method: "POST",
+      headers: hdrs,
+      body: JSON.stringify({ ...body, format: "message" }),
+    });
+    const after = archive.byJobId(jobId);
+    assert.equal(after?.id, before?.id, "the message must not become the job's deliverable");
+    assert.equal(after?.contentType, "text/html");
+    assert.ok(after?.recoveryCodeSha256, "and the code is filed against the report");
   });
 
   test("a coded report cannot be recovered by guessing the request", async () => {

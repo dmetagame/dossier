@@ -26,7 +26,11 @@ import { publicKey, SCHEMA_VERSION, METHODOLOGY_VERSION } from "./attest";
 import { renderVerifyHtml } from "./verify-page";
 import * as ratelimit from "./ratelimit";
 import * as reqlog from "./reqlog";
-import { BASE_HEADERS, NON_DOCUMENT_CSP, documentCsp } from "./security-headers";
+import {
+  BASE_HEADERS,
+  NON_DOCUMENT_CSP,
+  documentCsp,
+} from "./security-headers";
 import { VERIFY_INLINE } from "./verify-page";
 import { SITE_INLINE } from "./site";
 import { dossierInputSchema, httpInputSchema } from "./x402-contract";
@@ -52,7 +56,8 @@ export const app = new Hono();
  * call answered 503 because the facilitator was rejecting them. Health has to
  * report the live state, not the intent.
  */
-type PaymentLayer = "disabled" | "not_configured" | "connecting" | "ready" | "failing";
+type PaymentLayer =
+  "disabled" | "not_configured" | "connecting" | "ready" | "failing";
 let paymentLayer: PaymentLayer = "connecting";
 export function paymentLayerState(): PaymentLayer {
   return paymentLayer;
@@ -78,10 +83,18 @@ app.use(async (c, next) => {
           // Present only when the SDK actually settled. Its absence next to
           // `paid:true` is the proof that a failed call charged nobody.
           ...reqlog.decodeReceipt(c.res?.headers?.get("payment-response")),
-          ...((c as any).get("logToken") ? { token: (c as any).get("logToken") } : {}),
-          ...((c as any).get("logChain") ? { chain: (c as any).get("logChain") } : {}),
-          ...((c as any).get("archiveId") ? { report: (c as any).get("archiveId") } : {}),
-          ...((c as any).get("logJob") ? { job: (c as any).get("logJob") } : {}),
+          ...((c as any).get("logToken")
+            ? { token: (c as any).get("logToken") }
+            : {}),
+          ...((c as any).get("logChain")
+            ? { chain: (c as any).get("logChain") }
+            : {}),
+          ...((c as any).get("archiveId")
+            ? { report: (c as any).get("archiveId") }
+            : {}),
+          ...((c as any).get("logJob")
+            ? { job: (c as any).get("logJob") }
+            : {}),
         };
         console.log(reqlog.format(line));
       }
@@ -100,7 +113,10 @@ app.use(async (c, next) => {
   await next();
   for (const [k, v] of Object.entries(BASE_HEADERS)) c.header(k, v);
   const type = c.res.headers.get("content-type") ?? "";
-  c.header("Content-Security-Policy", type.includes("text/html") ? DOCUMENT_CSP : NON_DOCUMENT_CSP);
+  c.header(
+    "Content-Security-Policy",
+    type.includes("text/html") ? DOCUMENT_CSP : NON_DOCUMENT_CSP,
+  );
 });
 
 // Rate limiting for the free surface only. Registered before the routes but
@@ -132,14 +148,23 @@ app.use(async (c, next) => {
   }
   if (observing) return next();
   c.header("Retry-After", String(d.retryAfterSec));
-  return c.json({ error: "rate_limited", message: `Too many requests for ${path}. Retry shortly.` }, 429);
+  return c.json(
+    {
+      error: "rate_limited",
+      message: `Too many requests for ${path}. Retry shortly.`,
+    },
+    429,
+  );
 });
 
 // Our own fulfilment daemon identifies itself with a shared secret. Resolved
 // once, here, so the payment bypass and the job-id capture below cannot drift
 // apart in what they consider an internal call.
 app.use(async (c, next) => {
-  if (config.internalKey && internalKeyMatches(c.req.header("x-internal-key"))) {
+  if (
+    config.internalKey &&
+    internalKeyMatches(c.req.header("x-internal-key"))
+  ) {
     (c as any).set("internal", true);
   }
   return next();
@@ -200,7 +225,11 @@ app.get("/.well-known/dossier-signing-key.json", (c) => {
     issuer: { agentId: 7012, name: "Dossier" },
     schemaVersion: SCHEMA_VERSION,
     methodologyVersion: METHODOLOGY_VERSION,
-    ...(k ?? { algorithm: null, publicKey: null, note: "This instance is not signing reports." }),
+    ...(k ?? {
+      algorithm: null,
+      publicKey: null,
+      note: "This instance is not signing reports.",
+    }),
     verifier: `${config.publicOrigin}/verify`,
   });
 });
@@ -220,13 +249,18 @@ app.get("/info", (c) =>
         path: "/dossier",
         method: "POST",
         pricing: `${config.dossierPrice} per call (x402, USD₮0 on X Layer)`,
-        body: { tokenAddress: "0x…", chain: "(optional — auto-detected when unambiguous)", format: "html | json" },
+        body: {
+          tokenAddress: "0x…",
+          chain: "(optional — auto-detected when unambiguous)",
+          format: "html | json",
+        },
       },
       {
         path: "/dossier/sample",
         method: "GET",
         pricing: "free",
-        description: "A real sample report, so you can see the deliverable before paying.",
+        description:
+          "A real sample report, so you can see the deliverable before paying.",
       },
       {
         path: "/dossier/preflight",
@@ -248,7 +282,10 @@ app.get("/info", (c) =>
 
 // Free sample report on a well-known token, cached in-instance so repeat views
 // don't burn free-API quota. Lets buyers and reviewers see the asset up front.
-const SAMPLE = { chain: "bsc", tokenAddress: "0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82" } as const; // CAKE
+const SAMPLE = {
+  chain: "bsc",
+  tokenAddress: "0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82",
+} as const; // CAKE
 const SAMPLE_TTL_MS = 6 * 60 * 60 * 1000;
 let sampleCache: { html: string; at: number } | undefined;
 
@@ -269,7 +306,10 @@ app.get("/dossier/sample", async (c) => {
       if (sampleCache) return c.html(sampleCache.html); // serve stale over failing
       if (e instanceof SourcesUnavailableError) {
         c.header("Retry-After", "30");
-        return c.json({ error: "data sources temporarily unavailable — retry shortly" }, 503);
+        return c.json(
+          { error: "data sources temporarily unavailable — retry shortly" },
+          503,
+        );
       }
       throw e;
     }
@@ -293,11 +333,21 @@ app.on(["GET", "POST"], "/dossier/preflight", async (c) => {
     });
   } catch (e) {
     if (e instanceof ChainNotFoundError) {
-      return c.json({ error: "chain_not_found", message: e.message, reportAvailable: false }, 404);
+      return c.json(
+        {
+          error: "chain_not_found",
+          message: e.message,
+          reportAvailable: false,
+        },
+        404,
+      );
     }
     if (e instanceof SourcesUnavailableError) {
       c.header("Retry-After", "30");
-      return c.json({ error: "data sources temporarily unavailable — retry shortly" }, 503);
+      return c.json(
+        { error: "data sources temporarily unavailable — retry shortly" },
+        503,
+      );
     }
     throw e;
   }
@@ -313,11 +363,17 @@ app.on(["GET", "POST"], "/dossier/recovery", async (c) => {
   const p = await readParams(c);
   const tx = String(p.paymentTransaction || p.transaction || "").trim();
   const jobId = String(p.jobId || p.job || "").trim();
-  const givenHash = String(p.requestParamsSha256 || p.requestBodySha256 || "").trim();
+  const givenHash = String(
+    p.requestParamsSha256 || p.requestBodySha256 || "",
+  ).trim();
   const code = String(p.recoveryCode || p.code || "").trim();
   let originalBody = p.originalBody as Record<string, unknown> | undefined;
   if (typeof originalBody === "string") {
-    try { originalBody = JSON.parse(originalBody); } catch { originalBody = undefined; }
+    try {
+      originalBody = JSON.parse(originalBody);
+    } catch {
+      originalBody = undefined;
+    }
   }
 
   // One of the two proofs is required, and deliberately so. The request
@@ -342,7 +398,8 @@ app.on(["GET", "POST"], "/dossier/recovery", async (c) => {
     );
   }
 
-  const hash = givenHash || (originalBody ? archive.paramsHash(originalBody) : "");
+  const hash =
+    givenHash || (originalBody ? archive.paramsHash(originalBody) : "");
 
   // A job id is not proof of purchase. The public marketplace hands them out:
   // `task-search` returns other agents' job ids, so anyone can enumerate them,
@@ -420,7 +477,10 @@ app.on(["GET", "POST"], "/dossier/recovery", async (c) => {
   // to them.
   if (hash && rec.paramsSha256 !== hash && rec.resolvedParamsSha256 !== hash) {
     return c.json(
-      { error: "proof_mismatch", message: "That transaction did not pay for those request parameters." },
+      {
+        error: "proof_mismatch",
+        message: "That transaction did not pay for those request parameters.",
+      },
       403,
     );
   }
@@ -540,7 +600,12 @@ if (!config.devSkipPayment && !paymentConfigured()) {
     // working, so it grants nothing new; every external caller still gets 503
     // rather than a free report.
     if (c.get("internal")) return next();
-    return c.json({ error: "payment layer not configured — service temporarily unavailable" }, 503);
+    return c.json(
+      {
+        error: "payment layer not configured — service temporarily unavailable",
+      },
+      503,
+    );
   };
   app.post("/dossier", dark);
   app.get("/dossier", dark);
@@ -572,91 +637,96 @@ if (!config.devSkipPayment && paymentConfigured()) {
   // (which the SDK otherwise leaves as `{}`). A caller that has never seen this
   // service — a marketplace validator, a buying agent — can discover exactly
   // what to send and what it will get back without paying first.
-  const unpaidBody = (
-    name: string,
-    description: string,
-    input: unknown,
-    outputMimeType: string,
-    outputDescription: string,
-  ) => () => ({
-    contentType: "application/json",
-    body: {
-      error: "Payment required",
-      service: name,
-      description,
-      price: `${config.dossierPrice} per call, x402 on X Layer (${config.network})`,
-      method: "GET or POST",
-      parameters: "JSON body on POST, or query string on GET or POST",
-      input,
-      output: { mimeType: outputMimeType, description: outputDescription },
-      // Worked examples, not just a schema. A reviewer or a cold agent that
-      // cannot pay still needs to see what a real call looks like and what it
-      // returns; a schema alone answers neither. The body has no size ceiling,
-      // unlike the challenge header, so this is the right place for them.
-      examples: [
-        {
-          description: "Minimal call: the contract address is the only required field.",
-          request: { tokenAddress: "0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82" },
-          curl:
-            `curl -X POST ${config.publicOrigin}/dossier ` +
-            `-H 'content-type: application/json' ` +
-            `-d '{"tokenAddress":"0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82"}'`,
-          returns: "The rendered report document (text/html).",
-        },
-        {
-          description: "Name the chain explicitly and take the data as JSON.",
-          request: {
-            tokenAddress: "0x514910771af9ca656af840dff83e8264ecf986ca",
-            chain: "ethereum",
-            format: "json",
+  const unpaidBody =
+    (
+      name: string,
+      description: string,
+      input: unknown,
+      outputMimeType: string,
+      outputDescription: string,
+    ) =>
+    () => ({
+      contentType: "application/json",
+      body: {
+        error: "Payment required",
+        service: name,
+        description,
+        price: `${config.dossierPrice} per call, x402 on X Layer (${config.network})`,
+        method: "GET or POST",
+        parameters: "JSON body on POST, or query string on GET or POST",
+        input,
+        output: { mimeType: outputMimeType, description: outputDescription },
+        // Worked examples, not just a schema. A reviewer or a cold agent that
+        // cannot pay still needs to see what a real call looks like and what it
+        // returns; a schema alone answers neither. The body has no size ceiling,
+        // unlike the challenge header, so this is the right place for them.
+        examples: [
+          {
+            description:
+              "Minimal call: the contract address is the only required field.",
+            request: {
+              tokenAddress: "0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82",
+            },
+            curl:
+              `curl -X POST ${config.publicOrigin}/dossier ` +
+              `-H 'content-type: application/json' ` +
+              `-d '{"tokenAddress":"0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82"}'`,
+            returns: "The rendered report document (text/html).",
           },
-          curl:
-            `curl -X POST ${config.publicOrigin}/dossier ` +
-            `-H 'content-type: application/json' ` +
-            `-d '{"tokenAddress":"0x514910771af9ca656af840dff83e8264ecf986ca","chain":"ethereum","format":"json"}'`,
-          returns:
-            "JSON with riskVerdict (verdict, reasons, confidence, maxSizeUsd), token, checks, sources and a signed attestation.",
+          {
+            description: "Name the chain explicitly and take the data as JSON.",
+            request: {
+              tokenAddress: "0x514910771af9ca656af840dff83e8264ecf986ca",
+              chain: "ethereum",
+              format: "json",
+            },
+            curl:
+              `curl -X POST ${config.publicOrigin}/dossier ` +
+              `-H 'content-type: application/json' ` +
+              `-d '{"tokenAddress":"0x514910771af9ca656af840dff83e8264ecf986ca","chain":"ethereum","format":"json"}'`,
+            returns:
+              "JSON with riskVerdict (verdict, reasons, confidence, maxSizeUsd), token, checks, sources and a signed attestation.",
+          },
+        ],
+        // Everything here answers without payment, so the service can be judged
+        // before anyone is asked to trust it with money.
+        try_before_paying: {
+          sample_report: `${config.publicOrigin}/dossier/sample`,
+          coverage_preflight: `${config.publicOrigin}/dossier/preflight`,
+          verify_a_report: `${config.publicOrigin}/verify`,
+          service_info: `${config.publicOrigin}/info`,
         },
-      ],
-      // Everything here answers without payment, so the service can be judged
-      // before anyone is asked to trust it with money.
-      try_before_paying: {
-        sample_report: `${config.publicOrigin}/dossier/sample`,
-        coverage_preflight: `${config.publicOrigin}/dossier/preflight`,
-        verify_a_report: `${config.publicOrigin}/verify`,
-        service_info: `${config.publicOrigin}/info`,
       },
-    },
-  });
+    });
   // Every method that can reach a paid path is gated, not just POST: x402
   // validators and availability probes use GET and HEAD, and an unpaid 2xx on
   // a paid path fails validation outright.
   const pay = paymentMiddleware(
     {
-        ...Object.fromEntries(
-          ["POST", "GET", "HEAD"].map((m) => [
-            `${m} /dossier`,
-            {
-              accepts: dossierAccepts,
-              resource: `${config.publicOrigin}/dossier`,
-              description: dossierDescription,
-              mimeType: "text/html",
-              extensions: httpInputSchema(
-                dossierInputSchema,
-                "text/html",
-                "Self-contained due-diligence report document; format:json returns the same data as JSON.",
-              ),
-              unpaidResponseBody: unpaidBody(
-                "Token Due-Diligence Report",
-                dossierDescription,
-                dossierInputSchema,
-                "text/html",
-                "Self-contained due-diligence report document; format:json returns the same data as JSON.",
-              ),
-            },
-          ]),
-        ),
-      },
+      ...Object.fromEntries(
+        ["POST", "GET", "HEAD"].map((m) => [
+          `${m} /dossier`,
+          {
+            accepts: dossierAccepts,
+            resource: `${config.publicOrigin}/dossier`,
+            description: dossierDescription,
+            mimeType: "text/html",
+            extensions: httpInputSchema(
+              dossierInputSchema,
+              "text/html",
+              "Self-contained due-diligence report document; format:json returns the same data as JSON.",
+            ),
+            unpaidResponseBody: unpaidBody(
+              "Token Due-Diligence Report",
+              dossierDescription,
+              dossierInputSchema,
+              "text/html",
+              "Self-contained due-diligence report document; format:json returns the same data as JSON.",
+            ),
+          },
+        ]),
+      ),
+    },
     resourceServer,
     undefined,
     undefined,
@@ -720,7 +790,8 @@ if (!config.devSkipPayment && paymentConfigured()) {
         const pr = c.res && c.res.headers.get("payment-response");
         if (!h || !pr) return;
         const receipt = JSON.parse(Buffer.from(pr, "base64").toString("utf8"));
-        if (receipt && receipt.transaction) archive.linkTransaction(h, String(receipt.transaction));
+        if (receipt && receipt.transaction)
+          archive.linkTransaction(h, String(receipt.transaction));
       } catch {
         /* recovery is best effort and must never disturb the response */
       }
@@ -750,7 +821,10 @@ if (!config.devSkipPayment && paymentConfigured()) {
         );
         c.header("Retry-After", "60");
         return c.json(
-          { error: "payment layer temporarily unavailable — no payment was taken, retry shortly" },
+          {
+            error:
+              "payment layer temporarily unavailable — no payment was taken, retry shortly",
+          },
           503,
         );
       }
@@ -773,8 +847,14 @@ async function readParams(c: any): Promise<Record<string, unknown>> {
 }
 
 /** e.g. dossier-uni-ethereum-20260727.html — safe on every filesystem. */
-function downloadName(d: { token: { symbol?: string; chain: string; address: string } }, json: boolean): string {
-  const label = (d.token.symbol || d.token.address.slice(0, 10)).replace(/[^A-Za-z0-9._-]/g, "");
+function downloadName(
+  d: { token: { symbol?: string; chain: string; address: string } },
+  json: boolean,
+): string {
+  const label = (d.token.symbol || d.token.address.slice(0, 10)).replace(
+    /[^A-Za-z0-9._-]/g,
+    "",
+  );
   const day = new Date().toISOString().slice(0, 10).replace(/-/g, "");
   return `dossier-${label.toLowerCase()}-${d.token.chain}-${day}.${json ? "json" : "html"}`;
 }
@@ -848,44 +928,60 @@ app.on(["GET", "POST"], "/dossier", async (c) => {
     // Minted before the body is built, because the delivery message quotes it:
     // a buyer who is told to recover with a code has to be told the code in the
     // same breath.
-    const recovery = jobId ? archive.newRecoveryCode() : undefined;
+    //
+    // For format=message there is nothing new to archive: the message is a view
+    // of a report that was already delivered and stored under this job. Giving
+    // it its own record made it the newest one, so recovery handed the buyer
+    // back the message instead of their document. The code is attached to the
+    // report itself, which is what they will actually want.
+    const messageCode =
+      message && jobId ? archive.attachRecoveryCode(jobId) : null;
+    const recovery = jobId && !message ? archive.newRecoveryCode() : undefined;
     const body = json
       ? JSON.stringify(dossier)
       : message
         ? renderDeliveryMessage(dossier, {
             jobId,
-            recoveryCode: recovery?.code,
+            recoveryCode: messageCode ?? undefined,
             endpoint: `${config.publicOrigin}/dossier`,
             fromTicker: false,
           })
         : renderDossierHtml(dossier);
-    archive.save({
-      id,
-      paramsSha256: archive.paramsHash(parsed.data as Record<string, unknown>),
-      // Also index by the chain actually analysed, since that is the one the
-      // report prints and the one our own recovery instructions quote.
-      resolvedParamsSha256: archive.paramsHash({
-        ...(parsed.data as Record<string, unknown>),
-        chain: dossier.token.chain,
-      }),
-      request: parsed.data as Record<string, unknown>,
-      contentType: json ? "application/json" : message ? "text/plain" : "text/html",
-      deliverable: body,
-      deliveredAt: new Date().toISOString(),
-      ...(jobId ? { jobId } : {}),
-      ...(recovery ? { recoveryCodeSha256: recovery.hash } : {}),
-    });
-    (c as any).set("archiveId", id);
+    // The message is not a deliverable; archiving it would displace the report.
+    if (!message)
+      archive.save({
+        id,
+        paramsSha256: archive.paramsHash(
+          parsed.data as Record<string, unknown>,
+        ),
+        // Also index by the chain actually analysed, since that is the one the
+        // report prints and the one our own recovery instructions quote.
+        resolvedParamsSha256: archive.paramsHash({
+          ...(parsed.data as Record<string, unknown>),
+          chain: dossier.token.chain,
+        }),
+        request: parsed.data as Record<string, unknown>,
+        contentType: json ? "application/json" : "text/html",
+        deliverable: body,
+        deliveredAt: new Date().toISOString(),
+        ...(jobId ? { jobId } : {}),
+        ...(recovery ? { recoveryCodeSha256: recovery.hash } : {}),
+      });
+    if (!message) (c as any).set("archiveId", id);
     // The code leaves in a header rather than in the report body, which is
     // signed and archived: putting it there would write the capability into the
     // very artefact it protects. This header is only ever produced for an
     // authenticated internal call, so it reaches the fulfilment daemon and
     // nobody else, and the daemon prints it in the buyer's delivery message.
-    if (recovery) c.header("X-Recovery-Code", recovery.code);
+    const issued = messageCode ?? recovery?.code;
+    if (issued) c.header("X-Recovery-Code", issued);
     // Name the artefact. Without this the marketplace saved an HTML report as a
     // .txt file, and a buyer's first sight of the deliverable was a text blob.
     // `inline` so browsers still render it; the filename is only used on save.
-    c.header("Content-Disposition", `inline; filename="${downloadName(dossier, json)}"`);
+    c.header(
+      "Content-Disposition",
+      `inline; filename="${downloadName(dossier, json)}"`,
+    );
     if (json) return c.json(dossier);
     if (message) return c.text(body);
     return c.html(body);
@@ -920,7 +1016,10 @@ app.on(["GET", "POST"], "/dossier", async (c) => {
     }
     if (e instanceof SourcesUnavailableError) {
       c.header("Retry-After", "30");
-      return c.json({ error: "data sources temporarily unavailable — retry shortly" }, 503);
+      return c.json(
+        { error: "data sources temporarily unavailable — retry shortly" },
+        503,
+      );
     }
     throw e;
   }
