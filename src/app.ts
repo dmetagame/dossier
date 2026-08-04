@@ -34,6 +34,11 @@ import {
 import { VERIFY_INLINE } from "./verify-page";
 import { SITE_INLINE } from "./site";
 import { dossierInputSchema, httpInputSchema } from "./x402-contract";
+import {
+  trackFacilitator,
+  watchFacilitator,
+  type Unreached,
+} from "./x402-facilitator";
 
 // Constant-time comparison for the payment-bypass secret. A `===` on a secret
 // is a habit worth not having, even where a remote timing attack over TLS is
@@ -576,6 +581,60 @@ app.get("/health", (c) =>
   }),
 );
 
+/**
+ * What we say when the facilitator gave us no answer.
+ *
+ * Two different truths, and they must not be collapsed into one sentence.
+ *
+ * A verify that never landed means we do not know whether the payment is good,
+ * and nothing was taken: no settle call was ever made. The buyer can retry
+ * freely.
+ *
+ * A settle that never landed is worse and rarer. The payment was verified, the
+ * report was built, and our instruction to move the money went out into
+ * silence. It may have settled. Telling that buyer "Payment Required" is how
+ * you get paid twice by an obliging client, so this says the state is unknown
+ * and points them at the one thing that makes a retry safe: the authorization
+ * they already signed carries a nonce, and a nonce cannot be spent twice.
+ */
+const unreachable = (unreached: Unreached): Response => {
+  console.error(
+    "[x402] facilitator gave no answer:",
+    unreached.settle ? `settle: ${unreached.settle}` : `verify: ${unreached.verify}`,
+  );
+  const body = unreached.settle
+    ? {
+        error: "settlement_unconfirmed",
+        message:
+          "Your payment was verified, but we could not reach the payment facilitator to " +
+          "confirm settlement, so we do not know whether it completed. This is not a " +
+          "refusal of your payment, and no report has been delivered. Retry with the same " +
+          "signed payment rather than signing a new one: the authorization you already " +
+          "sent carries a nonce, so it cannot be settled twice.",
+        charged: "unknown",
+        retryAfterSeconds: 60,
+      }
+    : {
+        error: "payment_layer_unreachable",
+        message:
+          "We could not reach the payment facilitator to check your payment, so we cannot " +
+          "say whether it is valid. This is not a refusal. Nothing was settled, you have " +
+          "not been charged, and no report was produced. Retry shortly.",
+        charged: false,
+        retryAfterSeconds: 60,
+      };
+  // Built by hand rather than through `c.json`, and carrying no header from the
+  // response it replaces. The 402 it supersedes has either a PAYMENT-REQUIRED
+  // challenge on it or a settlement receipt reporting a definite failure, and
+  // both contradict what this response says. Hono's `c.res` setter copies every
+  // header from the old response onto the new one, so the old one has to be
+  // cleared first — see `honest` below.
+  return new Response(JSON.stringify(body), {
+    status: 503,
+    headers: { "Content-Type": "application/json", "Retry-After": "60" },
+  });
+};
+
 // x402 payment gate on POST /dossier. The OKX SDK builds the marketplace-validated
 // 402 challenge (correct PAYMENT-REQUIRED header, USD₮0 on eip155:196) and, via the
 // facilitator, verifies the buyer's signed payment and settles after a successful
@@ -612,13 +671,18 @@ if (!config.devSkipPayment && !paymentConfigured()) {
 }
 
 if (!config.devSkipPayment && paymentConfigured()) {
-  const facilitator = new OKXFacilitatorClient({
-    apiKey: config.okx.apiKey,
-    secretKey: config.okx.secretKey,
-    passphrase: config.okx.passphrase,
-    // Wait for on-chain confirmation so a settled response is truly paid.
-    syncSettle: true,
-  });
+  // Wrapped so a call that comes back with no answer at all is remembered, and
+  // the SDK's 402 can be corrected to a 503 further down. See
+  // src/x402-facilitator.ts for why that distinction is worth the wrapper.
+  const facilitator = watchFacilitator(
+    new OKXFacilitatorClient({
+      apiKey: config.okx.apiKey,
+      secretKey: config.okx.secretKey,
+      passphrase: config.okx.passphrase,
+      // Wait for on-chain confirmation so a settled response is truly paid.
+      syncSettle: true,
+    }),
+  );
   const resourceServer = new x402ResourceServer(facilitator).register(
     config.network,
     new ExactEvmScheme(),
@@ -796,20 +860,40 @@ if (!config.devSkipPayment && paymentConfigured()) {
         /* recovery is best effort and must never disturb the response */
       }
     };
+    return trackFacilitator(async (unreached) => {
+    // The SDK answers 402 both when the facilitator refused the payment and
+    // when the facilitator never answered at all. The second is not a refusal,
+    // and saying it is tells a buyer who has just signed a payment that their
+    // payment was rejected. Corrected here, once, at the only place that sees
+    // both the record and the response.
+    const honest = (res: void | Response): void | Response => {
+      const current = res ?? c.res;
+      if (!current || current.status !== 402) return res;
+      if (!unreached.verify && !unreached.settle) return res;
+      // Assigned rather than returned. Hono's `compose` only adopts a returned
+      // Response while the context is unfinalized, and by here `next()` has run
+      // and finalized it, so returning this would silently do nothing. Clearing
+      // `c.res` first stops the setter copying the old response's headers onto
+      // this one, which is the whole point: the 402 being replaced carries
+      // either a payment challenge or a settlement-failed receipt.
+      c.res = undefined;
+      c.res = unreachable(unreached);
+      return c.res;
+    };
     try {
       // pay() returns a Response for the unpaid 402 path and undefined once a
       // verified payment has run the handler — both must be passed through
       // unchanged, or Hono reports the context as unfinalized.
       const res = await pay(c, trackedNext);
       linkSettlement();
-      return res;
+      return honest(res);
     } catch (e) {
       if (handlerStarted) throw e;
       await new Promise((r) => setTimeout(r, 500));
       try {
         const res = await pay(c, next);
         linkSettlement();
-        return res;
+        return honest(res);
       } catch (again) {
         // The payment layer is unreachable or is refusing our credentials.
         // Go dark on the paid routes rather than 500, and above all stay
@@ -829,6 +913,7 @@ if (!config.devSkipPayment && paymentConfigured()) {
         );
       }
     }
+    });
   });
 }
 

@@ -60,8 +60,13 @@ const fac = {
   verifyReason: "invalid_exact_evm_payload_authorization_valid_before",
   settleOk: true,
   settleReason: "insufficient_funds",
-  /** Make verify unreachable, as a facilitator outage or a revoked key would. */
+  /**
+   * Make a call unreachable, as an outage, a revoked key or a 500 would. This
+   * is not the same as the facilitator answering "no", and the service must not
+   * treat it as though it were.
+   */
   down: false,
+  settleDown: false,
   /** Archive size observed at the moment settle was called. */
   archivedAtSettle: -1,
   /**
@@ -75,6 +80,7 @@ const fac = {
     this.verifyValid = true;
     this.settleOk = true;
     this.down = false;
+    this.settleDown = false;
     this.archivedAtSettle = -1;
     this.tx = "0x" + randomBytes(32).toString("hex");
   },
@@ -123,6 +129,7 @@ globalThis.fetch = (async (input: any, init?: RequestInit) => {
 
   if (url.endsWith("/settle")) {
     fac.calls.push({ op: "settle", body });
+    if (fac.settleDown) throw new Error("simulated facilitator outage during settle");
     // Read at the moment money would move. The handler archives before it
     // responds, so a report that exists here is one the buyer is about to get.
     fac.archivedAtSettle = archivedCount();
@@ -316,6 +323,12 @@ describe("what must never be charged", () => {
     assert.equal(r.status, 402);
     assert.deepEqual(fac.ops(), ["verify"], "a rejected payment never reaches settle");
     assert.equal(archivedCount(), before, "and never runs the engine");
+
+    // The other half of the outage work below: a facilitator that answered
+    // "no" must keep looking like a refusal. If an outage and a refusal both
+    // returned 503, the honesty fix would have destroyed the signal it exists
+    // to protect.
+    assert.notEqual(r.status, 503, "a real refusal is not an outage");
   });
 
   test("a non-2xx response never settles", async () => {
@@ -380,41 +393,89 @@ describe("settlement failing after the report was generated", () => {
   });
 });
 
-describe("a facilitator outage", () => {
-  test("refuses the paid call without settling, and leaves the free surface up", async () => {
+describe("a facilitator that gives no answer", () => {
+  // The distinction this whole block exists for: "your payment is invalid" and
+  // "we could not check your payment" are different sentences, and the SDK says
+  // the first for both. Everywhere else this service refuses to report an
+  // unknown as a known — sources are tri-state, an unreadable state file stops
+  // the watcher rather than letting it forget — and the payment layer was the
+  // one place that did not.
+
+  test("an unreachable verify is an outage, not a refusal", async () => {
     const { required } = await challenge();
     fac.down = true;
 
     const r = await paidRequest(`/dossier?tokenAddress=${ADDR.cake}`, payment(required));
 
-    // This records what the SDK actually does, which is not what our own
-    // comments in src/app.ts assumed. A verify that cannot reach the
-    // facilitator is caught inside `processHTTPRequest` and turned into a
-    // *402*, with the transport error as the stated reason. It never reaches
-    // the 503 handler our middleware wraps around `pay()`; that path covers
-    // only a failure during the facilitator handshake.
-    //
-    // A 402 here tells a buyer who has just signed a payment that the payment
-    // was refused, when the truth is that we could not check it. That is a real
-    // wording problem, not a security one: nothing settles either way, and the
-    // status is >= 400 so the buyer is not charged. Asserted as it is rather
-    // than as it should be, so that changing it is a deliberate act with a
-    // failing test behind it.
-    assert.equal(r.status, 402, "an unreachable facilitator is reported as 402, not 503");
+    assert.equal(r.status, 503, "not 402: the buyer's payment was never judged");
+    assert.equal(r.headers.get("retry-after"), "60");
+    const body = (await r.json()) as any;
+    assert.equal(body.error, "payment_layer_unreachable");
+    assert.equal(body.charged, false, "and nothing was taken");
+    assert.match(body.message, /not a refusal/);
     assert.equal(
       fac.ops().includes("settle"),
       false,
       "nothing settles while the facilitator is unreachable",
     );
-    const challengeAgain = r.headers.get("payment-required");
-    assert.ok(challengeAgain, "the buyer is handed a fresh challenge");
-    assert.match(b64.decode(challengeAgain!).error, /outage/);
+    // Hono copies every header from the response being replaced onto its
+    // replacement, so this would arrive carrying the 402's challenge and go on
+    // telling the buyer payment is required in the one place machines read.
+    assert.equal(
+      r.headers.get("payment-required"),
+      null,
+      "and no challenge rides along on it",
+    );
 
     // The free pages have nothing to do with the facilitator, and an outage
     // that took them down once took the whole site with it.
     assert.equal((await app.request("/")).status, 200);
     assert.equal((await app.request("/health")).status, 200);
     assert.equal((await app.request("/dossier/sample")).status, 200);
+  });
+
+  test("an unreachable settle says the outcome is unknown, not that payment is due", async () => {
+    const { required } = await challenge();
+    fac.settleDown = true;
+
+    const r = await paidRequest(`/dossier?tokenAddress=${ADDR.cake}`, payment(required));
+
+    // The expensive case. The payment was verified and our instruction to move
+    // the money went into silence, so it may well have settled. The SDK's answer
+    // is a bare 402, which invites an obliging client to sign a second payment.
+    assert.equal(r.status, 503, "not 402: we do not know that payment is required");
+    const body = (await r.json()) as any;
+    assert.equal(body.error, "settlement_unconfirmed");
+    assert.equal(body.charged, "unknown", "because it genuinely is");
+    assert.match(body.message, /cannot be settled twice/, "the retry has to be safe to make");
+    assert.equal(body.message.includes("<html"), false, "and it is not the report");
+    assert.deepEqual(fac.ops(), ["verify", "settle"]);
+    // The SDK builds a receipt for the failed attempt, reporting a definite
+    // failure with an empty transaction. It contradicts every word above, so it
+    // must not survive onto this response.
+    assert.equal(r.headers.get("payment-response"), null, "no receipt is invented");
+  });
+
+  test("a facilitator that answers keeps its answer", async () => {
+    // The guard on the guard. If an outage and a refusal both became 503, this
+    // work would have destroyed the signal it exists to protect. Both real
+    // answers must survive it: a refused payment stays 402, and a settlement
+    // that genuinely failed on chain stays a settlement failure.
+    const { required } = await challenge();
+    fac.verifyValid = false;
+    const refused = await paidRequest(`/dossier?tokenAddress=${ADDR.cake}`, payment(required));
+    assert.equal(refused.status, 402, "a refusal the facilitator made is still a refusal");
+
+    fac.reset();
+    fac.settleOk = false;
+    const failed = await paidRequest(`/dossier?tokenAddress=${ADDR.cake}`, payment(required));
+    assert.equal(failed.status, 402, "and an on-chain failure is not an outage");
+    const text = await failed.text();
+    assert.equal(
+      text.includes("settlement_unconfirmed"),
+      false,
+      "a definite failure must not be reported as an unknown one",
+    );
   });
 });
 

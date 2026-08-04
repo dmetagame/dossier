@@ -208,6 +208,12 @@ What it holds the service to:
 - **A credential outage** (`payment-outage.test.ts`) — external callers get 503
   and never a free report, while the fulfilment daemon can still serve a task
   buyer whose payment never depended on our facilitator credentials.
+- **"Invalid" is not "unknown"** — a facilitator that answers `isValid: false`
+  gets a 402, because that is a refusal. A facilitator that answers nothing at
+  all gets a 503 that says which call went unanswered, whether anything was
+  taken, and whether it is safe to retry. The SDK returns 402 for both, which
+  tells a buyer who has just signed a payment that it was rejected when the
+  truth is that we could not check it.
 - **The paid path itself** (`settlement.test.ts`) — the real x402 middleware
   against a sandbox facilitator, with no credentials involved. Verify runs
   before the handler and settle after it; the report is archived before money
