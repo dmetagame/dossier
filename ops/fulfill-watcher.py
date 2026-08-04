@@ -109,6 +109,30 @@ def log(*a):
     print(time.strftime("%Y-%m-%d %H:%M:%S"), *a, flush=True)
 
 
+# The PATH our children get, which is not the one we inherit.
+#
+# systemd starts this with its own minimal PATH: no ~/.local/bin, no
+# ~/.npm-global/bin. That was invisible for months because every command here is
+# spawned by absolute path. But `okx-a2a file upload` shells out to `onchainos`
+# *by name*, and under that PATH the nested spawn dies with
+# `spawnSync onchainos ENOENT`.
+#
+# The only symptom was `uploaded=False` on an otherwise successful delivery, next
+# to `messaged=True recorded=True`, so every task-mode buyer got their report as
+# text with the HTML document silently missing. The delivery message says the
+# attachment could not be uploaded and points at recovery, which is why nobody
+# complained and why nobody noticed either. Found on 2026-08-04 by driving a real
+# job through the whole path rather than by reading it.
+#
+# Set here rather than in the unit file so it is version-controlled and survives
+# the unit being rewritten.
+CHILD_ENV = dict(os.environ, PATH=os.pathsep.join([
+    os.path.join(HOME, ".local", "bin"),
+    os.path.join(HOME, ".npm-global", "bin"),
+    os.environ.get("PATH", ""),
+]))
+
+
 def run(cmd, timeout=180):
     """Run a command, distinguishing the ways it can fail.
 
@@ -119,7 +143,8 @@ def run(cmd, timeout=180):
     looked the same.
     """
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
+                           env=CHILD_ENV)
         r.failure = None if r.returncode == 0 else "exit:%d" % r.returncode
         return r
     except subprocess.TimeoutExpired:

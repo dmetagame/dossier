@@ -1084,6 +1084,28 @@ class TestTheOneCallOutward(unittest.TestCase):
         self.assertEqual(r.failure, "timeout")
         self.assertLess(time.time() - started, 10, "the timeout must actually fire")
 
+    def test_children_can_find_the_tools_this_watcher_depends_on(self):
+        """The nested spawn, which is the one systemd's PATH broke.
+
+        Every command here is spawned by absolute path, so a minimal PATH went
+        unnoticed. `okx-a2a file upload` shells out to `onchainos` by name, and
+        under systemd's default PATH that nested spawn died with ENOENT. The
+        visible symptom was one word: `uploaded=False`, beside `messaged=True`,
+        so buyers got the report as text with the document silently missing.
+        """
+        r = fw.run(["/bin/sh", "-c", "printf %s \"$PATH\""])
+        self.assertIsNone(r.failure)
+        for needed in (os.path.join(fw.HOME, ".local", "bin"),
+                       os.path.join(fw.HOME, ".npm-global", "bin")):
+            self.assertIn(needed, r.stdout,
+                          "a child that resolves a tool by name must be able to find it")
+
+    def test_the_environment_is_inherited_not_replaced(self):
+        # Replacing the environment rather than extending it would strip HOME
+        # and every credential the CLIs read from it.
+        r = fw.run(["/bin/sh", "-c", "printf %s \"$HOME\""])
+        self.assertEqual(r.stdout, os.environ.get("HOME", ""))
+
     def test_a_failure_never_parses_as_json(self):
         # jrun is where a failed command becomes data, or must not. A non-zero
         # exit whose output happens to contain braces used to come back as
