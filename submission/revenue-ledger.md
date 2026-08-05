@@ -1,6 +1,6 @@
 # Revenue ledger
 
-Compiled 2026-08-04 from `onchainos agent tasks --agent-id 7012` and per-task
+Compiled 2026-08-04, updated 2026-08-05, from `onchainos agent tasks --agent-id 7012` and per-task
 `onchainos agent status`. Every job id below is on-chain on X Layer and can be
 checked independently; nothing here is self-reported.
 
@@ -14,16 +14,16 @@ numbers up.
 
 | | Tasks |
 |---|---|
-| Total tasks where Dossier (#7012) is the ASP | 30 |
-| — completed | **28** (the marketplace "sold" counter) |
+| Total tasks where Dossier (#7012) is the ASP | 31 |
+| — completed | **29** (the marketplace "sold" counter) |
 | — accepted, payment not yet released by the buyer | 1 |
 | — closed unaccepted (our own duplicate, closed 2026-08-04) | 1 |
 
-Of the **28 completed**:
+Of the **29 completed**:
 
 | | Tasks | Gross |
 |---|---|---|
-| **External buyers** | **11** | **4.03 USD₮0** |
+| **External buyers** | **12** | **4.04 USD₮0** |
 | Internal, self-paid from our own agent #9444 | 17 | not revenue |
 
 ## External buyers
@@ -34,7 +34,7 @@ public agent ids, so these are verifiable rather than anonymised claims.
 | Buyer | Tasks | Price each | Gross | Status |
 |---|---|---|---|---|
 | #1757 | 5 | 0.5 | 2.50 | all complete |
-| #4844 | 3 | 0.5 ×1, 0.01 ×2 | 0.52 | 2 complete, 1 accepted (0.5, unreleased) |
+| #4844 | 4 | 0.5 ×1, 0.01 ×3 | 0.53 | 3 complete, 1 accepted (0.5, unreleased) |
 | #1908 | 1 | 0.5 | 0.50 | complete |
 | #5009 | 1 | 0.5 | 0.50 | complete |
 | #5632 | 1 | 0.5 | 0.50 | complete |
@@ -58,6 +58,7 @@ Job ids, external only:
 #4844  0x9885537ccb3432027992cb0794ffb717dedff085546064e8bc7dc320e09c3b50  0.01  complete
 #4844  0x64ba4bbc0afdeac88e4d299b528880545f7d6e64d7cd8897d4ab41af2f2b0609  0.01  complete
 #6058  0xf58635e4820be370376055c9f12b9765216ffcefd79eb65db2197ae3da53590a  0.01  complete
+#4844  0xae5f60a18196663531e2985a2c9cc2e879ca0300ed68bad7dda67b82008b4963  0.01  complete
 #4844  0x2fa7c6c1d7c4c1b0b0ae63078ea197347afb22cc99d128f64f478a9001336a0d  0.5   accepted, not released
 ```
 
@@ -85,8 +86,8 @@ until 2026-07-28 and 0.01 since, so task count and gross do not move together.
 
 ## What we will and will not claim
 
-**Will:** live on OKX.AI, 28 completed tasks, 11 of them from 6 distinct external
-buyers, one of whom purchased five times, 4.03 USD₮0 of external gross settled
+**Will:** live on OKX.AI, 29 completed tasks, 12 of them from 6 distinct external
+buyers, one of whom purchased five times, 4.04 USD₮0 of external gross settled
 through x402 on X Layer.
 
 **Will not:** "28 sales" as organic traction. The counter includes 17 of our own

@@ -43,8 +43,8 @@ closes the last gap in the entry.
 | Listing status | Listed, eligible for task recommendations, online |
 | Endpoint | https://dossier.rouma.xyz/dossier |
 | Price | 0.01 USD₮0 per call, x402 on X Layer (`eip155:196`) |
-| Marketplace record (2026-08-04) | ★4.5, 83.33% positive, 28 sold, 6 reviews |
-| External revenue | 11 tasks, 6 distinct buyers, 4.03 USD₮0 — see `revenue-ledger.md` |
+| Marketplace record (2026-08-05) | ★4.33, 29 sold, 7 reviews |
+| External revenue | 12 tasks, 6 distinct buyers, 4.04 USD₮0 — see `revenue-ledger.md` |
 | Demo file SHA-256 | `fa562bc30b772ab42ba10b78f90ab8a4807bd17c01e431fb62ae48e826eb4b4c` |
 
 ## The X post quotes the old price
@@ -99,3 +99,35 @@ further, so the context belongs here in one paragraph rather than in the demo:
 
 Do not lead with this and do not put it in the demo. It answers a question if
 asked; raising it unprompted turns a resolved incident into the story.
+
+## The 3.5-star review of 2026-08-05
+
+Buyer #4844 left ★3.5: *"Delivered, no upsell this time; but report labeled base
+not ethereum, LP-lock metric misfits WBTC."* Both complaints were real and both
+are fixed. If a judge asks:
+
+> The wrong chain was two defects with one symptom. The fulfilment watcher
+> resolved a bare "WBTC" through DexScreener's search, which returns only a small
+> Base deployment and omits Ethereum's entirely, and a single search result never
+> tripped the ambiguity check — so it went out with full confidence. It also
+> pushed that report into the buyer's channel unrequested, 34 seconds before
+> their own correct Ethereum report arrived. Majors now resolve from a canonical
+> table verified against `symbol()` on-chain, and a delivery requires that the
+> buyer asked for one. Both landed on 2026-08-02, roughly two hours after the
+> report being reviewed was generated.
+>
+> The LP-lock complaint was the sharper one. GoPlus marks `is_locked` on lockers
+> it recognises among the top LP holders of a single pool, so finding none came
+> back as 0, and the report printed "0% of LP locked" as though it were a
+> measurement. It read 0 for WBTC, LINK and PEPE alike, and under $1M it
+> downgraded the token: a bridged blue chip with a $790k pool came back "caution,
+> liquidity can be pulled" capped at $1.1k. A lock is now reported when one is
+> found and nothing is claimed when one is not.
+
+The second complaint is the one worth volunteering, because it is the failure
+this product exists to refuse: an absence of evidence printed as evidence of
+absence. It was caught by a buyer rather than by us, and the check had been
+wrong for every token it ever ran on.
+
+The same buyer purchased again 40 minutes after leaving that review and rated the
+service 100.
