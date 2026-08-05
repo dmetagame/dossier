@@ -37,15 +37,33 @@ export interface GoPlusTokenSecurity {
   ownerCanChangeBalance?: boolean;
   holderCount?: number;
   topHolderPct?: number; // combined share of top 10 non-LP holders, 0..100
-  /**
-   * Share of LP that is demonstrably locked or burned, 0..100 — and *only* when
-   * there is some. Absence is never expressed as a zero. See the derivation.
-   */
-  lpLockedPct?: number;
+  /** A lock we could establish, or nothing at all. See the derivation. */
+  lpLock?: LpLock;
 }
 
 /**
- * Share of LP demonstrably locked or burned, or `undefined` when none was found.
+ * A locked-LP finding, kept as one value because its three parts are only true
+ * together. "100% locked" and "until 2092" and "by UNCX" answer one question,
+ * and a report that carried them as three loose fields would eventually print
+ * the share without the expiry — this repository has shipped that exact shape of
+ * bug twice.
+ */
+export interface LpLock {
+  /** Share of the main pool's LP that is locked or burned, 0..100. Always > 0. */
+  pct: number;
+  /**
+   * Earliest stated unlock date, `YYYY-MM-DD`, and only when *every* locked
+   * position states one. A lock with no expiry is usually a burn address and so
+   * permanent, but we do not know that, and mixing a dated tranche with an
+   * undated one would let "until 2092" stand for LP that could come out sooner.
+   */
+  until?: string;
+  /** Lockers the source could name, e.g. `["UNCX"]`. Checkable; often empty. */
+  via?: string[];
+}
+
+/**
+ * The LP lock we can establish, or `undefined` when we cannot establish one.
  *
  * LP locking is a positive-only signal, and this is the one place that says so.
  * `is_locked` marks lockers and burn addresses GoPlus recognises, among the top
@@ -64,11 +82,38 @@ export interface GoPlusTokenSecurity {
  * This is not a substitute for "can one party pull this pool". That needs
  * LP-holder concentration, and this field cannot carry it — GoPlus returns
  * PEPE's own token contract as a 99.88% LP holder.
+ *
+ * The share is of one pool's LP, not of the token's liquidity: GoPlus returns a
+ * single `lp_total_supply`, and `lp_holders` are the holders of that pool's LP
+ * token. A token trading across thirty pairs has twenty-nine this says nothing
+ * about, so the report calls it the main pool's LP rather than "LP".
  */
-export function lockedPctOf(lpHolders: unknown): number | undefined {
-  const list = (Array.isArray(lpHolders) ? lpHolders : []) as Array<{ percent?: string; is_locked?: number }>;
-  const locked = list.filter((h) => h.is_locked === 1).reduce((s, h) => s + (Number(h.percent) || 0), 0) * 100;
-  return locked > 0 ? locked : undefined;
+export function lpLockOf(lpHolders: unknown): LpLock | undefined {
+  interface Holder {
+    percent?: string;
+    is_locked?: number;
+    tag?: string;
+    locked_detail?: Array<{ end_time?: string }>;
+  }
+  const locked = (Array.isArray(lpHolders) ? (lpHolders as Holder[]) : []).filter((h) => h.is_locked === 1);
+  const pct = locked.reduce((s, h) => s + (Number(h.percent) || 0), 0) * 100;
+  if (!(pct > 0)) return undefined;
+
+  // Every locked position must state an expiry before one is quoted, so a dated
+  // tranche can never speak for an undated one sitting beside it.
+  const ends = locked.map((h) => h.locked_detail?.map((d) => d.end_time).filter(Boolean).sort()[0]);
+  const until = ends.every(Boolean) ? (ends as string[]).sort()[0]!.slice(0, 10) : undefined;
+
+  const via = [...new Set(locked.map((h) => h.tag?.trim()).filter((t): t is string => Boolean(t)))];
+  return { pct, ...(until ? { until } : {}), ...(via.length ? { via } : {}) };
+}
+
+/** The lock as one sentence fragment, or "" when there is no lock to describe. */
+export function describeLock(lock: LpLock | undefined): string {
+  if (!lock) return "";
+  const until = lock.until ? ` until ${lock.until}` : "";
+  const via = lock.via?.length ? ` (${lock.via.join(", ")})` : "";
+  return `, ${formatLockedPct(lock.pct)} of the main pool's LP locked${until}${via}`;
 }
 
 /**
@@ -185,7 +230,7 @@ export async function fetchGoPlus(chain: string, address: string): Promise<GoPlu
         .reduce((s, h) => s + (Number(h.percent) || 0), 0) * 100
     : undefined;
 
-  const lpLockedPct = lockedPctOf(entry.lp_holders);
+  const lpLock = lpLockOf(entry.lp_holders);
 
   return {
     status: "ok",
@@ -204,6 +249,6 @@ export async function fetchGoPlus(chain: string, address: string): Promise<GoPlu
     ownerCanChangeBalance: flag(entry.owner_change_balance),
     holderCount: entry.holder_count ? Number(entry.holder_count) : undefined,
     topHolderPct,
-    lpLockedPct,
+    lpLock,
   };
 }

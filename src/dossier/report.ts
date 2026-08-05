@@ -193,7 +193,12 @@ export interface Dossier {
     ownerRenounced?: boolean;
     buyTaxPct?: number;
     sellTaxPct?: number;
+    /** Share of the *main pool's* LP that is locked, only when a lock was found. */
     lpLockedPct?: number;
+    /** Earliest stated unlock date, `YYYY-MM-DD`, only when every locked position states one. */
+    lpLockedUntil?: string;
+    /** Lockers the source could name, e.g. "UNCX". */
+    lpLockedVia?: string;
     topHolderPct?: number;
   };
   sources: string[];
@@ -361,7 +366,9 @@ export async function buildDossier(req: DossierRequest): Promise<Dossier> {
       ownerRenounced: sec.status === "ok" ? sec.ownerRenounced : undefined,
       buyTaxPct: sec.status === "ok" ? sec.buyTaxPct : undefined,
       sellTaxPct: sec.status === "ok" ? sec.sellTaxPct : undefined,
-      lpLockedPct: sec.status === "ok" ? sec.lpLockedPct : undefined,
+      lpLockedPct: sec.status === "ok" ? sec.lpLock?.pct : undefined,
+      lpLockedUntil: sec.status === "ok" ? sec.lpLock?.until : undefined,
+      lpLockedVia: sec.status === "ok" ? sec.lpLock?.via?.join(", ") : undefined,
       topHolderPct: sec.status === "ok" ? sec.topHolderPct : undefined,
     },
     sources,

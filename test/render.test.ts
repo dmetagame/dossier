@@ -166,7 +166,7 @@ describe("wording holds the product's claims", () => {
 // a real lock disappearing from the report that is supposed to show it.
 describe("the LP lock row survives being rendered", () => {
   const rowOf = (html: string): string =>
-    html.match(/LP locked<\/span><span>([^<]*(?:<(?!\/span>)[^<]*)*)<\/span>/)?.[1] ?? "";
+    html.match(/LP locked \(main pool\)<\/span><span>([^<]*(?:<(?!\/span>)[^<]*)*)<\/span>/)?.[1] ?? "";
 
   test("a sub-percent lock is escaped, not swallowed", () => {
     const html = renderDossierHtml(base({ security: { lpLockedPct: 0.00913 } }));
@@ -180,5 +180,27 @@ describe("the LP lock row survives being rendered", () => {
 
   test("a lock we could not establish renders as unknown, not zero", () => {
     assert.equal(rowOf(renderDossierHtml(base({ security: {} }))), "—");
+  });
+
+  // A row saying only "100%" invites the reader to supply a permanence nobody
+  // checked. MOG's lock runs to 2092 through UNCX, and both facts are ours to
+  // print — the share reached the row while the expiry sat unused in the source.
+  test("the expiry and the locker travel with the share", () => {
+    const html = renderDossierHtml(
+      base({ security: { lpLockedPct: 99.99, lpLockedUntil: "2092-09-20", lpLockedVia: "UNCX" } }),
+    );
+    assert.equal(rowOf(html), "100.0% until 2092-09-20 (UNCX)");
+  });
+
+  test("a lock with no stated expiry claims none", () => {
+    const html = renderDossierHtml(base({ security: { lpLockedPct: 99.99 } }));
+    assert.equal(rowOf(html), "100.0%");
+    assert.doesNotMatch(html, /until undefined/);
+  });
+
+  // The label carries the scope. `lp_holders` describes one pool's LP token, so
+  // a token trading across thirty pairs has twenty-nine this says nothing about.
+  test("the row names the pool it is actually about", () => {
+    assert.match(renderDossierHtml(base({ security: { lpLockedPct: 50 } })), /LP locked \(main pool\)/);
   });
 });

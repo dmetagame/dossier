@@ -21,11 +21,18 @@ const price = (n?: number): string =>
 const pct = (n?: number): string => (n === undefined ? "—" : `${n.toFixed(1)}%`);
 
 // "—" for a lock we could not establish, never "0.0%". The row reads as a
-// measurement, and this is the same reason `lockNote` does not round to zero.
+// measurement, and this is the same reason the verdict line does not round to
+// zero. The expiry travels with the share: a row saying only "100%" invites the
+// reader to assume permanence we have not checked.
 //
 // Escaped, unlike the purely numeric fields beside it: this is the one value here
 // that can start with "<", and an unescaped "<1%" left the row rendering blank.
-const lockPct = (n?: number): string => (n === undefined ? "—" : esc(formatLockedPct(n, 1)));
+const lockRow = (s: Dossier["security"]): string => {
+  if (s.lpLockedPct === undefined) return "—";
+  const until = s.lpLockedUntil ? ` until ${s.lpLockedUntil}` : "";
+  const via = s.lpLockedVia ? ` (${s.lpLockedVia})` : "";
+  return esc(`${formatLockedPct(s.lpLockedPct, 1)}${until}${via}`);
+};
 
 const yesno = (b?: boolean): string => (b === undefined ? "—" : b ? "Yes" : "No");
 
@@ -191,7 +198,7 @@ export function renderDossierHtml(d: Dossier, opts: RenderOpts = {}): string {
       <div><span class="lab">Owner renounced</span><span>${yesno(d.security.ownerRenounced)}</span></div>
       <div><span class="lab">Buy tax</span><span>${pct(d.security.buyTaxPct)}</span></div>
       <div><span class="lab">Sell tax</span><span>${pct(d.security.sellTaxPct)}</span></div>
-      <div><span class="lab">LP locked</span><span>${lockPct(d.security.lpLockedPct)}</span></div>
+      <div><span class="lab">LP locked (main pool)</span><span>${lockRow(d.security)}</span></div>
       <div><span class="lab">Top-10 holders</span><span>${pct(d.security.topHolderPct)}</span></div>
     </div>
   </section>

@@ -6,7 +6,7 @@ import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { stubUpstream, withStub, ADDR } from "./helpers";
 import { evaluate, fetchSources, SourcesUnavailableError, honeypotCheck as sellability, controlCheck, activityCheck, liquidityCheck } from "../src/engine/engine";
-import { taxPct, formatLockedPct, lockedPctOf } from "../src/engine/sources/goplus";
+import { taxPct, formatLockedPct, lpLockOf, describeLock } from "../src/engine/sources/goplus";
 import { comparableLiquidity, finiteUsd, ageInDays, fetchDexScreener } from "../src/engine/sources/dexscreener";
 import { formatUnits } from "../src/engine/sources/rpc";
 import { preflight } from "../src/dossier/report";
@@ -588,17 +588,18 @@ describe("absent volume is unknown, not a measured zero", () => {
 // upstream response rather than on any difference in risk.
 describe("an unestablished LP lock is not a measurement of zero", () => {
   const market = (usd: number): any => ({ status: "ok", liquidityUsd: usd, deepestPoolUsd: usd });
-  const sec = (lpLockedPct?: number): any => ({ status: "ok", lpLockedPct });
+  const sec = (pct?: number, rest: object = {}): any =>
+    ({ status: "ok", lpLock: pct === undefined ? undefined : { pct, ...rest } });
 
   test("no lock found says nothing about the lock", () => {
     const r = liquidityCheck(market(294_929_273), sec(undefined));
-    assert.doesNotMatch(r.detail, /LP locked/, "silence is the only honest report of an absence");
+    assert.doesNotMatch(r.detail, /locked/, "silence is the only honest report of an absence");
     assert.equal(r.status, "pass");
   });
 
   test("a lock that was found is still reported", () => {
     const r = liquidityCheck(market(294_929_273), sec(45));
-    assert.match(r.detail, /45% of LP locked/);
+    assert.match(r.detail, /45% of the main pool's LP locked/);
   });
 
   // PEPE's lock is a burn address holding 0.0091% of LP. Rounding it to "0% of
@@ -606,8 +607,8 @@ describe("an unestablished LP lock is not a measurement of zero", () => {
   // sentence that not having one used to produce.
   test("a real but tiny lock never rounds down to none", () => {
     const r = liquidityCheck(market(23_166_496), sec(0.00913));
-    assert.match(r.detail, /<1% of LP locked/);
-    assert.doesNotMatch(r.detail, /\b0% of LP locked/);
+    assert.match(r.detail, /<1% of the main pool's LP locked/);
+    assert.doesNotMatch(r.detail, /\b0% of/);
   });
 
   test("the same rounding cannot bite in the rendered row either", () => {
@@ -633,7 +634,7 @@ describe("an unestablished LP lock is not a measurement of zero", () => {
   test("a small but genuine lock is reported, never scored against the token", () => {
     const r = liquidityCheck(market(500_000), sec(5));
     assert.equal(r.status, "pass");
-    assert.match(r.detail, /5% of LP locked/);
+    assert.match(r.detail, /5% of the main pool's LP locked/);
     assert.doesNotMatch(r.detail, /can be pulled/);
   });
 
@@ -645,8 +646,53 @@ describe("an unestablished LP lock is not a measurement of zero", () => {
   test("the source never emits a zero for a lock it could not establish", () => {
     // Ten LP holders, none of them a recognised locker: WBTC's actual shape.
     const holders = Array.from({ length: 10 }, () => ({ percent: "0.1", is_locked: 0 }));
-    assert.equal(lockedPctOf(holders), undefined);
-    assert.equal(lockedPctOf([]), undefined, "no LP holders is the same absence");
-    assert.equal(lockedPctOf([{ percent: "0.45", is_locked: 1 }]), 45);
+    assert.equal(lpLockOf(holders), undefined);
+    assert.equal(lpLockOf([]), undefined, "no LP holders is the same absence");
+    assert.deepEqual(lpLockOf([{ percent: "0.45", is_locked: 1 }]), { pct: 45 });
+  });
+});
+
+// "Locked until 2092" and "locked until next Tuesday" are different facts, and
+// GoPlus hands us the date in `locked_detail`. Printing only the share invited
+// the reader to assume a permanence nobody had checked.
+describe("a lock is reported with its expiry, or without a claim of one", () => {
+  const uncx = (end?: string) => ({
+    percent: "0.9998",
+    is_locked: 1,
+    tag: "UNCX",
+    ...(end ? { locked_detail: [{ end_time: end }] } : {}),
+  });
+
+  test("MOG's shape: the date and the locker both survive to the sentence", () => {
+    const lock = lpLockOf([uncx("2092-09-20T16:00:00+00:00"), { percent: "0.0001", is_locked: 0 }]);
+    assert.equal(lock?.until, "2092-09-20", "a timestamp is not a date");
+    assert.deepEqual(lock?.via, ["UNCX"]);
+    assert.match(describeLock(lock), /100% of the main pool's LP locked until 2092-09-20 \(UNCX\)/);
+  });
+
+  // The rule that keeps the sentence true: an undated tranche could come out
+  // tomorrow, so a dated one beside it must not speak for the whole lock.
+  test("a lock is only dated when every locked position states a date", () => {
+    const mixed = lpLockOf([uncx("2092-09-20T16:00:00+00:00"), { percent: "0.2", is_locked: 1 }]);
+    assert.equal(mixed?.until, undefined, "one dated tranche cannot vouch for an undated one");
+    assert.doesNotMatch(describeLock(mixed), /until/);
+  });
+
+  test("the earliest unlock is the one quoted, not the most flattering", () => {
+    const staggered = lpLockOf([uncx("2092-09-20T00:00:00+00:00"), {
+      percent: "0.3", is_locked: 1, locked_detail: [{ end_time: "2026-09-01T00:00:00+00:00" }],
+    }]);
+    assert.equal(staggered?.until, "2026-09-01");
+  });
+
+  // PEPE's lock is a burn address: locked, real, and with no expiry to state.
+  test("an undated lock is still reported, just without a date", () => {
+    const burn = lpLockOf([{ percent: "0.0000913", is_locked: 1 }]);
+    assert.equal(burn?.until, undefined);
+    assert.equal(describeLock(burn), ", <1% of the main pool's LP locked");
+  });
+
+  test("no lock produces no fragment at all", () => {
+    assert.equal(describeLock(undefined), "");
   });
 });

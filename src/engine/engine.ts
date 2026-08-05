@@ -1,5 +1,5 @@
 import type { Verdict, RiskRequest, CheckResult } from "./schema";
-import { fetchGoPlus, formatLockedPct, goplusSupports } from "./sources/goplus";
+import { describeLock, fetchGoPlus, goplusSupports } from "./sources/goplus";
 import { fetchDexScreener, type TokenPairs } from "./sources/dexscreener";
 import { fetchChainFacts, rpcSupports, type RpcSnapshot } from "./sources/rpc";
 
@@ -285,14 +285,12 @@ function controlFromChain(chain: RpcSnapshot): CheckResult {
 export function liquidityCheck(market: Market | undefined, sec: Sec): CheckResult {
   if (market?.status !== "ok" || market.liquidityUsd === undefined)
     return { status: "unknown", detail: "liquidity (no market data)" };
-  // A found lock is worth mentioning. Not finding one is not a finding, so it
-  // adds nothing to the sentence and cannot move the verdict — see the
-  // derivation of `lpLockedPct` in sources/goplus.ts for why the absence carries
-  // no information.
-  const lockNote =
-    sec.status === "ok" && sec.lpLockedPct !== undefined
-      ? `, ${formatLockedPct(sec.lpLockedPct)} of LP locked`
-      : "";
+  // A found lock is worth mentioning, with its expiry, because "locked until
+  // 2092" and "locked until next Tuesday" are different facts and we have the
+  // date. Not finding one is not a finding, so it adds nothing to the sentence
+  // and cannot move the verdict — see the derivation of `lpLock` in
+  // sources/goplus.ts for why the absence carries no information.
+  const lockNote = sec.status === "ok" ? describeLock(sec.lpLock) : "";
   if (market.liquidityUsd < 10_000)
     return { status: "fail", detail: `Pooled liquidity $${Math.round(market.liquidityUsd)} — too thin to exit${lockNote}.` };
   if (market.liquidityUsd < 100_000)
