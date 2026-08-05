@@ -5,8 +5,8 @@
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { stubUpstream, withStub, ADDR } from "./helpers";
-import { evaluate, fetchSources, SourcesUnavailableError, honeypotCheck as sellability, controlCheck, activityCheck } from "../src/engine/engine";
-import { taxPct } from "../src/engine/sources/goplus";
+import { evaluate, fetchSources, SourcesUnavailableError, honeypotCheck as sellability, controlCheck, activityCheck, liquidityCheck } from "../src/engine/engine";
+import { taxPct, formatLockedPct, lockedPctOf } from "../src/engine/sources/goplus";
 import { comparableLiquidity, finiteUsd, ageInDays, fetchDexScreener } from "../src/engine/sources/dexscreener";
 import { formatUnits } from "../src/engine/sources/rpc";
 import { preflight } from "../src/dossier/report";
@@ -576,5 +576,77 @@ describe("absent volume is unknown, not a measured zero", () => {
     const r = activityCheck({ ...m, ageDays: 100 });
     assert.equal(r.status, "unknown", "absent volume must not declare a near-dead market");
     assert.match(r.detail, /did not report 24h volume/);
+  });
+});
+
+// A buyer bought a WBTC report on 2026-08-02 and reviewed it three days later:
+// "the LP-lock metric does not fit WBTC". It did not fit any token. GoPlus marks
+// `is_locked` on lockers it recognises among the top LP holders of one pool, so
+// no lock found read as "0% of LP locked" — printed as a measurement, and scored
+// as one. WBTC, LINK and PEPE all read 0; UNI, USDT and CAKE return no LP
+// holders at all, so the sentence appeared or vanished on an artefact of the
+// upstream response rather than on any difference in risk.
+describe("an unestablished LP lock is not a measurement of zero", () => {
+  const market = (usd: number): any => ({ status: "ok", liquidityUsd: usd, deepestPoolUsd: usd });
+  const sec = (lpLockedPct?: number): any => ({ status: "ok", lpLockedPct });
+
+  test("no lock found says nothing about the lock", () => {
+    const r = liquidityCheck(market(294_929_273), sec(undefined));
+    assert.doesNotMatch(r.detail, /LP locked/, "silence is the only honest report of an absence");
+    assert.equal(r.status, "pass");
+  });
+
+  test("a lock that was found is still reported", () => {
+    const r = liquidityCheck(market(294_929_273), sec(45));
+    assert.match(r.detail, /45% of LP locked/);
+  });
+
+  // PEPE's lock is a burn address holding 0.0091% of LP. Rounding it to "0% of
+  // LP locked" would reproduce, on a token that has a lock, the exact false
+  // sentence that not having one used to produce.
+  test("a real but tiny lock never rounds down to none", () => {
+    const r = liquidityCheck(market(23_166_496), sec(0.00913));
+    assert.match(r.detail, /<1% of LP locked/);
+    assert.doesNotMatch(r.detail, /\b0% of LP locked/);
+  });
+
+  test("the same rounding cannot bite in the rendered row either", () => {
+    assert.equal(formatLockedPct(0.00913, 1), "<1%");
+    assert.equal(formatLockedPct(45), "45%");
+    assert.equal(formatLockedPct(45.4, 1), "45.4%");
+  });
+
+  // The check that produced the review: a bridged blue chip on Base, $790k
+  // pooled, came back "caution — liquidity can be pulled" with a $1.1k size cap,
+  // purely because nothing was known about its LP. Under $1M it fired on every
+  // token GoPlus happened to enumerate LP holders for.
+  test("an unknown lock cannot downgrade a healthy pool", () => {
+    const r = liquidityCheck(market(790_204), sec(undefined));
+    assert.equal(r.status, "pass", "an absence of evidence is not evidence of a rug");
+    assert.doesNotMatch(r.detail, /can be pulled/);
+  });
+
+  // The removal has to hold for a lock we *did* establish too, or the old check
+  // just comes back wearing a smaller number. A 5% lock on a $500k pool used to
+  // read "liquidity can be pulled"; the other 95% sits with ordinary independent
+  // LPs, and calling that a rug risk is the same error at a different value.
+  test("a small but genuine lock is reported, never scored against the token", () => {
+    const r = liquidityCheck(market(500_000), sec(5));
+    assert.equal(r.status, "pass");
+    assert.match(r.detail, /5% of LP locked/);
+    assert.doesNotMatch(r.detail, /can be pulled/);
+  });
+
+  test("thin and shallow pools are still called out on their own merits", () => {
+    assert.equal(liquidityCheck(market(9_000), sec(undefined)).status, "fail");
+    assert.equal(liquidityCheck(market(50_000), sec(undefined)).status, "warn");
+  });
+
+  test("the source never emits a zero for a lock it could not establish", () => {
+    // Ten LP holders, none of them a recognised locker: WBTC's actual shape.
+    const holders = Array.from({ length: 10 }, () => ({ percent: "0.1", is_locked: 0 }));
+    assert.equal(lockedPctOf(holders), undefined);
+    assert.equal(lockedPctOf([]), undefined, "no LP holders is the same absence");
+    assert.equal(lockedPctOf([{ percent: "0.45", is_locked: 1 }]), 45);
   });
 });

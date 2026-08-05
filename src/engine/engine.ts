@@ -1,5 +1,5 @@
 import type { Verdict, RiskRequest, CheckResult } from "./schema";
-import { fetchGoPlus, goplusSupports } from "./sources/goplus";
+import { fetchGoPlus, formatLockedPct, goplusSupports } from "./sources/goplus";
 import { fetchDexScreener, type TokenPairs } from "./sources/dexscreener";
 import { fetchChainFacts, rpcSupports, type RpcSnapshot } from "./sources/rpc";
 
@@ -282,19 +282,28 @@ function controlFromChain(chain: RpcSnapshot): CheckResult {
   return { status: "pass", detail: `No upgrade, pause or blacklist powers found in the deployed bytecode${note}.` };
 }
 
-function liquidityCheck(market: Market | undefined, sec: Sec): CheckResult {
+export function liquidityCheck(market: Market | undefined, sec: Sec): CheckResult {
   if (market?.status !== "ok" || market.liquidityUsd === undefined)
     return { status: "unknown", detail: "liquidity (no market data)" };
+  // A found lock is worth mentioning. Not finding one is not a finding, so it
+  // adds nothing to the sentence and cannot move the verdict — see the
+  // derivation of `lpLockedPct` in sources/goplus.ts for why the absence carries
+  // no information.
   const lockNote =
-    sec.status === "ok" && sec.lpLockedPct !== undefined ? `, ${sec.lpLockedPct.toFixed(0)}% of LP locked` : "";
+    sec.status === "ok" && sec.lpLockedPct !== undefined
+      ? `, ${formatLockedPct(sec.lpLockedPct)} of LP locked`
+      : "";
   if (market.liquidityUsd < 10_000)
     return { status: "fail", detail: `Pooled liquidity $${Math.round(market.liquidityUsd)} — too thin to exit${lockNote}.` };
   if (market.liquidityUsd < 100_000)
     return { status: "warn", detail: `Pooled liquidity $${Math.round(market.liquidityUsd)} — shallow${lockNote}.` };
-  // LP locking matters when a single deployer could pull the pool; deep
-  // markets ($1M+) don't work that way and locking isn't practiced there.
-  if (market.liquidityUsd < 1_000_000 && sec.status === "ok" && sec.lpLockedPct !== undefined && sec.lpLockedPct < 20)
-    return { status: "warn", detail: `Only ${sec.lpLockedPct.toFixed(0)}% of LP locked — liquidity can be pulled.` };
+  // There used to be a warn here for pools under $1M with under 20% of LP
+  // locked, meant to catch a deployer who could pull the pool. Because an
+  // unestablished lock read as 0%, it fired on essentially every token in that
+  // band regardless of who held the LP, and it is the reason a bridged blue chip
+  // came back "caution — liquidity can be pulled" with a $1.1k size cap. The
+  // question it asked is a good one; this data cannot answer it, and a check
+  // that fires on everything answers nothing.
   return { status: "pass", detail: `Pooled liquidity $${Math.round(market.liquidityUsd)}${lockNote}.` };
 }
 

@@ -1,4 +1,5 @@
 import type { Dossier } from "./report";
+import { formatLockedPct } from "../engine/sources/goplus";
 
 // Renders a Dossier as a self-contained HTML document — no external assets, so
 // it can be saved, shared, or printed to PDF as-is. This is the "asset" the ASP
@@ -18,6 +19,10 @@ const price = (n?: number): string =>
     : "$" + n.toLocaleString("en-US", { maximumSignificantDigits: 4, maximumFractionDigits: 20 });
 
 const pct = (n?: number): string => (n === undefined ? "—" : `${n.toFixed(1)}%`);
+
+// "—" for a lock we could not establish, never "0.0%". The row reads as a
+// measurement, and this is the same reason `lockNote` does not round to zero.
+const lockPct = (n?: number): string => (n === undefined ? "—" : formatLockedPct(n, 1));
 
 const yesno = (b?: boolean): string => (b === undefined ? "—" : b ? "Yes" : "No");
 
@@ -183,7 +188,7 @@ export function renderDossierHtml(d: Dossier, opts: RenderOpts = {}): string {
       <div><span class="lab">Owner renounced</span><span>${yesno(d.security.ownerRenounced)}</span></div>
       <div><span class="lab">Buy tax</span><span>${pct(d.security.buyTaxPct)}</span></div>
       <div><span class="lab">Sell tax</span><span>${pct(d.security.sellTaxPct)}</span></div>
-      <div><span class="lab">LP locked</span><span>${pct(d.security.lpLockedPct)}</span></div>
+      <div><span class="lab">LP locked</span><span>${lockPct(d.security.lpLockedPct)}</span></div>
       <div><span class="lab">Top-10 holders</span><span>${pct(d.security.topHolderPct)}</span></div>
     </div>
   </section>

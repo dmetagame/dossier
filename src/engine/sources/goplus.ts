@@ -37,7 +37,52 @@ export interface GoPlusTokenSecurity {
   ownerCanChangeBalance?: boolean;
   holderCount?: number;
   topHolderPct?: number; // combined share of top 10 non-LP holders, 0..100
+  /**
+   * Share of LP that is demonstrably locked or burned, 0..100 — and *only* when
+   * there is some. Absence is never expressed as a zero. See the derivation.
+   */
   lpLockedPct?: number;
+}
+
+/**
+ * Share of LP demonstrably locked or burned, or `undefined` when none was found.
+ *
+ * LP locking is a positive-only signal, and this is the one place that says so.
+ * `is_locked` marks lockers and burn addresses GoPlus recognises, among the top
+ * LP holders of a single pool. A zero therefore means "no recognised locker in
+ * that sample", which is the default state of almost every real token: WBTC,
+ * LINK and PEPE all read 0, and UNI, USDT and CAKE return no `lp_holders` at
+ * all. Reporting that zero as a measurement told a buyer that WBTC had "0% of LP
+ * locked", and dropped a $790k pool to "liquidity can be pulled" — an absence of
+ * evidence dressed as evidence of absence, which is the one thing this service
+ * exists to refuse.
+ *
+ * So a lock is reported when found, and nothing is claimed when not. "None
+ * locked" and "no LP holders returned" collapse deliberately: both mean the lock
+ * could not be established, and the report already has a way to say that.
+ *
+ * This is not a substitute for "can one party pull this pool". That needs
+ * LP-holder concentration, and this field cannot carry it — GoPlus returns
+ * PEPE's own token contract as a 99.88% LP holder.
+ */
+export function lockedPctOf(lpHolders: unknown): number | undefined {
+  const list = (Array.isArray(lpHolders) ? lpHolders : []) as Array<{ percent?: string; is_locked?: number }>;
+  const locked = list.filter((h) => h.is_locked === 1).reduce((s, h) => s + (Number(h.percent) || 0), 0) * 100;
+  return locked > 0 ? locked : undefined;
+}
+
+/**
+ * A locked-LP share, rendered so a real lock never reads as no lock.
+ *
+ * `lpLockedPct` is only ever set when something is genuinely locked, but PEPE's
+ * is 0.0091% — a burn address holding a sliver — and rounding that to "0% of LP
+ * locked" reproduces, in a report that has a lock, exactly the false sentence
+ * that not having one used to produce. Anything below half a percent is shown
+ * as "<1%": true, and unmistakably not zero.
+ */
+export function formatLockedPct(n: number, decimals = 0): string {
+  const rounded = Number(n.toFixed(decimals));
+  return rounded === 0 ? "<1%" : `${n.toFixed(decimals)}%`;
 }
 
 export function goplusSupports(chain: string): boolean {
@@ -140,10 +185,7 @@ export async function fetchGoPlus(chain: string, address: string): Promise<GoPlu
         .reduce((s, h) => s + (Number(h.percent) || 0), 0) * 100
     : undefined;
 
-  const lpHolders: Array<{ percent?: string; is_locked?: number }> = entry.lp_holders ?? [];
-  const lpLockedPct = lpHolders.length
-    ? lpHolders.filter((h) => h.is_locked === 1).reduce((s, h) => s + (Number(h.percent) || 0), 0) * 100
-    : undefined;
+  const lpLockedPct = lockedPctOf(entry.lp_holders);
 
   return {
     status: "ok",
