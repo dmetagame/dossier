@@ -22,7 +22,10 @@ const pct = (n?: number): string => (n === undefined ? "—" : `${n.toFixed(1)}%
 
 // "—" for a lock we could not establish, never "0.0%". The row reads as a
 // measurement, and this is the same reason `lockNote` does not round to zero.
-const lockPct = (n?: number): string => (n === undefined ? "—" : formatLockedPct(n, 1));
+//
+// Escaped, unlike the purely numeric fields beside it: this is the one value here
+// that can start with "<", and an unescaped "<1%" left the row rendering blank.
+const lockPct = (n?: number): string => (n === undefined ? "—" : esc(formatLockedPct(n, 1)));
 
 const yesno = (b?: boolean): string => (b === undefined ? "—" : b ? "Yes" : "No");
 

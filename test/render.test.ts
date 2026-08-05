@@ -159,3 +159,26 @@ describe("wording holds the product's claims", () => {
     assert.ok(renderDossierHtml(base(), { banner: "Sample report" }).includes("Sample report"));
   });
 });
+
+// A lock too small to round to a whole percent renders "<1%", which is the only
+// value in the contract-and-distribution block that can begin with "<".
+// Unescaped, the browser swallowed the rest of the row and it rendered blank —
+// a real lock disappearing from the report that is supposed to show it.
+describe("the LP lock row survives being rendered", () => {
+  const rowOf = (html: string): string =>
+    html.match(/LP locked<\/span><span>([^<]*(?:<(?!\/span>)[^<]*)*)<\/span>/)?.[1] ?? "";
+
+  test("a sub-percent lock is escaped, not swallowed", () => {
+    const html = renderDossierHtml(base({ security: { lpLockedPct: 0.00913 } }));
+    assert.equal(rowOf(html), "&lt;1%");
+    assert.doesNotMatch(html, /<span><1%/, "a raw < opens a tag the parser never closes");
+  });
+
+  test("an ordinary lock still renders as a percentage", () => {
+    assert.equal(rowOf(renderDossierHtml(base({ security: { lpLockedPct: 45.4 } }))), "45.4%");
+  });
+
+  test("a lock we could not establish renders as unknown, not zero", () => {
+    assert.equal(rowOf(renderDossierHtml(base({ security: {} }))), "—");
+  });
+});
