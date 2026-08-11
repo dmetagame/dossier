@@ -162,6 +162,199 @@ jobs:
           echo "  published key -> ${key:0:16}…"
           [ -n "$key" ] || { echo "::error::no signing key published; reports would go out unsigned"; exit 1; }
 
+      - name: The sample report is a complete document, not a broken one
+        run: |
+          set -euo pipefail
+          # Everything above this line checks plumbing: the payment layer, the
+          # challenge, the key, the watcher. None of it reads the product.
+          #
+          # Every content defect this service has shipped was found by an outside
+          # party or by someone opening a report by hand, never by CI: an RPC hash
+          # missing from the attestation, a pair age that drifted on every call, a
+          # lock printed as "0%" when none had been established, and an LP row that
+          # rendered blank because "<1%" went into the HTML unescaped. That last one
+          # shipped inside a commit fixing the one before it, with a green suite.
+          #
+          # /dossier/sample is a real report, built live from real sources, and free.
+          curl -sS --max-time 60 "$BASE/dossier/sample" -o sample.html
+          python3 - sample.html <<'PY'
+          import re, sys
+          h = open(sys.argv[1], encoding="utf-8").read()
+
+          def fail(msg):
+              print(f"::error::{msg}")
+              sys.exit(1)
+
+          # A report missing a row is not a smaller report, it is a different product.
+          for name in ("Sellability", "Contract control", "Liquidity",
+                       "Market activity", "Holder concentration"):
+              if f"</span>{name}</td>" not in h:
+                  fail(f"the sample report is missing its '{name}' check")
+
+          # Every labelled field must carry a value. Asserted on the shape rather
+          # than on the one field that broke, so the next one is caught too.
+          rows = re.findall(r'<span class="lab">([^<]*)</span><span[^>]*>([^<]*)</span>', h)
+          if len(rows) < 14:
+              fail(f"only {len(rows)} labelled fields in the sample; the document is truncated")
+          for label, value in rows:
+              if not value.strip():
+                  fail(f"'{label}' rendered with no value at all")
+
+          # An unestablished LP lock must never print as a measured zero. A paying
+          # buyer found this one: it read 0 for every blue chip, because the source
+          # only marks lockers it recognises.
+          lock = dict(rows).get("LP locked (main pool)")
+          if lock is None:
+              fail("the LP lock row is gone; a buyer complaint was closed by making this explicit")
+          if re.fullmatch(r"0(\.0+)?%", lock.strip()):
+              fail(f"LP lock reported as a measured zero ({lock}); absence renders '—', never 0%")
+          if re.search(r"\b0(\.0+)?% of the main pool", h):
+              fail("the verdict line claims '0% of the main pool's LP locked'")
+
+          # Unsigned, the report is a PDF with opinions in it.
+          m = re.search(r"Payload sha256</span><span[^>]*>([0-9a-f]{64})</span>", h)
+          if not m:
+              fail("no 64-hex payload sha256 in the sample: the report is not attesting to itself")
+          for label in ("Signature", "Public key"):
+              v = re.search(rf"{label}</span><span[^>]*>([^<]*)</span>", h)
+              if not v or len(v.group(1).strip()) < 32:
+                  fail(f"the sample carries no usable {label.lower()}")
+
+          print(f"  sample ok: 5 checks, {len(rows)} fields all populated, "
+                f"LP lock '{lock}', payload {m.group(1)[:16]}…")
+          PY
+
+      - name: The service still refuses to guess
+        run: |
+          set -euo pipefail
+          # The claim the whole entry rests on: sources are tri-state, and an
+          # absence is never dressed up as knowledge. A token nothing has heard of
+          # must come back not_found with its fields listed as unavailable, not
+          # "ok" with confident nulls behind it.
+          known="0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82"
+          nowhere="0x1234567890abcdef1234567890abcdef12345678"
+          curl -sS --max-time 45 "$BASE/dossier/preflight?tokenAddress=$known&chain=bsc" -o known.json
+          curl -sS --max-time 45 "$BASE/dossier/preflight?tokenAddress=$nowhere&chain=bsc" -o nowhere.json
+          python3 - known.json nowhere.json <<'PY'
+          import json, sys
+          known, nowhere = (json.load(open(p)) for p in sys.argv[1:3])
+
+          def fail(msg):
+              print(f"::error::{msg}")
+              sys.exit(1)
+
+          if known["sources"] != {"goplus": "ok", "dexscreener": "ok", "rpc": "ok"}:
+              fail(f"a fully covered token lost a source: {known['sources']}")
+          if known["expectedCoverage"] != 1 or not known["reportAvailable"]:
+              fail(f"a fully covered token no longer reports full coverage: {known['expectedCoverage']}")
+
+          if nowhere["sources"].get("goplus") != "not_found" or nowhere["sources"].get("dexscreener") != "not_found":
+              fail(f"an unknown token did not come back not_found: {nowhere['sources']}")
+          if nowhere["expectedCoverage"] >= 1:
+              fail("an unknown token is claiming full coverage")
+          for f in ("priceUsd", "liquidityUsd", "heuristicSizeCap"):
+              if f in nowhere.get("fieldsAvailable", []):
+                  fail(f"an unknown token claims it can supply {f}")
+          print(f"  known: coverage {known['expectedCoverage']} | "
+                f"unknown: coverage {nowhere['expectedCoverage']}, "
+                f"{len(nowhere['fieldsUnavailable'])} fields declared unavailable")
+          PY
+
+      - name: A paid report carries its evidence
+        env:
+          INTERNAL_KEY: ${{ secrets.INTERNAL_KEY }}
+        run: |
+          set -euo pipefail
+          # What the free surfaces cannot reach: the per-source hashes, which the
+          # rendered HTML does not carry.
+          #
+          # This deliberately does NOT assert determinism. Determinism is "the same
+          # token and the same data give the same report", and two live calls are
+          # not the same data: a first draft of this step compared two responses
+          # and failed because a DEX pool moved by $1,600 in the two seconds
+          # between them. A monitor that fires on a healthy service every fifteen
+          # minutes is the same defect as a risk check that warns on every token.
+          # Determinism is tested against recorded fixtures in CI, which is the
+          # only place the inputs can actually be held still.
+          #
+          # What two calls *can* prove is that the shape is stable and that every
+          # source which answered attested what it answered.
+          #
+          # Skipped loudly rather than silently: a check that quietly does nothing
+          # is the failure mode it exists to prevent.
+          if [ -z "${INTERNAL_KEY:-}" ]; then
+            echo "::warning::no INTERNAL_KEY secret set: per-source provenance is UNGUARDED. Add the secret to enable this check."
+            exit 0
+          fi
+          body='{"tokenAddress":"0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82","chain":"bsc","format":"json"}'
+          for i in 1 2; do
+            curl -sS --max-time 60 -X POST "$BASE/dossier" \
+              -H "x-internal-key: $INTERNAL_KEY" -H 'content-type: application/json' \
+              -d "$body" -o "run$i.json"
+          done
+          python3 - run1.json run2.json <<'PY'
+          import json, re, sys
+          a, b = (json.load(open(p)) for p in sys.argv[1:3])
+
+          def fail(msg):
+              print(f"::error::{msg}")
+              sys.exit(1)
+
+          # Every source that answered must carry the hash of what it answered, or
+          # the attestation covers a claim nobody can re-check. The RPC hash was
+          # computed correctly, unit tested, and then never copied into the payload,
+          # so the signed report said sha256=MISSING while the suite stayed green.
+          #
+          # Both responses, not just the first: a guard that reads one of two
+          # fetched documents is half a guard.
+          for label, resp in (("run 1", a), ("run 2", b)):
+              obs = resp["attestation"]["payload"].get("observations") or []
+              if not obs:
+                  fail(f"{label}: the attestation carries no observations at all")
+              for o in obs:
+                  if o.get("status") == "ok" and not o.get("responseSha256"):
+                      fail(f"{label}: source '{o.get('source')}' answered but attested no response hash")
+              if resp["security"].get("lpLockedPct") == 0:
+                  fail(f"{label}: lpLockedPct is 0; an unestablished lock must be absent, not zero")
+              for field in ("payloadSha256", "signature", "publicKey"):
+                  if not resp["attestation"].get(field):
+                      fail(f"{label}: the report went out without a {field}")
+
+          # The shape must not move even though the numbers may. A field that
+          # silently stops being emitted is exactly how the RPC hash went missing,
+          # and values alone cannot show it.
+          def paths(x, p=""):
+              if isinstance(x, dict):
+                  for k, v in x.items():
+                      yield from paths(v, f"{p}.{k}")
+              elif isinstance(x, list):
+                  for i, v in enumerate(x):
+                      yield from paths(v, f"{p}[*]")
+              else:
+                  yield p
+          # Only meaningful when both calls saw the same upstreams. GoPlus rate
+          # limits, and a source that answers once and not the next second changes
+          # the shape legitimately: fewer fields, no hash for the source that did
+          # not answer. Comparing across that would turn an upstream hiccup into a
+          # red monitor, which is how a check stops being believed.
+          def statuses(resp):
+              return {o["source"]: o.get("status")
+                      for o in resp["attestation"]["payload"].get("observations") or []}
+          sa, sb = statuses(a), statuses(b)
+          if sa != sb:
+              print(f"::warning::upstream coverage changed between the two calls "
+                    f"({sa} then {sb}); skipping the shape comparison")
+          else:
+              pa, pb = set(paths(a)), set(paths(b))
+              if pa != pb:
+                  for p in sorted(pa ^ pb)[:6]:
+                      fail(f"the response shape is unstable: {p} appears in only one of two identical requests")
+
+          names = ", ".join(f"{o['source']}={(o.get('responseSha256') or '')[:8]}…"
+                            for o in a["attestation"]["payload"]["observations"])
+          print(f"  evidence ok: {len(set(paths(a)))} fields | {names}")
+          PY
+
       - name: TLS certificate is not about to expire
         run: |
           set -euo pipefail
