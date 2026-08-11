@@ -260,99 +260,47 @@ jobs:
                 f"{len(nowhere['fieldsUnavailable'])} fields declared unavailable")
           PY
 
-      - name: A paid report carries its evidence
-        env:
-          INTERNAL_KEY: ${{ secrets.INTERNAL_KEY }}
+      - name: The report carries the evidence for its own claims
         run: |
           set -euo pipefail
-          # What the free surfaces cannot reach: the per-source hashes, which the
-          # rendered HTML does not carry.
+          # Every source that answered must carry the hash of what it answered, or
+          # the attestation covers a claim nobody can re-check. The RPC hash was
+          # computed correctly, unit tested, and then never copied into the signed
+          # payload, so a live report read sha256=MISSING while the suite was green.
           #
-          # This deliberately does NOT assert determinism. Determinism is "the same
-          # token and the same data give the same report", and two live calls are
-          # not the same data: a first draft of this step compared two responses
-          # and failed because a DEX pool moved by $1,600 in the two seconds
-          # between them. A monitor that fires on a healthy service every fifteen
-          # minutes is the same defect as a risk check that warns on every token.
-          # Determinism is tested against recorded fixtures in CI, which is the
-          # only place the inputs can actually be held still.
-          #
-          # What two calls *can* prove is that the shape is stable and that every
-          # source which answered attested what it answered.
-          #
-          # Skipped loudly rather than silently: a check that quietly does nothing
-          # is the failure mode it exists to prevent.
-          if [ -z "${INTERNAL_KEY:-}" ]; then
-            echo "::warning::no INTERNAL_KEY secret set: per-source provenance is UNGUARDED. Add the secret to enable this check."
-            exit 0
-          fi
-          body='{"tokenAddress":"0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82","chain":"bsc","format":"json"}'
-          for i in 1 2; do
-            curl -sS --max-time 60 -X POST "$BASE/dossier" \
-              -H "x-internal-key: $INTERNAL_KEY" -H 'content-type: application/json' \
-              -d "$body" -o "run$i.json"
-          done
-          python3 - run1.json run2.json <<'PY'
+          # Read from the free sample rather than a paid call. The paid route needs
+          # the payment-bypass key, and that key can also mint signed reports and
+          # stamp job ids onto other buyers' recovery records, so a monitor is the
+          # last thing that should hold it. This asks the same question of a
+          # surface that needs no credential at all.
+          curl -sS --max-time 60 "$BASE/dossier/sample?format=json" -o sample.json
+          python3 - sample.json <<'PY'
           import json, re, sys
-          a, b = (json.load(open(p)) for p in sys.argv[1:3])
+          d = json.load(open(sys.argv[1]))
 
           def fail(msg):
               print(f"::error::{msg}")
               sys.exit(1)
 
-          # Every source that answered must carry the hash of what it answered, or
-          # the attestation covers a claim nobody can re-check. The RPC hash was
-          # computed correctly, unit tested, and then never copied into the payload,
-          # so the signed report said sha256=MISSING while the suite stayed green.
-          #
-          # Both responses, not just the first: a guard that reads one of two
-          # fetched documents is half a guard.
-          for label, resp in (("run 1", a), ("run 2", b)):
-              obs = resp["attestation"]["payload"].get("observations") or []
-              if not obs:
-                  fail(f"{label}: the attestation carries no observations at all")
-              for o in obs:
-                  if o.get("status") == "ok" and not o.get("responseSha256"):
-                      fail(f"{label}: source '{o.get('source')}' answered but attested no response hash")
-              if resp["security"].get("lpLockedPct") == 0:
-                  fail(f"{label}: lpLockedPct is 0; an unestablished lock must be absent, not zero")
-              for field in ("payloadSha256", "signature", "publicKey"):
-                  if not resp["attestation"].get(field):
-                      fail(f"{label}: the report went out without a {field}")
+          att = d.get("attestation") or {}
+          for field in ("payloadSha256", "signature", "publicKey"):
+              if not att.get(field):
+                  fail(f"the report went out without a {field}")
 
-          # The shape must not move even though the numbers may. A field that
-          # silently stops being emitted is exactly how the RPC hash went missing,
-          # and values alone cannot show it.
-          def paths(x, p=""):
-              if isinstance(x, dict):
-                  for k, v in x.items():
-                      yield from paths(v, f"{p}.{k}")
-              elif isinstance(x, list):
-                  for i, v in enumerate(x):
-                      yield from paths(v, f"{p}[*]")
-              else:
-                  yield p
-          # Only meaningful when both calls saw the same upstreams. GoPlus rate
-          # limits, and a source that answers once and not the next second changes
-          # the shape legitimately: fewer fields, no hash for the source that did
-          # not answer. Comparing across that would turn an upstream hiccup into a
-          # red monitor, which is how a check stops being believed.
-          def statuses(resp):
-              return {o["source"]: o.get("status")
-                      for o in resp["attestation"]["payload"].get("observations") or []}
-          sa, sb = statuses(a), statuses(b)
-          if sa != sb:
-              print(f"::warning::upstream coverage changed between the two calls "
-                    f"({sa} then {sb}); skipping the shape comparison")
-          else:
-              pa, pb = set(paths(a)), set(paths(b))
-              if pa != pb:
-                  for p in sorted(pa ^ pb)[:6]:
-                      fail(f"the response shape is unstable: {p} appears in only one of two identical requests")
+          obs = (att.get("payload") or {}).get("observations") or []
+          if not obs:
+              fail("the attestation carries no observations at all")
+          for o in obs:
+              if o.get("status") == "ok" and not re.fullmatch(r"[0-9a-f]{64}", o.get("responseSha256") or ""):
+                  fail(f"source '{o.get('source')}' answered but attested no response hash")
+          if not any(o["source"].endswith("rpc") and o.get("responseSha256") for o in obs):
+              fail("the chain read attests no bytes of its own; this is the exact field that went missing once")
 
-          names = ", ".join(f"{o['source']}={(o.get('responseSha256') or '')[:8]}…"
-                            for o in a["attestation"]["payload"]["observations"])
-          print(f"  evidence ok: {len(set(paths(a)))} fields | {names}")
+          if (d.get("security") or {}).get("lpLockedPct") == 0:
+              fail("lpLockedPct is 0; an unestablished lock must be absent, not zero")
+
+          names = ", ".join(f"{o['source']}={(o.get('responseSha256') or '')[:8]}…" for o in obs)
+          print(f"  evidence ok: {len(obs)} sources attested | {names}")
           PY
 
       - name: TLS certificate is not about to expire

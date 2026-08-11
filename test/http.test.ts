@@ -56,6 +56,46 @@ describe("the free surface", () => {
     assert.equal(sample.includes("/f/"), false, "and no webfonts");
   });
 
+  // The sample is the only surface that shows a complete signed report without
+  // payment. Offering it as JSON is what lets an outside monitor check the
+  // attestation, including the per-source hashes the HTML never prints, without
+  // being handed the payment-bypass key.
+  test("the sample is available to machines, and is the same document", async () => {
+    const r = await get("/dossier/sample?format=json");
+    assert.equal(r.status, 200);
+    assert.match(r.headers.get("content-type") ?? "", /application\/json/);
+    const d = (await r.json()) as any;
+
+    const html = await (await get("/dossier/sample")).text();
+    assert.ok(
+      html.includes(d.attestation.payloadSha256),
+      "the JSON and the HTML must be the same report, not two builds of it",
+    );
+    assert.ok(html.includes(d.attestation.payload.reportId));
+  });
+
+  test("the machine-readable sample carries the evidence the HTML omits", async () => {
+    const d = (await (await get("/dossier/sample?format=json")).json()) as any;
+    const obs = d.attestation.payload.observations;
+    assert.ok(obs.length > 0, "a report with no observations attests to nothing");
+    for (const o of obs) {
+      if (o.status === "ok") {
+        assert.match(
+          o.responseSha256 ?? "",
+          /^[0-9a-f]{64}$/,
+          `source ${o.source} answered but attested no response hash`,
+        );
+      }
+    }
+    // The defect this guards: the hash was computed, unit tested, and then never
+    // copied into the payload, so the signed report read sha256=MISSING while
+    // every test stayed green.
+    assert.ok(
+      obs.some((o: any) => o.source.endsWith("rpc") && o.responseSha256),
+      "the chain read must attest its own bytes, not just the HTTP sources",
+    );
+  });
+
   test("/info describes every route a machine needs", async () => {
     const j = (await (await get("/info")).json()) as { endpoints: { path: string }[] };
     const paths = j.endpoints.map((e) => e.path);

@@ -320,9 +320,31 @@ const SAMPLE = {
   tokenAddress: "0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82",
 } as const; // CAKE
 const SAMPLE_TTL_MS = 6 * 60 * 60 * 1000;
-let sampleCache: { html: string; at: number } | undefined;
+let sampleCache: { html: string; json: string; at: number } | undefined;
 
+/**
+ * The sample, free, in either rendering: `?format=json` for machines.
+ *
+ * Both renderings come out of one build and are cached together, so the JSON is
+ * not merely a similar report to the HTML, it is the same document: same report
+ * id, same payload hash, same signature.
+ *
+ * The JSON exists so the attestation can be checked without a credential. It
+ * carries the per-source response hashes, which the HTML does not print, and
+ * those are what prove a report is re-checkable against the bytes its sources
+ * actually returned. The alternative was giving CI the payment-bypass key, which
+ * would have handed a monitoring job the authority to mint signed reports and to
+ * stamp job ids onto other buyers' recovery records. A free surface that answers
+ * the same question needs no secret to leak.
+ */
 app.get("/dossier/sample", async (c) => {
+  const wantJson = c.req.query("format") === "json";
+  const send = () =>
+    wantJson
+      ? c.body(sampleCache!.json, 200, {
+          "content-type": "application/json; charset=UTF-8",
+        })
+      : c.html(sampleCache!.html);
   if (!sampleCache || Date.now() - sampleCache.at > SAMPLE_TTL_MS) {
     try {
       const dossier = await buildDossier({ ...SAMPLE, format: "html" });
@@ -333,10 +355,11 @@ app.get("/dossier/sample", async (c) => {
             // cannot leave the sample advertising a figure we no longer charge.
             `Sample report (free). Every paid call to POST /dossier returns this document for the token you choose. ${config.dossierPrice.replace(/^\$/, "")} USD₮0 per call over x402 on X Layer · OKX.AI agent #7012.`,
         }),
+        json: JSON.stringify(dossier),
         at: Date.now(),
       };
     } catch (e) {
-      if (sampleCache) return c.html(sampleCache.html); // serve stale over failing
+      if (sampleCache) return send(); // serve stale over failing
       if (e instanceof SourcesUnavailableError) {
         c.header("Retry-After", "30");
         return c.json(
@@ -347,7 +370,7 @@ app.get("/dossier/sample", async (c) => {
       throw e;
     }
   }
-  return c.html(sampleCache.html);
+  return send();
 });
 
 // Coverage preflight, free: what the paid report will and will not contain for
