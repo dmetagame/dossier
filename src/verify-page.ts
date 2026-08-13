@@ -59,8 +59,8 @@ function sameIssuer(actual, expected) {
 
 function instant(value) {
   if (typeof value !== "string") return null;
-  // SCRIPT is String.raw: `[0-9]` keeps the emitted regex unambiguous instead
-  // of accidentally asking the browser to match the literal characters `\\d`.
+  // SCRIPT is String.raw: the digit class keeps the emitted regex unambiguous
+  // instead of accidentally asking the browser to match a literal backslash.
   const m = value.match(/^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})(?:\.([0-9]{1,3}))?(Z|[+-][0-9]{2}:[0-9]{2})$/);
   if (!m) return null;
   const parsed = Date.parse(value);
