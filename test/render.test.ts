@@ -121,6 +121,34 @@ describe("wording holds the product's claims", () => {
     assert.ok(html.includes("Deepest pool"));
   });
 
+  test("a valid signature is not confused with a trusted Dossier issuer", () => {
+    const d = base({
+      attestation: {
+        payload: {
+          schemaVersion: "dossier-attestation/2",
+          methodologyVersion: "engine/2026-08-03",
+          reportId: "report-1",
+          requestSha256: "a".repeat(64),
+          reportSha256: "b".repeat(64),
+          token: { chain: "bsc", address: "0xabc" },
+          result: { verdict: "caution", coverage: 1, maxSizeUsd: 1, checks: {} },
+          observations: [],
+          issuedAt: "2026-08-13T00:00:00.000Z",
+          issuer: { agentId: 7012, name: "Dossier" },
+        },
+        payloadSha256: "c".repeat(64),
+        signature: "signature",
+        publicKey: "public-key",
+        algorithm: "ed25519",
+        verifyWith: "https://dossier.rouma.xyz/verify",
+      },
+    } as never);
+    const html = renderDossierHtml(d);
+    assert.ok(html.includes("holder of that key signed"));
+    assert.ok(html.includes("code-reviewed trust registry"));
+    assert.equal(html.includes("valid signature proves who issued"), false);
+  });
+
   test("a multi-chain address is disclosed, not silently chosen", () => {
     const html = renderDossierHtml(
       base({ chainResolution: { source: "auto-detected", ambiguous: true, alternatives: ["ethereum"] } }),

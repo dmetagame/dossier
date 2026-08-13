@@ -266,7 +266,8 @@ export async function buildDossier(req: DossierRequest): Promise<Dossier> {
 
   // Everything the signature commits to: which sources were read, when, and
   // what they returned, plus the findings themselves. Anyone can recompute the
-  // hash from the payload and check it against the published key.
+  // hash, verify the signature, and separately check issuer trust against the
+  // code-reviewed signing-key registry.
   const observations: SourceObservation[] = [
     {
       source: "goplus",

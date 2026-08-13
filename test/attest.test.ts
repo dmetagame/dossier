@@ -14,6 +14,7 @@ import {
   SCHEMA_VERSION,
   type AttestationPayload,
 } from "../src/attest";
+import { TRUSTED_SIGNING_KEYS } from "../src/trusted-signing-keys";
 
 const SEED_A = "11".repeat(32);
 const SEED_B = "22".repeat(32);
@@ -87,6 +88,29 @@ describe("signing", () => {
     assert.equal(publicKey()?.publicKey, att.publicKey);
     assert.equal(verifyAttestation(att, publicKey()!.publicKey).verified, true);
   });
+
+  test("issuer trust is never returned without a signature valid for the registered production key", () => {
+    const productionKey = TRUSTED_SIGNING_KEYS.find((entry) => entry.status === "active")!;
+    const att = attest(
+      payload({
+        schemaVersion: productionKey.schemaVersions[0]!,
+        methodologyVersion: productionKey.methodologyVersions[0]!,
+        issuedAt: productionKey.validFrom,
+      }),
+      "u",
+    );
+    // Re-signing requires the private seed, which must never enter the test
+    // suite. Exercise the trust half with the real public anchor and retain the
+    // separate signing tests above for the cryptographic half.
+    const trustOnly = {
+      ...att,
+      publicKey: productionKey.publicKey,
+    };
+    assert.notEqual(att.publicKey, productionKey.publicKey, "the public test seed is not production material");
+    const r = verifyAttestation(trustOnly);
+    assert.equal(r.verified, false, "a test signature cannot validate as the production key");
+    assert.equal(r.trusted, false, "trust is never returned without a valid signature");
+  });
 });
 
 describe("tampering is caught", () => {
@@ -143,6 +167,25 @@ describe("tampering is caught", () => {
       false,
       "but not against the key the reader pinned",
     );
+  });
+
+  test("an arbitrary self-signed report is cryptographically valid but is not a trusted Dossier report", () => {
+    process.env.SIGNING_KEY = SEED_B;
+    resetKeys();
+    const selfSigned = attest(
+      payload({
+        schemaVersion: SCHEMA_VERSION,
+        methodologyVersion: "engine/2026-08-03",
+        issuedAt: "2026-08-13T12:00:00.000Z",
+      }),
+      "u",
+    );
+
+    const result = verifyAttestation(selfSigned);
+    assert.equal(result.verified, true, "verified remains the cryptographic result");
+    assert.equal(result.signatureValid, true);
+    assert.equal(result.trusted, false);
+    assert.match(result.trustReason, /not (?:in|present|registered|trusted)/i);
   });
 });
 

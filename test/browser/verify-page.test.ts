@@ -96,6 +96,11 @@ describe("checking a report", () => {
     const rows = await verify(report);
     assert.equal(find(rows, "hashes to the value").verdict, "PASS");
     assert.equal(find(rows, "signature is valid").verdict, "PASS");
+    assert.equal(
+      find(rows, "not registered in the code-reviewed Dossier trust registry").verdict,
+      "FAIL",
+      "the public test key proves cryptographic validity without impersonating Dossier",
+    );
     assert.equal(find(rows, "whole report matches").verdict, "PASS");
 
     // The page's own script running at all is the proof that the CSP hash
@@ -158,6 +163,17 @@ describe("checking a report", () => {
     await page.click("#go");
     await page.waitForSelector("#out .r");
     assert.equal(find(await readResults(), "signature is valid").verdict, "PASS");
+    assert.equal(
+      find(await readResults(), "not registered in the code-reviewed Dossier trust registry").verdict,
+      "FAIL",
+    );
+  });
+
+  test("the browser uses its compiled trust registry, not the mutable published-key response", async () => {
+    const html = await (await app.request("/verify")).text();
+    assert.ok(html.includes("oOO5AkCXfVbXwSr3j6FBlKUv6mAwCKE9SE7f_zUS6e4"));
+    assert.ok(html.includes("code-reviewed Dossier trust registry"));
+    assert.equal(/fetch\([^)]*dossier-signing-keys/.test(html), false);
   });
 });
 

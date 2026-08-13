@@ -10,6 +10,7 @@ import {
   preflightProductionConfig,
   signingPublicKeyFromSeed,
 } from "../src/config";
+import type { TrustedSigningKey } from "../src/trusted-signing-keys";
 
 const archives: string[] = [];
 after(() => archives.forEach((dir) => rmSync(dir, { recursive: true, force: true })));
@@ -41,13 +42,34 @@ function production(overrides: Record<string, string | undefined> = {}) {
   };
 }
 
+function registryFor(env: Record<string, string | undefined>): readonly TrustedSigningKey[] {
+  const publicKey = signingPublicKeyFromSeed(env.SIGNING_KEY ?? "") ?? "";
+  return [
+    {
+      id: "test-signing-key",
+      algorithm: "ed25519",
+      publicKey,
+      issuer: { agentId: 7012, name: "Dossier" },
+      schemaVersions: ["dossier-attestation/2"],
+      methodologyVersions: ["engine/2026-08-03"],
+      validFrom: "2026-08-13T00:00:00.000Z",
+      status: "active",
+    },
+  ];
+}
+
+function preflight(env: Record<string, string | undefined>) {
+  return preflightProductionConfig(env, registryFor(env));
+}
+
 function fields(result: ReturnType<typeof preflightProductionConfig>): string[] {
   return result.ok ? [] : result.issues.map((issue) => issue.field);
 }
 
 describe("standalone production configuration", () => {
   test("accepts a complete, independent paid configuration", () => {
-    const result = preflightProductionConfig(production());
+    const env = production();
+    const result = preflight(env);
     assert.equal(result.ok, true);
     if (result.ok) assert.equal(result.mode, "production");
   });
@@ -94,8 +116,7 @@ describe("standalone production configuration", () => {
   });
 
   test("missing and malformed paid settings fail together before startup", () => {
-    const result = preflightProductionConfig(
-      production({
+    const env = production({
         PUBLIC_ORIGIN: "http://dossier.example/path",
         X402_NETWORK: "eip155:1",
         DOSSIER_PRICE: "free",
@@ -107,8 +128,8 @@ describe("standalone production configuration", () => {
         DOSSIER_SIGNING_PUBLIC_KEY: "not-a-key",
         RATE_LIMIT_MODE: "observe",
         PORT: "70000",
-      }),
-    );
+      });
+    const result = preflight(env);
     assert.equal(result.ok, false);
     for (const field of [
       "PUBLIC_ORIGIN",
@@ -128,13 +149,12 @@ describe("standalone production configuration", () => {
   });
 
   test("production uses the exact registered origin, price and payout wallet", () => {
-    const result = preflightProductionConfig(
-      production({
+    const env = production({
         PUBLIC_ORIGIN: "https://other.example",
         DOSSIER_PRICE: "$0.02",
         PAY_TO: "0x61c25782af63381056cd1c3c59c0544628d67697",
-      }),
-    );
+      });
+    const result = preflight(env);
     assert.equal(result.ok, false);
     for (const field of ["PUBLIC_ORIGIN", "DOSSIER_PRICE", "PAY_TO"]) {
       assert.ok(fields(result).includes(field), `${field} must be pinned`);
@@ -142,9 +162,8 @@ describe("standalone production configuration", () => {
   });
 
   test("legacy archive MAC material is rejected by the running-service preflight", () => {
-    const result = preflightProductionConfig(
-      production({ ARCHIVE_LEGACY_MAC_KEY: "legacy-only-key" }),
-    );
+    const env = production({ ARCHIVE_LEGACY_MAC_KEY: "legacy-only-key" });
+    const result = preflight(env);
     assert.equal(result.ok, false);
     assert.ok(fields(result).includes("ARCHIVE_LEGACY_MAC_KEY"));
   });
@@ -162,9 +181,8 @@ describe("standalone production configuration", () => {
   });
 
   test("explicit empty control values fail instead of silently defaulting", () => {
-    const result = preflightProductionConfig(
-      production({ PORT: "", RATE_LIMIT_MODE: "", DEV_SKIP_PAYMENT: "" }),
-    );
+    const env = production({ PORT: "", RATE_LIMIT_MODE: "", DEV_SKIP_PAYMENT: "" });
+    const result = preflight(env);
     assert.equal(result.ok, false);
     for (const field of ["PORT", "RATE_LIMIT_MODE", "DEV_SKIP_PAYMENT"]) {
       assert.ok(fields(result).includes(field), `${field} must reject an explicit empty value`);
@@ -172,45 +190,55 @@ describe("standalone production configuration", () => {
   });
 
   test("production requires explicit port and enforced rate limiting", () => {
-    const result = preflightProductionConfig(
-      production({ PORT: undefined, RATE_LIMIT_MODE: undefined }),
-    );
+    const env = production({ PORT: undefined, RATE_LIMIT_MODE: undefined });
+    const result = preflight(env);
     assert.equal(result.ok, false);
     assert.ok(fields(result).includes("PORT"));
     assert.ok(fields(result).includes("RATE_LIMIT_MODE"));
   });
 
   test("production listener must match the reverse proxy target", () => {
-    const result = preflightProductionConfig(production({ PORT: "8787" }));
+    const env = production({ PORT: "8787" });
+    const result = preflight(env);
     assert.equal(result.ok, false);
     assert.ok(fields(result).includes("PORT"));
   });
 
   test("the configured public signing key must correspond to the private seed", () => {
     const other = signingPublicKeyFromSeed("22".repeat(32));
-    const result = preflightProductionConfig(
-      production({ DOSSIER_SIGNING_PUBLIC_KEY: other! }),
-    );
+    const env = production({ DOSSIER_SIGNING_PUBLIC_KEY: other! });
+    const result = preflight(env);
     assert.equal(result.ok, false);
     assert.ok(fields(result).includes("DOSSIER_SIGNING_PUBLIC_KEY"));
   });
 
+  test("production rejects a self-consistent signing key that is not an active trust entry", () => {
+    const env = production();
+    const result = preflightProductionConfig(env, []);
+    assert.equal(result.ok, false);
+    assert.ok(fields(result).includes("SIGNING_KEY"));
+    if (!result.ok) {
+      assert.match(
+        result.issues.find((issue) => issue.field === "SIGNING_KEY")?.message ?? "",
+        /active entry|trust registry/i,
+      );
+    }
+  });
+
   test("archive, replay, internal and signing secrets must be independent", () => {
-    const result = preflightProductionConfig(
-      production({
+    const env = production({
         PAYMENT_REPLAY_KEY: "a".repeat(32),
         INTERNAL_KEY: "a".repeat(32),
-      }),
-    );
+      });
+    const result = preflight(env);
     assert.equal(result.ok, false);
     // The first use is accepted; each later reuse is named explicitly.
     assert.ok(fields(result).includes("PAYMENT_REPLAY_KEY"));
   });
 
   test("the archive path must already exist and be an absolute directory", () => {
-    const result = preflightProductionConfig(
-      production({ ARCHIVE_DIR: "relative/archive" }),
-    );
+    const env = production({ ARCHIVE_DIR: "relative/archive" });
+    const result = preflight(env);
     assert.equal(result.ok, false);
     assert.ok(fields(result).includes("ARCHIVE_DIR"));
   });
@@ -221,7 +249,8 @@ describe("standalone production configuration", () => {
     archives.push(target, parent);
     const link = join(parent, "archive");
     symlinkSync(target, link);
-    const result = preflightProductionConfig(production({ ARCHIVE_DIR: link }));
+    const env = production({ ARCHIVE_DIR: link });
+    const result = preflight(env);
     assert.equal(result.ok, false);
     assert.ok(fields(result).includes("ARCHIVE_DIR"));
   });
@@ -230,7 +259,8 @@ describe("standalone production configuration", () => {
     const archive = mkdtempSync(join(tmpdir(), "dossier-config-mode-"));
     archives.push(archive);
     chmodSync(archive, 0o755);
-    const result = preflightProductionConfig(production({ ARCHIVE_DIR: archive }));
+    const env = production({ ARCHIVE_DIR: archive });
+    const result = preflight(env);
     assert.equal(result.ok, false);
     assert.ok(fields(result).includes("ARCHIVE_DIR"));
   });
@@ -239,9 +269,10 @@ describe("standalone production configuration", () => {
     const apiSecret = "must-never-appear-in-the-error";
     assert.throws(
       () =>
-        assertProductionConfig(
-          production({ OKX_API_KEY: apiSecret, OKX_SECRET_KEY: "" }),
-        ),
+        (() => {
+          const env = production({ OKX_API_KEY: apiSecret, OKX_SECRET_KEY: "" });
+          return assertProductionConfig(env, registryFor(env));
+        })(),
       (error: unknown) => {
         const message = String((error as Error).message);
         assert.match(message, /OKX_SECRET_KEY/);

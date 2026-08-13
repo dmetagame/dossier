@@ -10,10 +10,14 @@
 // would rather not trust a web page either.
 
 import { FONT_FACE_CSS, FONTS } from "./fonts";
+import { TRUSTED_SIGNING_KEYS } from "./trusted-signing-keys";
+
+const REGISTRY_JSON = JSON.stringify(TRUSTED_SIGNING_KEYS).replace(/</g, "\\u003c");
 
 const SCRIPT = String.raw`
 const $ = (s) => document.querySelector(s);
 const out = $("#out");
+const trustedSigningKeys = ${REGISTRY_JSON};
 
 function canonical(v) {
   if (v === null || typeof v !== "object") return JSON.stringify(v) ?? "null";
@@ -49,6 +53,84 @@ function line(ok, text) {
   return d;
 }
 
+function sameIssuer(actual, expected) {
+  return Boolean(actual && actual.agentId === expected.agentId && actual.name === expected.name);
+}
+
+function instant(value) {
+  if (typeof value !== "string") return null;
+  const m = value.match(/^(\\d{4})-(\\d{2})-(\\d{2})T(\\d{2}):(\\d{2}):(\\d{2})(?:\\.(\\d{1,3}))?(Z|[+-]\\d{2}:\\d{2})$/);
+  if (!m) return null;
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) return null;
+  const offset = m[8] === "Z" ? 0
+    : (m[8][0] === "-" ? -1 : 1) * (Number(m[8].slice(1, 3)) * 60 + Number(m[8].slice(4, 6)));
+  const local = new Date(parsed + offset * 60000);
+  if (local.getUTCFullYear() !== Number(m[1]) || local.getUTCMonth() + 1 !== Number(m[2])
+    || local.getUTCDate() !== Number(m[3]) || local.getUTCHours() !== Number(m[4])
+    || local.getUTCMinutes() !== Number(m[5]) || local.getUTCSeconds() !== Number(m[6])) return null;
+  return parsed;
+}
+
+function issuerTrust(att, key) {
+  if (!key) return { trusted: false, reason: "No signing key was available for issuer trust." };
+  const entry = trustedSigningKeys.find((candidate) => candidate.publicKey === key);
+  if (!entry) return {
+    trusted: false,
+    reason: "The signature is self-consistent, but its key is not registered in the code-reviewed Dossier trust registry."
+  };
+  const p = att.payload || {};
+  if (att.algorithm !== entry.algorithm) return {
+    trusted: false,
+    reason: "The signed algorithm does not match this signing key's registry entry."
+  };
+  if (!sameIssuer(p.issuer, entry.issuer)) return {
+    trusted: false,
+    reason: "The signing key is registered, but the signed issuer identity does not match its registry entry."
+  };
+  if (!entry.schemaVersions.includes(p.schemaVersion)) return {
+    trusted: false,
+    reason: "The signing key is not trusted for this attestation schema version."
+  };
+  if (!entry.methodologyVersions.includes(p.methodologyVersion)) return {
+    trusted: false,
+    reason: "The signing key is not trusted for this methodology version."
+  };
+  const issuedAt = instant(p.issuedAt);
+  const validFrom = instant(entry.validFrom);
+  const validUntil = entry.validUntil ? instant(entry.validUntil) : null;
+  if (issuedAt === null) return {
+    trusted: false,
+    reason: "The signed issue time is missing or invalid, so issuer trust cannot be established."
+  };
+  if (issuedAt > Date.now() + 5 * 60 * 1000) return {
+    trusted: false,
+    reason: "The report's signed issue time is too far in the future for issuer trust."
+  };
+  if (validFrom === null || (entry.validUntil && validUntil === null)) return {
+    trusted: false,
+    reason: "The compiled Dossier trust entry has an invalid validity window."
+  };
+  if (entry.status === "retired" && !entry.validUntil) return {
+    trusted: false,
+    reason: "The retired signing-key entry has no explicit end to its trusted validity window."
+  };
+  if (issuedAt < validFrom) return {
+    trusted: false,
+    reason: "The report claims to predate this signing key's trusted validity window."
+  };
+  if (validUntil !== null && issuedAt >= validUntil) return {
+    trusted: false,
+    reason: "The report was issued after this signing key's trusted validity window ended."
+  };
+  return {
+    trusted: true,
+    reason: entry.status === "retired"
+      ? "Trusted Dossier issuer: retired key valid for this historical issue time."
+      : "Trusted Dossier issuer: key, issuer, versions, and issue time match the code-reviewed registry."
+  };
+}
+
 async function run() {
   out.replaceChildren();
   let att;
@@ -82,6 +164,7 @@ async function run() {
 
   const pinned = $("#key").value.trim();
   const key = pinned || att.publicKey;
+  let sigOk = false;
   if (!att.signature) {
     frag.appendChild(line(null, "This report carries no signature, only a hash."));
   } else if (!key) {
@@ -92,7 +175,7 @@ async function run() {
     try {
       const pub = await crypto.subtle.importKey("jwk",
         { kty: "OKP", crv: "Ed25519", x: key }, { name: "Ed25519" }, false, ["verify"]);
-      const sigOk = await crypto.subtle.verify("Ed25519", pub, b64u(att.signature), canonicalBytes);
+      sigOk = await crypto.subtle.verify("Ed25519", pub, b64u(att.signature), canonicalBytes);
       frag.appendChild(line(sigOk, sigOk
         ? "The signature is valid for this payload and key."
         : "The signature is NOT valid for this payload and key."));
@@ -100,6 +183,10 @@ async function run() {
       frag.appendChild(line(null, "This browser could not run Ed25519 (" + e.message + "). Use the Node snippet below."));
     }
   }
+  const trust = issuerTrust(att, key);
+  frag.appendChild(line(sigOk ? trust.trusted : false, sigOk
+    ? trust.reason
+    : "Issuer trust was not established because cryptographic verification did not succeed."));
 
   // What the signature does and does not commit to. The payload covers the
   // verdict, the coverage figure, the size cap, each check's status, the token
@@ -108,7 +195,7 @@ async function run() {
   // name and supply. Saying "this report is verified" when only the payload was
   // checked would overstate it, so the distinction is on the page.
   // Does the document match the hash the signature commits to? This is what
-  // turns "the payload is authentic" into "this report is unaltered".
+  // turns "the payload signature is valid" into "this report is unaltered".
   if (reportBody && att.payload && att.payload.reportSha256) {
     const bodyDigest = hex(await crypto.subtle.digest(
       "SHA-256", new TextEncoder().encode(canonical(reportBody))));
@@ -190,7 +277,7 @@ export function renderVerifyHtml(origin: string): string {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Verify a Dossier report</title>
-<meta name="description" content="Check that a Dossier due-diligence report is authentic and unaltered. Runs entirely in your browser, no wallet, no account.">
+<meta name="description" content="Check a Dossier report's signature, issuer trust, and document integrity. Runs entirely in your browser, no wallet, no account.">
 <link rel="preload" href="${FONTS.serif!.path}" as="font" type="font/woff2" crossorigin>
 <style>
 ${FONT_FACE_CSS}
@@ -245,14 +332,15 @@ p{color:var(--muted)}
 
 <h1>Verify a report</h1>
 <p class="lede">Paste a report's attestation, or the whole JSON report. The check runs entirely in
-this page: the payload is re-hashed and the signature verified against a public key you can fetch
-yourself. Nothing is uploaded, and you need no wallet and no account. A verification can also be
-linked to directly, with the attestation carried in the URL.</p>
+this page: the payload is re-hashed, the signature is checked, and the signing key is compared with
+the code-reviewed Dossier trust registry compiled into this page. Nothing is uploaded, and you need
+no wallet and no account. A verification can also be linked to directly, with the attestation
+carried in the URL.</p>
 
 <label for="input">Attestation or JSON report</label>
 <textarea id="input" spellcheck="false" placeholder='{"payload":{…},"payloadSha256":"…","signature":"…"}'></textarea>
 
-<label for="key">Public key to check against <span style="text-transform:none;letter-spacing:0">(optional; pin it yourself rather than trusting the one inside the report)</span></label>
+<label for="key">Public key to check against <span style="text-transform:none;letter-spacing:0">(optional cryptographic pin; issuer trust is decided by the compiled registry)</span></label>
 <div class="row">
   <input id="key" spellcheck="false" placeholder="base64url Ed25519 public key">
   <button class="s" id="fetchkey" type="button">Fetch published key</button>
@@ -278,15 +366,19 @@ const key = createPublicKey({ key: { kty:"OKP", crv:"Ed25519", x: PINNED_KEY }, 
 
 console.log("hash  ", createHash("sha256").update(bytes).digest("hex") === att.payloadSha256);
 console.log("signed", verify(null, bytes, key, Buffer.from(att.signature, "base64url")));</pre>
-  <p>The published key lives at
-  <a href="/.well-known/dossier-signing-key.json">/.well-known/dossier-signing-key.json</a>.</p>
+  <p>The current published key lives at
+  <a href="/.well-known/dossier-signing-key.json">/.well-known/dossier-signing-key.json</a>.
+  Historical and active trust entries live at
+  <a href="/.well-known/dossier-signing-keys.json">/.well-known/dossier-signing-keys.json</a>,
+  and the verifier uses the copy compiled into its code rather than trusting a mutable fetch.</p>
 </section>
 
 <section>
   <h2>What a valid signature does and does not prove</h2>
-  <p><strong>It proves</strong> the report was issued by the holder of that key, that its findings
-  and its inputs have not been altered since, and which sources were read, when, and what they
-  returned, down to the hash of each response.</p>
+  <p><strong>A valid signature proves</strong> that the holder of that key signed the report and
+  that the signed bytes have not been altered. <strong>A trusted issuer result additionally
+  proves</strong> the key, issuer identity, schema, methodology, and issue time match Dossier's
+  code-reviewed registry. A self-signed report can pass the first check and fail the second.</p>
   <p><strong>It does not prove</strong> that the sources told the truth, nor that a payment was
   made. The settlement transaction is deliberately outside the signature: a report is produced
   before its payment settles, which is what guarantees a failed request cannot charge you, so no

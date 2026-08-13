@@ -17,6 +17,11 @@
 // server-asserted field, and the verifier reports it as such.
 
 import { createHash, createPrivateKey, createPublicKey, sign, verify } from "node:crypto";
+import {
+  evaluateSigningKeyTrust,
+  type SigningKeyTrustResult,
+  type TrustedSigningKey,
+} from "./trusted-signing-keys";
 
 /** Bump when the meaning of any signed field changes. */
 export const SCHEMA_VERSION = "dossier-attestation/2";
@@ -173,10 +178,43 @@ export function attest(payload: AttestationPayload, verifyUrl: string): Attestat
 export interface VerifyResult {
   hashMatches: boolean;
   signatureValid: boolean | null;
-  /** True only when the payload hashes correctly AND the signature checks out. */
+  /**
+   * Backward-compatible cryptographic result. This proves self-consistency, not
+   * that the key belongs to Dossier; callers making an authenticity decision
+   * must additionally require `trusted`.
+   */
   verified: boolean;
   reason: string;
+  /** True only when a valid signature also matches the code-reviewed registry. */
+  trusted: boolean;
+  trustReason: string;
+  trustEntry?: TrustedSigningKey;
   recomputedSha256: string;
+}
+
+function trustFor(att: Attestation, publicKey?: string): SigningKeyTrustResult {
+  return evaluateSigningKeyTrust({
+    publicKey,
+    algorithm: att.algorithm,
+    issuer: att.payload?.issuer,
+    schemaVersion: att.payload?.schemaVersion,
+    methodologyVersion: att.payload?.methodologyVersion,
+    issuedAt: att.payload?.issuedAt,
+  });
+}
+
+function withTrust(
+  base: Omit<VerifyResult, "trusted" | "trustReason" | "trustEntry">,
+  trust: SigningKeyTrustResult,
+): VerifyResult {
+  return {
+    ...base,
+    trusted: base.verified && trust.trusted,
+    trustReason: base.verified
+      ? trust.reason
+      : "Issuer trust was not established because cryptographic verification did not succeed.",
+    ...(base.verified && trust.entry ? { trustEntry: trust.entry } : {}),
+  };
 }
 
 /**
@@ -190,18 +228,19 @@ export interface VerifyResult {
 export function verifyAttestation(att: Attestation, expectedPublicKey?: string): VerifyResult {
   const recomputedSha256 = sha256(canonicalJson(att.payload));
   const hashMatches = recomputedSha256 === att.payloadSha256;
+  const key = expectedPublicKey ?? att.publicKey;
+  const trust = trustFor(att, key);
   if (!hashMatches) {
-    return {
+    return withTrust({
       hashMatches,
       signatureValid: null,
       verified: false,
       reason: "The payload does not hash to the value in the attestation: it has been altered.",
       recomputedSha256,
-    };
+    }, trust);
   }
-  const key = expectedPublicKey ?? att.publicKey;
   if (!att.signature || !key) {
-    return {
+    return withTrust({
       hashMatches,
       signatureValid: null,
       verified: false,
@@ -209,16 +248,16 @@ export function verifyAttestation(att: Attestation, expectedPublicKey?: string):
         ? "No public key supplied to check the signature against."
         : "This report is unsigned; its hash matches but nothing attests to who issued it.",
       recomputedSha256,
-    };
+    }, trust);
   }
   if (expectedPublicKey && att.publicKey && expectedPublicKey !== att.publicKey) {
-    return {
+    return withTrust({
       hashMatches,
       signatureValid: false,
       verified: false,
       reason: "The report was signed by a different key than the one you pinned.",
       recomputedSha256,
-    };
+    }, trust);
   }
   let signatureValid = false;
   try {
@@ -235,7 +274,7 @@ export function verifyAttestation(att: Attestation, expectedPublicKey?: string):
   } catch {
     signatureValid = false;
   }
-  return {
+  return withTrust({
     hashMatches,
     signatureValid,
     verified: signatureValid,
@@ -243,5 +282,5 @@ export function verifyAttestation(att: Attestation, expectedPublicKey?: string):
       ? "The payload hashes correctly and the signature is valid for this key."
       : "The signature is not valid for this payload and key.",
     recomputedSha256,
-  };
+  }, trust);
 }

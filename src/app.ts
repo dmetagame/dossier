@@ -32,6 +32,10 @@ import { renderSiteHtml } from "./site";
 import { fontByPath } from "./fonts";
 import { AVATAR_B64 } from "./generated/avatar-data";
 import { publicKey, SCHEMA_VERSION, METHODOLOGY_VERSION } from "./attest";
+import {
+  activeTrustedSigningKey,
+  TRUSTED_SIGNING_KEYS,
+} from "./trusted-signing-keys";
 import { renderVerifyHtml } from "./verify-page";
 import * as ratelimit from "./ratelimit";
 import * as reqlog from "./reqlog";
@@ -345,6 +349,12 @@ app.get("/avatar.png", (c) => {
 // from a place the reader chooses, rather than the one bundled in the report.
 app.get("/.well-known/dossier-signing-key.json", (c) => {
   const k = publicKey();
+  const trustedEntry = k
+    ? activeTrustedSigningKey(k.publicKey, TRUSTED_SIGNING_KEYS, {
+        schemaVersion: SCHEMA_VERSION,
+        methodologyVersion: METHODOLOGY_VERSION,
+      })
+    : undefined;
   c.header("Cache-Control", "public, max-age=300");
   return c.json({
     issuer: { agentId: 7012, name: "Dossier" },
@@ -355,6 +365,24 @@ app.get("/.well-known/dossier-signing-key.json", (c) => {
       publicKey: null,
       note: "This instance is not signing reports.",
     }),
+    trusted: Boolean(trustedEntry),
+    ...(trustedEntry ? { trustEntry: trustedEntry } : {}),
+    registry: `${config.publicOrigin}/.well-known/dossier-signing-keys.json`,
+    verifier: `${config.publicOrigin}/verify`,
+  });
+});
+
+// Append-only public view of the same registry compiled into /verify. Fetching
+// this endpoint is useful for inspection and automation, but its response is
+// not itself a trust root: independent verifiers should pin a reviewed release
+// or bundle the registry, as the browser page does.
+app.get("/.well-known/dossier-signing-keys.json", (c) => {
+  c.header("Cache-Control", "public, max-age=300");
+  return c.json({
+    issuer: { agentId: 7012, name: "Dossier" },
+    registryVersion: 1,
+    trustModel: "code-reviewed-append-only",
+    keys: TRUSTED_SIGNING_KEYS,
     verifier: `${config.publicOrigin}/verify`,
   });
 });

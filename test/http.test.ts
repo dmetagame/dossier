@@ -603,7 +603,24 @@ describe("independent verification", () => {
     const j = (await r.json()) as Record<string, any>;
     assert.equal(j.issuer.agentId, 7012);
     assert.ok(j.schemaVersion);
+    assert.equal(typeof j.trusted, "boolean");
+    assert.ok(j.registry.endsWith("/.well-known/dossier-signing-keys.json"));
     assert.ok(j.verifier.endsWith("/verify"));
+  });
+
+  test("the append-only signing-key trust registry is published for inspection", async () => {
+    const r = await get("/.well-known/dossier-signing-keys.json");
+    assert.equal(r.status, 200);
+    const j = (await r.json()) as Record<string, any>;
+    assert.equal(j.registryVersion, 1);
+    assert.equal(j.trustModel, "code-reviewed-append-only");
+    assert.ok(
+      j.keys.some(
+        (entry: Record<string, any>) =>
+          entry.publicKey === "oOO5AkCXfVbXwSr3j6FBlKUv6mAwCKE9SE7f_zUS6e4" &&
+          entry.status === "active",
+      ),
+    );
   });
 
   test("the verifier page runs the check in the browser, not on our server", async () => {
@@ -612,6 +629,7 @@ describe("independent verification", () => {
     const html = await r.text();
     assert.ok(html.includes("crypto.subtle.verify"), "verification must happen client-side");
     assert.ok(html.includes("Ed25519"));
+    assert.ok(html.includes("code-reviewed Dossier trust registry"));
     // If it posted the attestation back to us, it would be our claim again.
     assert.equal(/fetch\(["'][^"']*verify["']/.test(html), false);
   });

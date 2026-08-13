@@ -224,9 +224,10 @@ export function renderDossierHtml(d: Dossier, opts: RenderOpts = {}): string {
         <div><span class="lab">Public key</span><span class="addr">${esc(d.attestation.publicKey)}</span></div>
       </div>
       <div class="chainnote">Check this report yourself at ${esc(d.attestation.verifyWith)}. It runs in
-        your browser, against a key you can fetch separately. A valid signature proves who issued the
-        report, and that the whole of it is unaltered: every figure, flag and explanation
-        printed above is covered, not just the verdict. It does not
+        your browser. A valid signature proves that the holder of that key signed the report and
+        that the whole of it is unaltered: every figure, flag and explanation printed above is
+        covered, not just the verdict. The verifier separately checks whether the key, issuer,
+        versions and issue time match Dossier's code-reviewed trust registry. It does not
         prove the sources were
         right, and it does not cover the payment transaction, which does not exist when the report is
         made.</div>`

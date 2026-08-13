@@ -7,6 +7,12 @@ import {
   statSync,
 } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
+import { METHODOLOGY_VERSION, SCHEMA_VERSION } from "./attest";
+import {
+  activeTrustedSigningKey,
+  TRUSTED_SIGNING_KEYS,
+  type TrustedSigningKey,
+} from "./trusted-signing-keys";
 
 // The standalone server is the paid production service. Its configuration is
 // validated before it takes the archive lease or opens a listener (server.ts).
@@ -181,6 +187,7 @@ export function signingPublicKeyFromSeed(seed: string): string | null {
  */
 export function preflightProductionConfig(
   env: Environment = process.env,
+  registry: readonly TrustedSigningKey[] = TRUSTED_SIGNING_KEYS,
 ): ProductionConfigPreflight {
   const issues: ConfigurationIssue[] = [];
   const nodeEnvironment = value(env, "NODE_ENV");
@@ -343,6 +350,19 @@ export function preflightProductionConfig(
       message: "does not correspond to SIGNING_KEY",
     });
   }
+  if (
+    derivedPublicKey &&
+    !activeTrustedSigningKey(derivedPublicKey, registry, {
+      schemaVersion: SCHEMA_VERSION,
+      methodologyVersion: METHODOLOGY_VERSION,
+    })
+  ) {
+    issues.push({
+      field: "SIGNING_KEY",
+      message:
+        "derives a public key that is not currently active for this schema and methodology in the code-reviewed Dossier trust registry",
+    });
+  }
 
   // The legacy MAC is an offline migration input, never a runtime credential.
   // Refuse it here rather than accidentally allowing a future archive read path
@@ -426,8 +446,9 @@ export function preflightProductionConfig(
 
 export function assertProductionConfig(
   env: Environment = process.env,
+  registry: readonly TrustedSigningKey[] = TRUSTED_SIGNING_KEYS,
 ): ProductionConfigPreflight & { ok: true } {
-  const result = preflightProductionConfig(env);
+  const result = preflightProductionConfig(env, registry);
   if (!result.ok) {
     const detail = result.issues
       .map((issue) => `${issue.field}: ${issue.message}`)

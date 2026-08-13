@@ -191,7 +191,19 @@ accepted only with `NODE_ENV=development` or `NODE_ENV=test`. The standalone
 entry refuses to listen unless production has the complete paid configuration
 in `.env.example`, strict authenticated storage, independent secrets, and a
 signing key matching `DOSSIER_SIGNING_PUBLIC_KEY` (set on the host, never
-committed).
+committed). The derived public key must also be an active entry in
+[`src/trusted-signing-keys.ts`](src/trusted-signing-keys.ts); a matching seed and
+environment pin alone are not an issuer trust anchor.
+
+Report verification deliberately exposes two results. `verified` means the
+payload hash and Ed25519 signature are cryptographically self-consistent;
+`trusted` additionally means the key, signed issuer identity, schema,
+methodology, and issue time match the append-only code-reviewed registry.
+Retired keys stay in that registry with an exclusive `validUntil`, so reports
+from their historical window remain verifiable after rotation. The current
+registry is also inspectable at `/.well-known/dossier-signing-keys.json`, while
+the browser verifier uses the copy compiled into its release rather than
+turning that mutable endpoint into its own trust root.
 
 Before restarting a host, run `pnpm config:check` as the service user with the
 same protected environment file. It is read-only: it validates the exact
