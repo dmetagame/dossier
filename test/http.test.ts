@@ -115,6 +115,23 @@ describe("the free surface", () => {
       ["disabled", "not_configured", "connecting", "ready", "failing"].includes(String(j.paymentLayer)),
       `unexpected paymentLayer: ${j.paymentLayer}`,
     );
+    assert.equal(typeof j.archiveReady, "boolean");
+    assert.ok(["unsigned", "migration", "strict", "invalid"].includes(String(j.archiveMode)));
+    assert.equal(typeof j.archiveUnsignedRecords, "number");
+    assert.equal(typeof j.paymentReplayReady, "boolean");
+    assert.equal(typeof j.paidReady, "boolean");
+    assert.equal(
+      j.paidReady,
+      (j.devSkipPayment === true || j.paymentLayer === "ready") &&
+        (j.devSkipPayment === true ||
+          (j.archiveReady === true &&
+            j.archiveMode === "strict" &&
+            j.archiveUnsignedRecords === 0 &&
+            j.archiveMacRequired === true &&
+            j.archiveMacConfigured === true)) &&
+        j.paymentReplayReady === true,
+      "paidReady combines the live payment and durable recovery boundaries",
+    );
     assert.ok("signing" in j);
   });
 
@@ -330,9 +347,10 @@ describe("recovery", () => {
     // the payment middleware would.
     const newest = archive.byHash(archive.paramsHash({ tokenAddress: ADDR.cake, chain: "bsc" }));
     assert.ok(newest, "the delivery should have been archived");
-    archive.linkTransaction(newest!.id, "0xRECOVERTEST");
+    const transaction = `0x${"cd".repeat(32)}`;
+    archive.linkTransaction(newest!.id, transaction);
     const j = (await (
-      await get("/dossier/recovery?transaction=0xRECOVERTEST")
+      await get(`/dossier/recovery?transaction=${transaction}`)
     ).json()) as Record<string, any>;
     assert.equal(j.status, "recovered");
     assert.equal(j.deliverable, delivered, "byte-identical to what was delivered");
@@ -340,7 +358,14 @@ describe("recovery", () => {
   });
 
   test("a transaction we never issued returns 404", async () => {
-    assert.equal((await get("/dossier/recovery?transaction=0xdead")).status, 404);
+    const missing = `0x${"de".repeat(32)}`;
+    assert.equal((await get(`/dossier/recovery?transaction=${missing}`)).status, 404);
+  });
+
+  test("a placeholder is not accepted as an on-chain recovery proof", async () => {
+    const r = await get("/dossier/recovery?transaction=0xRECOVERTEST");
+    assert.equal(r.status, 400);
+    assert.equal((await r.json()).error, "invalid_payment_transaction");
   });
 
   // Job ids are handed out by the public marketplace: `task-search` returns
@@ -369,7 +394,13 @@ describe("recovery", () => {
   // buyer, so it stays sufficient alone. Regressing this would strand everyone
   // who paid outside a task.
   test("a transaction alone still recovers, needing no second factor", async () => {
-    const r = await get("/dossier/recovery?transaction=0xRECOVERTEST");
+    const tx = `0x${"ab".repeat(32)}`;
+    const delivered = await post("/dossier", { tokenAddress: ADDR.cake, chain: "bsc" });
+    assert.equal(delivered.status, 200);
+    const newest = archive.byHash(archive.paramsHash({ tokenAddress: ADDR.cake, chain: "bsc" }));
+    assert.ok(newest);
+    assert.equal(archive.linkTransaction(newest!.id, tx).kind, "linked");
+    const r = await get(`/dossier/recovery?transaction=${tx}`);
     assert.equal(r.status, 200);
     const j = (await r.json()) as Record<string, unknown>;
     assert.equal(j.status, "recovered");
@@ -389,7 +420,11 @@ describe("recovery", () => {
     const rec = archive.byHash(archive.paramsHash(body));
     assert.ok(rec, "the delivery should have been archived");
     const jobId = `0x${"c".repeat(64)}`;
-    archive.save({ ...rec!, jobId });
+    assert.equal(
+      archive.save({ ...rec!, id: archive.newId(), jobId }),
+      true,
+      "a legacy task recovery fixture is a distinct delivery, not an overwrite",
+    );
 
     const r = await post("/dossier/recovery", { jobId, originalBody: body });
     assert.equal(r.status, 200, "a buyer holding their own request must not be locked out");
@@ -539,8 +574,9 @@ describe("recovery", () => {
   });
 
   test("mismatched parameters alongside a valid proof are refused", async () => {
+    const tx = `0x${"cd".repeat(32)}`;
     const r = await post("/dossier/recovery", {
-      transaction: "0xRECOVERTEST",
+      transaction: tx,
       originalBody: { tokenAddress: ADDR.uni },
     });
     assert.equal(r.status, 403);
@@ -676,7 +712,11 @@ describe("recovery accepts the request in the form the buyer has it", () => {
     const rec = archive.byHash(archive.paramsHash(sent));
     assert.ok(rec, "the delivery should be archived under the request as sent");
     const jobId = `0x${"d".repeat(64)}`;
-    archive.save({ ...rec!, jobId });
+    assert.equal(
+      archive.save({ ...rec!, id: archive.newId(), jobId }),
+      true,
+      "the task delivery must be staged under its own immutable id",
+    );
 
     // What the buyer actually holds: the chain the report and our own
     // instructions name.
@@ -691,7 +731,12 @@ describe("recovery accepts the request in the form the buyer has it", () => {
     const sent = { tokenAddress: ADDR.cake };
     const rec = archive.byHash(archive.paramsHash(sent));
     const jobId = `0x${"e".repeat(64)}`;
-    archive.save({ ...rec!, jobId });
+    assert.ok(rec);
+    assert.equal(
+      archive.save({ ...rec!, id: archive.newId(), jobId }),
+      true,
+      "the task delivery must not overwrite the earlier x402 fixture",
+    );
     const r = await post("/dossier/recovery", { jobId, originalBody: sent });
     assert.equal(r.status, 200);
   });
@@ -699,7 +744,11 @@ describe("recovery accepts the request in the form the buyer has it", () => {
   test("a different token is still refused", async () => {
     const rec = archive.byHash(archive.paramsHash({ tokenAddress: ADDR.cake }));
     const jobId = `0x${"f".repeat(64)}`;
-    archive.save({ ...rec!, jobId });
+    assert.ok(rec);
+    assert.equal(
+      archive.save({ ...rec!, id: archive.newId(), jobId }),
+      true,
+    );
     const r = await post("/dossier/recovery", {
       jobId,
       originalBody: { tokenAddress: ADDR.uni },

@@ -7,14 +7,15 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "start": "tsx src/server.ts",
+    "archive:migrate": "node --import tsx scripts/archive-migrate.ts",
     "typecheck": "tsc --noEmit",
     "build:api": "pnpm build:client && esbuild src/vercel.ts --bundle --platform=node --target=node20 --format=esm --outfile=api/index.js",
-    "deploy:prod": "pnpm build:api && npx vercel@latest deploy --prod --yes",
+    "deploy:vercel-demo": "pnpm build:api && npx vercel@latest deploy --yes",
     "build:client": "node scripts/build-assets.mjs && node scripts/build-client.mjs",
     "build:server": "pnpm build:client && esbuild src/server.ts --bundle --platform=node --target=node20 --format=esm --outfile=dist/server.mjs",
     "build:assets": "node scripts/build-assets.mjs",
-    "test": "DEV_SKIP_PAYMENT=1 INTERNAL_KEY=test-internal-key tsx --test test/*.test.ts",
-    "test:browser": "INTERNAL_KEY=test-internal-key tsx --test test/browser/*.test.ts"
+    "test": "DEV_SKIP_PAYMENT=1 INTERNAL_KEY=test-internal-key node --import tsx --test test/*.test.ts",
+    "test:browser": "INTERNAL_KEY=test-internal-key node --import tsx --test test/browser/*.test.ts"
   },
   "dependencies": {
     "@hono/node-server": "^2.0.12",

@@ -3,9 +3,14 @@ import { timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { paymentMiddleware, x402ResourceServer } from "@okxweb3/x402-hono";
+import {
+  paymentMiddlewareFromHTTPServer,
+  x402HTTPResourceServer,
+  x402ResourceServer,
+} from "@okxweb3/x402-hono";
 import { ExactEvmScheme } from "@okxweb3/x402-evm/exact/server";
 import { OKXFacilitatorClient } from "@okxweb3/x402-core";
+import { decodePaymentSignatureHeader } from "@okxweb3/x402-core/http";
 import { config, paymentConfigured } from "./config";
 import { SourcesUnavailableError } from "./engine/engine";
 import {
@@ -37,8 +42,14 @@ import { dossierInputSchema, httpInputSchema } from "./x402-contract";
 import {
   trackFacilitator,
   watchFacilitator,
+  currentFacilitatorState,
   type Unreached,
 } from "./x402-facilitator";
+import {
+  normalizeTimeoutRecoveryReceipt,
+  validateSettlementReceipt,
+} from "./settlement-receipt";
+import * as paymentReplay from "./payment-replay";
 
 // Constant-time comparison for the payment-bypass secret. A `===` on a secret
 // is a habit worth not having, even where a remote timing attack over TLS is
@@ -52,6 +63,44 @@ function internalKeyMatches(given: string | undefined): boolean {
 }
 
 export const app = new Hono();
+
+const PAYMENT_HEADER_MAX_BYTES = 16 * 1024;
+
+function paymentHeader(c: {
+  req: { header(name: string): string | undefined };
+}): string | undefined {
+  return c.req.header("payment-signature") || c.req.header("x-payment");
+}
+
+function durablePaymentRetry(header: string | undefined): boolean {
+  if (
+    !header ||
+    Buffer.byteLength(header, "utf8") > PAYMENT_HEADER_MAX_BYTES
+  ) {
+    return false;
+  }
+  try {
+    const payload = decodePaymentSignatureHeader(header);
+    const fingerprint = paymentReplay.fingerprintPayment(
+      payload,
+      payload.accepted,
+    );
+    if (!fingerprint) return false;
+    const existing = paymentReplay.existing(fingerprint);
+    if (existing.kind !== "found") return false;
+    const requirement = existing.state.requirements;
+    const accepted = payload.accepted;
+    return (
+      accepted.scheme === requirement.scheme &&
+      accepted.network === requirement.network &&
+      accepted.amount === requirement.amount &&
+      accepted.asset.toLowerCase() === requirement.asset.toLowerCase() &&
+      accepted.payTo.toLowerCase() === requirement.payTo.toLowerCase()
+    );
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Whether the payment layer actually works, as opposed to being configured.
@@ -78,16 +127,20 @@ app.use(async (c, next) => {
   } finally {
     try {
       if (!reqlog.isNoise(c.req.path)) {
-        const paid = Boolean(c.req.header("payment-signature"));
+        const paid = Boolean(
+          c.req.header("payment-signature") || c.req.header("x-payment"),
+        );
         const line: reqlog.ReqLine = {
           m: c.req.method,
           p: c.req.path,
           s: c.res?.status ?? 0,
           ms: Date.now() - started,
           ...(paid ? { paid: true } : {}),
-          // Present only when the SDK actually settled. Its absence next to
-          // `paid:true` is the proof that a failed call charged nobody.
-          ...reqlog.decodeReceipt(c.res?.headers?.get("payment-response")),
+          // Present only when this process validated and durably linked a final
+          // settlement. Absence means "not confirmed here", not necessarily
+          // "nothing moved" — an outage or malformed facilitator response can
+          // leave the on-chain outcome unknown.
+          ...reqlog.linkedReceipt((c as any).get("confirmedSettlement")),
           ...((c as any).get("logToken")
             ? { token: (c as any).get("logToken") }
             : {}),
@@ -124,10 +177,13 @@ app.use(async (c, next) => {
   );
 });
 
-// Rate limiting for the free surface only. Registered before the routes but
-// after nothing else, so it cannot affect the paid paths: those are excluded by
-// name below. Runs in observe mode until real traffic confirms the budgets.
+// Rate limiting for unauthenticated work. A payment header is not proof of
+// payment: a new or malformed authorization remains attacker-controlled and
+// consumes the public `/dossier` budget. Only an exact authorization that maps
+// to already-authenticated durable replay state can bypass the limiter and
+// reach reconciliation after its buyer may have paid.
 const FREE_LIMITED = new Set([
+  "/dossier",
   "/verify",
   "/dossier/recovery",
   "/dossier/sample",
@@ -139,6 +195,27 @@ const FREE_LIMITED = new Set([
 app.use(async (c, next) => {
   const path = c.req.path;
   if (!FREE_LIMITED.has(path)) return next();
+  const authorization = path === "/dossier" ? paymentHeader(c) : undefined;
+  if (
+    authorization &&
+    Buffer.byteLength(authorization, "utf8") > PAYMENT_HEADER_MAX_BYTES
+  ) {
+    return c.json(
+      {
+        error: "payment_header_too_large",
+        message: "Payment authorization headers must not exceed 16 KiB.",
+      },
+      431,
+    );
+  }
+  if (
+    path === "/dossier" &&
+    ((config.internalKey &&
+      internalKeyMatches(c.req.header("x-internal-key"))) ||
+      durablePaymentRetry(authorization))
+  ) {
+    return next();
+  }
   const key = ratelimit.clientKey(c.req.raw.headers);
   const d = ratelimit.check(path, key);
   if (!d.limited) return next();
@@ -454,6 +531,16 @@ app.on(["GET", "POST"], "/dossier/recovery", async (c) => {
     );
   }
 
+  if (tx && !/^0x[0-9a-fA-F]{64}$/.test(tx)) {
+    return c.json(
+      {
+        error: "invalid_payment_transaction",
+        message: "paymentTransaction must be the 32-byte on-chain transaction hash from PAYMENT-RESPONSE.",
+      },
+      400,
+    );
+  }
+
   const hash =
     givenHash || (originalBody ? archive.paramsHash(originalBody) : "");
 
@@ -641,8 +728,61 @@ function fulfilment(): {
   }
 }
 
-app.get("/health", (c) =>
-  c.json({
+const DURABILITY_INTEGRITY_TTL_MS = 30_000;
+let durabilityHealthCache:
+  | {
+      at: number;
+      version: string;
+      archive: archive.ArchiveReadiness;
+      replayReady: boolean;
+    }
+  | undefined;
+
+function durabilityHealth(): {
+  archive: archive.ArchiveReadiness;
+  replayReady: boolean;
+} {
+  const version = archive.readinessVersion();
+  if (
+    !version ||
+    !durabilityHealthCache ||
+    durabilityHealthCache.version !== version ||
+    Date.now() - durabilityHealthCache.at >= DURABILITY_INTEGRITY_TTL_MS
+  ) {
+    const archiveState = archive.readiness();
+    const replayReady = paymentReplay.ready();
+    // Both full scans create and remove durability probes in the archive
+    // directory. Capture the version afterwards so those probes do not make
+    // the next request invalidate the cache it just populated.
+    const scannedVersion = archive.readinessVersion();
+    durabilityHealthCache = {
+      at: Date.now(),
+      version: scannedVersion ?? `unavailable-${Date.now()}`,
+      archive: archiveState,
+      replayReady,
+    };
+  }
+  return durabilityHealthCache;
+}
+
+function archiveReadyForExternalPayments(state: archive.ArchiveReadiness): boolean {
+  return (
+    state.ready &&
+    state.mode === "strict" &&
+    state.unsignedRecords === 0 &&
+    Boolean(process.env.ARCHIVE_MAC_KEY) &&
+    process.env.ARCHIVE_MAC_REQUIRED === "1"
+  );
+}
+
+app.get("/health", (c) => {
+  const durability = durabilityHealth();
+  const archiveState = durability.archive;
+  const replayReady = durability.replayReady;
+  return c.json({
+    // Process health only. `paidReady` is the externally useful signal for the
+    // paid service; the free sample, verifier, preflight, and recovery remain
+    // available when the facilitator or durable payment state is down.
     ok: true,
     ...(() => {
       const f = fulfilment();
@@ -655,13 +795,24 @@ app.get("/health", (c) =>
     devSkipPayment: config.devSkipPayment,
     paymentConfigured: paymentConfigured(),
     paymentLayer: paymentLayer,
+    paidReady:
+      (config.devSkipPayment || paymentLayer === "ready") &&
+      (config.devSkipPayment ? archiveState.ready : archiveReadyForExternalPayments(archiveState)) &&
+      replayReady,
+    archiveReady: archiveState.ready,
+    archiveMode: archiveState.mode,
+    archiveUnsignedRecords: archiveState.unsignedRecords,
+    ...(archiveState.reason ? { archiveReadinessReason: archiveState.reason } : {}),
+    archiveMacRequired: process.env.ARCHIVE_MAC_REQUIRED === "1",
+    archiveMacConfigured: Boolean(process.env.ARCHIVE_MAC_KEY),
+    paymentReplayReady: replayReady,
     signing: publicKey() ? "enabled" : "unsigned",
     // Published so a monitor can assert it. The limiter ran in whichever mode an
     // env var happened to select, and nothing anywhere said which, so a deploy
     // that lost the variable throttled nobody and looked identical from outside.
     rateLimit: ratelimit.mode(),
-  }),
-);
+  });
+});
 
 /**
  * What we say when the facilitator gave us no answer.
@@ -695,6 +846,9 @@ const unreachable = (unreached: Unreached): Response => {
           "sent carries a nonce, so it cannot be settled twice.",
         charged: "unknown",
         retryAfterSeconds: 60,
+        ...(unreached.replay?.reconciliationId
+          ? { reconciliationId: unreached.replay.reconciliationId }
+          : {}),
       }
     : {
         error: "payment_layer_unreachable",
@@ -717,6 +871,258 @@ const unreachable = (unreached: Unreached): Response => {
   });
 };
 
+function replayPendingResponse(unreached: Unreached): Response {
+  return new Response(
+    JSON.stringify({
+      error: "payment_reconciliation_pending",
+      charged: "unknown",
+      message:
+        "This exact signed payment already has an unresolved settlement attempt. No new verification, report generation, or settlement was attempted. Retry the same signed payment after reconciliation; do not authorize a new one.",
+      retryAfterSeconds: 60,
+      ...(unreached.replay?.reconciliationId
+        ? { reconciliationId: unreached.replay.reconciliationId }
+        : {}),
+    }),
+    {
+      status: 503,
+      headers: { "content-type": "application/json", "retry-after": "60" },
+    },
+  );
+}
+
+function settlementStateIsDefiniteFailure(unreached: Unreached): boolean {
+  const answer = unreached.settlementAnswer;
+  if (!answer || answer.success !== false) return false;
+  // A timeout or pending response may have moved funds even when the direct
+  // settle call did not return a final answer; retain the staged report for
+  // reconciliation regardless of the response's success flag.
+  return answer.status !== "timeout" && answer.status !== "pending";
+}
+
+/**
+ * Preserve the bounded identity from a direct non-final settle answer for
+ * later reconciliation, but only after checking it against the requirement
+ * and verified payer that this request already established. A timeout or
+ * pending answer is still not confirmation; this merely prevents the only
+ * transaction lead from being discarded when the SDK's status poll is
+ * unavailable or contradictory.
+ */
+function candidateSettlementEvidence(
+  unreached: Unreached | undefined,
+): paymentReplay.ReplaySettlement | undefined {
+  const direct = unreached?.settlementAnswer;
+  const expected = unreached?.settlementExpected;
+  if (
+    !(
+      (direct?.success === false && direct.status === "timeout") ||
+      direct?.status === "pending"
+    ) ||
+    !direct.transaction ||
+    !/^0x[0-9a-fA-F]{64}$/.test(direct.transaction) ||
+    !direct.network ||
+    expected?.scheme !== "exact" ||
+    !expected.network ||
+    !expected.amount ||
+    direct.network !== expected.network ||
+    (direct.amount !== undefined && direct.amount !== expected.amount) ||
+    (direct.payer !== undefined &&
+      (!/^0x[0-9a-fA-F]{40}$/.test(direct.payer) ||
+        (unreached?.verifiedPayer !== undefined &&
+          direct.payer.toLowerCase() !== unreached.verifiedPayer.toLowerCase())))
+  ) {
+    return undefined;
+  }
+  return {
+    transaction: direct.transaction,
+    network: direct.network,
+    // Exact settlement fixes the amount in the signed requirement even when
+    // the facilitator omits it from its response.
+    amount: expected.amount,
+    ...(unreached?.verifiedPayer !== undefined
+      ? { payer: unreached.verifiedPayer }
+      : direct.payer !== undefined
+        ? { payer: direct.payer }
+        : {}),
+  };
+}
+
+function replayRequestIdentity(params: Record<string, unknown>): paymentReplay.ReplayRequestIdentity {
+  const parsed = DossierRequest.safeParse(params);
+  if (!parsed.success || parsed.data.format === "message") {
+    return {
+      paramsSha256: archive.paramsHash(params),
+      contentType: "invalid",
+    };
+  }
+  return {
+    paramsSha256: archive.paramsHash(parsed.data as Record<string, unknown>),
+    contentType: parsed.data.format === "json" ? "application/json" : "text/html",
+  };
+}
+
+function replaySameDelivery(
+  request: paymentReplay.ReplayRequestIdentity,
+  owner: archive.ArchiveRecord,
+): boolean {
+  if (request.contentType === "invalid" || request.contentType !== owner.contentType) {
+    return false;
+  }
+  return [owner.paramsSha256, owner.resolvedParamsSha256]
+    .filter((value): value is string => Boolean(value))
+    .includes(request.paramsSha256);
+}
+
+function replayReceiptHeader(settlement: paymentReplay.ReplaySettlement): string {
+  return Buffer.from(
+    JSON.stringify({ success: true, status: "success", ...settlement }),
+    "utf8",
+  ).toString("base64");
+}
+
+function replaySettlementFromArchive(
+  settlement: archive.ArchiveRecord["settlement"] | undefined,
+): paymentReplay.ReplaySettlement | null {
+  if (
+    settlement?.status !== "confirmed" ||
+    !/^0x[0-9a-fA-F]{64}$/.test(settlement.transaction) ||
+    !settlement.network
+  ) {
+    return null;
+  }
+  return {
+    transaction: settlement.transaction,
+    network: settlement.network,
+    ...(settlement.amount !== undefined ? { amount: settlement.amount } : {}),
+    ...(settlement.payer !== undefined ? { payer: settlement.payer } : {}),
+  };
+}
+
+function replaySettlementMatches(
+  left: paymentReplay.ReplaySettlement,
+  right: paymentReplay.ReplaySettlement,
+): boolean {
+  return (
+    left.transaction.toLowerCase() === right.transaction.toLowerCase() &&
+    left.network === right.network &&
+    (left.amount ?? undefined) === (right.amount ?? undefined) &&
+    (left.payer?.toLowerCase() ?? undefined) ===
+      (right.payer?.toLowerCase() ?? undefined)
+  );
+}
+
+/**
+ * A timeout receipt only gives us a transaction lead.  On an exact retry we
+ * may promote that lead to a settlement proof after a fresh facilitator status
+ * query, but only when the query independently confirms every identity field
+ * that matters to this purchase.  In particular, a status response for a
+ * different transaction or network must never turn a candidate into an owner.
+ */
+function confirmedSettlementFromStatus(
+  candidate: paymentReplay.ReplaySettlement,
+  answer: unknown,
+  requirements: paymentReplay.ReplayRequirements,
+): paymentReplay.ReplaySettlement | null {
+  if (!answer || typeof answer !== "object" || Array.isArray(answer)) return null;
+  const status = answer as Record<string, unknown>;
+  if (status.success !== true || status.status !== "success") return null;
+  if (
+    typeof status.transaction !== "string" ||
+    !/^0x[0-9a-fA-F]{64}$/.test(status.transaction) ||
+    status.transaction.toLowerCase() !== candidate.transaction.toLowerCase()
+  ) {
+    return null;
+  }
+  if (
+    typeof status.network !== "string" ||
+    status.network !== requirements.network ||
+    status.network !== candidate.network
+  ) {
+    return null;
+  }
+  if (candidate.amount !== requirements.amount) return null;
+  if (
+    status.amount !== undefined &&
+    (typeof status.amount !== "string" || status.amount !== candidate.amount)
+  ) {
+    return null;
+  }
+  if (status.payer !== undefined) {
+    if (
+      typeof status.payer !== "string" ||
+      !/^0x[0-9a-fA-F]{40}$/.test(status.payer) ||
+      (candidate.payer !== undefined &&
+        status.payer.toLowerCase() !== candidate.payer.toLowerCase())
+    ) {
+      return null;
+    }
+  }
+  return {
+    transaction: candidate.transaction,
+    network: candidate.network,
+    amount: candidate.amount,
+    ...(candidate.payer !== undefined ? { payer: candidate.payer } : {}),
+  };
+}
+
+function replayResponse(
+  request: paymentReplay.ReplayRequestIdentity,
+  state: {
+    reportId?: string;
+    settlement?: paymentReplay.ReplaySettlement;
+  },
+): Response {
+  const owner = state.reportId ? archive.byId(state.reportId) : null;
+  if (!owner || !state.settlement) {
+    return new Response(
+      JSON.stringify({
+        error: "payment_replay_unavailable",
+        charged: "confirmed",
+        message:
+          "This payment was already settled, but its recovery owner could not be read. No new payment was attempted; contact support with the payment transaction.",
+        paymentTransaction: state.settlement?.transaction,
+      }),
+      {
+        status: 503,
+        headers: {
+          "content-type": "application/json",
+          "retry-after": "60",
+          ...(state.settlement
+            ? { "payment-response": replayReceiptHeader(state.settlement) }
+            : {}),
+        },
+      },
+    );
+  }
+
+  const paymentResponse = replayReceiptHeader(state.settlement);
+  if (replaySameDelivery(request, owner)) {
+    return new Response(owner.deliverable, {
+      status: 200,
+      headers: {
+        "content-type": owner.contentType,
+        "payment-response": paymentResponse,
+      },
+    });
+  }
+
+  return new Response(
+    JSON.stringify({
+      error: "payment_already_used",
+      chargedAgain: false,
+      paymentTransaction: state.settlement.transaction,
+      message:
+        "That payment already identifies a different report. Recover the original report with its payment transaction; no second settlement was attempted.",
+    }),
+    {
+      status: 409,
+      headers: {
+        "content-type": "application/json",
+        "payment-response": paymentResponse,
+      },
+    },
+  );
+}
+
 // x402 payment gate on POST /dossier. The OKX SDK builds the marketplace-validated
 // 402 challenge (correct PAYMENT-REQUIRED header, USD₮0 on eip155:196) and, via the
 // facilitator, verifies the buyer's signed payment and settles after a successful
@@ -727,7 +1133,35 @@ const unreachable = (unreached: Unreached): Response => {
 // than silently serve for free while the marketplace listing says paid.
 if (config.devSkipPayment) paymentLayer = "disabled";
 
-if (!config.devSkipPayment && !paymentConfigured()) {
+const startupArchive = archive.readiness();
+const startupReplayReady = paymentReplay.ready();
+const archiveConfiguredForPayments =
+  archiveReadyForExternalPayments(startupArchive) && startupReplayReady;
+
+if (!config.devSkipPayment) {
+  if (startupArchive.mode === "migration" && startupArchive.unsignedRecords > 0) {
+    console.warn(
+      `[archive] migration mode: ${startupArchive.unsignedRecords} unsigned record(s) remain; ` +
+        "strict authentication is not ready",
+    );
+  } else if (startupArchive.mode === "unsigned") {
+    console.warn(
+      "[archive] authentication is disabled; configure ARCHIVE_MAC_KEY before enabling strict mode",
+    );
+  }
+  if (!archiveConfiguredForPayments) {
+    console.error(
+      "[payment] paid routes disabled: " +
+        (startupArchive.ready
+          ? startupReplayReady
+            ? "durable payment state unavailable"
+            : "payment replay storage unavailable"
+          : `archive unavailable (${startupArchive.reason ?? startupArchive.mode})`),
+    );
+  }
+}
+
+if (!config.devSkipPayment && (!paymentConfigured() || !archiveConfiguredForPayments)) {
   paymentLayer = "not_configured";
   const dark = async (c: any, next: any) => {
     // Our own fulfilment daemon is exempt, and has to be. A task-mode buyer
@@ -743,16 +1177,17 @@ if (!config.devSkipPayment && !paymentConfigured()) {
     if (c.get("internal")) return next();
     return c.json(
       {
-        error: "payment layer not configured — service temporarily unavailable",
+        error: !paymentConfigured()
+          ? "payment layer not configured — service temporarily unavailable"
+          : "recovery and payment replay state not ready — service temporarily unavailable",
       },
       503,
     );
   };
-  app.post("/dossier", dark);
-  app.get("/dossier", dark);
+  app.on(["GET", "POST", "HEAD"], "/dossier", dark);
 }
 
-if (!config.devSkipPayment && paymentConfigured()) {
+if (!config.devSkipPayment && paymentConfigured() && archiveConfiguredForPayments) {
   // Wrapped so a call that comes back with no answer at all is remembered, and
   // the SDK's 402 can be corrected to a 503 further down. See
   // src/x402-facilitator.ts for why that distinction is worth the wrapper.
@@ -769,6 +1204,263 @@ if (!config.devSkipPayment && paymentConfigured()) {
     config.network,
     new ExactEvmScheme(),
   );
+  resourceServer.onBeforeVerify(async ({ paymentPayload, requirements }) => {
+    const state = currentFacilitatorState();
+    if (!state) {
+      return {
+        abort: true,
+        reason: "payment_replay_state_unavailable",
+        message: "Payment replay protection is unavailable.",
+      };
+    }
+    const params = state.replay?.request;
+    const fingerprint = paymentReplay.fingerprintPayment(paymentPayload, requirements);
+    if (!params || !fingerprint) {
+      state.replay = { decision: { kind: "unavailable" } };
+      return {
+        abort: true,
+        reason: "payment_replay_state_unavailable",
+        message: "Payment replay protection is unavailable.",
+      };
+    }
+    const requirementIdentity: paymentReplay.ReplayRequirements = {
+      scheme: requirements.scheme,
+      network: requirements.network,
+      amount: requirements.amount,
+      asset: requirements.asset,
+      payTo: requirements.payTo,
+    };
+    const existing = paymentReplay.existing(fingerprint);
+    const reconciliationId = paymentReplay.reconciliationId(fingerprint) ?? undefined;
+    if (existing.kind === "found") {
+      const pending = existing.state;
+      const decision = pending.status === "confirmed"
+        ? { kind: "confirmed" as const, state: pending }
+        : { kind: "in_flight" as const, state: pending };
+      if (decision.kind === "in_flight") {
+      let repairSettlement =
+        pending.settlementEvidence === "confirmed" ? pending.settlement : undefined;
+      if (
+        pending.status === "unknown" &&
+        pending.settlementEvidence === "candidate" &&
+        pending.settlement &&
+        pending.reportId
+      ) {
+        try {
+          const statusAnswer = await facilitator.getSettleStatus(
+            pending.settlement.transaction,
+          );
+          const statusConfirmed = confirmedSettlementFromStatus(
+            pending.settlement,
+            statusAnswer,
+            requirementIdentity,
+          );
+          repairSettlement =
+            statusConfirmed &&
+            paymentReplay.confirmSettlementCandidate(
+              fingerprint,
+              pending.attemptToken,
+              statusConfirmed,
+            )
+              ? statusConfirmed
+              : undefined;
+        } catch {
+          // The original attempt remains unknown. The hook below aborts this
+          // exact retry before verify/settle, so a status outage cannot charge
+          // the authorization again or promote its candidate transaction.
+          repairSettlement = undefined;
+        }
+      }
+      const candidateUnconfirmed =
+        pending.settlementEvidence === "candidate" &&
+        !repairSettlement;
+      let owner =
+        !candidateUnconfirmed && pending.reportId
+          ? archive.settledById(pending.reportId)
+          : null;
+      let confirmed = replaySettlementFromArchive(owner?.settlement);
+      let conflictCandidateId: string | undefined;
+      if (
+        repairSettlement &&
+        (!confirmed || !replaySettlementMatches(confirmed, repairSettlement))
+      ) {
+        // Confirmed replay evidence fixes the exact transaction identity. Never
+        // let a different transaction that later appeared on the staged record
+        // overwrite it during recovery. Prefer the archive's authoritative
+        // owner of that exact transaction, and adopt it only when every field
+        // still matches.
+        const authoritative = archive.byTransaction(repairSettlement.transaction);
+        const authoritativeSettlement = replaySettlementFromArchive(
+          authoritative?.settlement,
+        );
+        if (
+          authoritative &&
+          authoritativeSettlement &&
+          replaySettlementMatches(authoritativeSettlement, repairSettlement)
+        ) {
+          owner = authoritative;
+          confirmed = authoritativeSettlement;
+          if (pending.reportId && authoritative.id !== pending.reportId) {
+            conflictCandidateId = pending.reportId;
+          }
+        } else {
+          owner = null;
+          confirmed = null;
+        }
+      }
+      // A validated settlement receipt can be committed to replay state before
+      // archive ownership if the claim write hits a transient lock/filesystem
+      // failure. Retrying the exact payment must repair that boundary rather
+      // than remain `in_flight` forever despite holding both the staged bytes
+      // and authenticated settlement identity.
+      if (!owner && pending.reportId && repairSettlement) {
+        const relinked = archive.linkConfirmedSettlement(pending.reportId, {
+          status: "confirmed",
+          transaction: repairSettlement.transaction,
+          network: repairSettlement.network,
+          ...(repairSettlement.amount !== undefined
+            ? { amount: repairSettlement.amount }
+            : {}),
+          ...(repairSettlement.payer !== undefined
+            ? { payer: repairSettlement.payer }
+            : {}),
+        });
+        if (relinked.kind === "linked" || relinked.kind === "already_linked") {
+          const relinkedSettlement = replaySettlementFromArchive(
+            relinked.owner.settlement,
+          );
+          if (
+            relinkedSettlement &&
+            replaySettlementMatches(relinkedSettlement, repairSettlement)
+          ) {
+            owner = relinked.owner;
+            confirmed = relinkedSettlement;
+          }
+        } else if (relinked.kind === "transaction_conflict") {
+          const authoritative = replaySettlementFromArchive(relinked.owner.settlement);
+          if (authoritative && replaySettlementMatches(authoritative, repairSettlement)) {
+            owner = relinked.owner;
+            confirmed = authoritative;
+            conflictCandidateId = pending.reportId;
+          }
+        }
+      }
+      const replayCommitted = Boolean(
+        owner &&
+          confirmed &&
+          (conflictCandidateId
+            ? paymentReplay.adoptConflictOwner(
+                fingerprint,
+                pending.attemptToken,
+                conflictCandidateId,
+                owner.id,
+                confirmed,
+              )
+            : paymentReplay.finalize(
+                fingerprint,
+                pending.attemptToken,
+                owner.id,
+                confirmed,
+              )),
+      );
+      if (
+        owner &&
+        confirmed &&
+        replayCommitted
+      ) {
+        if (conflictCandidateId) {
+          // Conflict adoption removes the retention hold only after the
+          // authoritative replay state is durable. At that point the losing
+          // candidate is unclaimed and can be discarded just like the
+          // immediate post-settlement conflict path does.
+          archive.discard(conflictCandidateId);
+        }
+        state.replay = {
+          fingerprint,
+          reconciliationId,
+          request: params,
+          decision: {
+            kind: "confirmed",
+            state: {
+              ...pending,
+              status: "confirmed",
+              reportId: owner.id,
+              settlement: confirmed,
+            },
+          },
+        };
+        return {
+          abort: true,
+          reason: "dossier_replay_confirmed",
+          message: "Dossier payment replay recovered from durable settlement ownership.",
+        };
+      }
+      }
+      state.replay = {
+        fingerprint,
+        reconciliationId,
+        request: params,
+        decision:
+          decision.kind === "confirmed"
+            ? { kind: "confirmed", state: decision.state }
+            : { kind: "in_flight", state: decision.state },
+      };
+      return {
+        abort: true,
+        reason: `dossier_replay_${decision.kind}`,
+        message: "Dossier payment replay decision recorded.",
+      };
+    }
+    if (existing.kind !== "not_found") {
+      state.replay = { decision: { kind: "unavailable" } };
+      return {
+        abort: true,
+        reason: "payment_replay_state_unavailable",
+        message: "Payment replay protection is unavailable.",
+      };
+    }
+    // New authorizations are not written here. The facilitator must first
+    // authenticate the signature; otherwise every unique bogus nonce can
+    // create/delete a replay sidecar and invalidate the readiness cache.
+    state.replay = {
+      fingerprint,
+      reconciliationId,
+      request: params,
+    };
+    return;
+  });
+  resourceServer.onAfterVerify(async ({ requirements, result }) => {
+    const state = currentFacilitatorState();
+    const replay = state?.replay;
+    if (!result.isValid || !replay?.fingerprint || replay.decision) return;
+    const params = replay.request;
+    if (!params) {
+      replay.decision = { kind: "unavailable" };
+      return;
+    }
+    const requirementIdentity: paymentReplay.ReplayRequirements = {
+      scheme: requirements.scheme,
+      network: requirements.network,
+      amount: requirements.amount,
+      asset: requirements.asset,
+      payTo: requirements.payTo,
+    };
+    const begun = paymentReplay.begin(
+      replay.fingerprint,
+      params,
+      requirementIdentity,
+    );
+    if (begun.kind === "created") {
+      replay.attemptToken = begun.attemptToken;
+      return;
+    }
+    replay.beginFailed = true;
+    replay.decision = begun.kind === "confirmed"
+      ? { kind: "confirmed", state: begun.state }
+      : begun.kind === "in_flight"
+        ? { kind: "in_flight", state: begun.state }
+        : { kind: "unavailable" };
+  });
   const dossierAccepts = {
     scheme: "exact",
     price: config.dossierPrice,
@@ -847,8 +1539,7 @@ if (!config.devSkipPayment && paymentConfigured()) {
   // Every method that can reach a paid path is gated, not just POST: x402
   // validators and availability probes use GET and HEAD, and an unpaid 2xx on
   // a paid path fails validation outright.
-  const pay = paymentMiddleware(
-    {
+  const routes = {
       ...Object.fromEntries(
         ["POST", "GET", "HEAD"].map((m) => [
           `${m} /dossier`,
@@ -872,8 +1563,10 @@ if (!config.devSkipPayment && paymentConfigured()) {
           },
         ]),
       ),
-    },
-    resourceServer,
+    };
+  const httpResourceServer = new x402HTTPResourceServer(resourceServer, routes);
+  const pay = paymentMiddlewareFromHTTPServer(
+    httpResourceServer,
     undefined,
     undefined,
     // The SDK's own startup sync runs outside any request, so a facilitator
@@ -892,7 +1585,7 @@ if (!config.devSkipPayment && paymentConfigured()) {
   const initFacilitator = async (): Promise<void> => {
     for (let attempt = 1; ; attempt++) {
       try {
-        await resourceServer.initialize();
+        await httpResourceServer.initialize();
         paymentLayer = "ready";
         console.log("[x402] facilitator ready");
         return;
@@ -908,10 +1601,10 @@ if (!config.devSkipPayment && paymentConfigured()) {
     }
   };
   void initFacilitator();
-  // Cold-start resilience: on a fresh serverless instance the SDK's first
-  // facilitator sync can transiently fail and rethrow (→ 500). Retry once
-  // after a short pause so a cold-start blip self-heals into a normal 402
-  // instead of a 500 an OKX reviewer might hit. The retry is allowed only
+  // Startup resilience: in a fresh process the SDK's first facilitator sync
+  // can transiently fail and rethrow (→ 500). Retry once after a short pause
+  // so an initialization blip self-heals into a normal 402 instead of a 500 an
+  // OKX reviewer might hit. The retry is allowed only
   // when the failure happened before the route handler started — once next()
   // has run, replaying the chain could re-execute the handler and re-enter
   // settlement, so those errors propagate instead.
@@ -922,27 +1615,451 @@ if (!config.devSkipPayment && paymentConfigured()) {
     if ((c as any).get("internal")) {
       return next();
     }
+    const liveDurability = durabilityHealth();
+    if (
+      !archiveReadyForExternalPayments(liveDurability.archive) ||
+      !liveDurability.replayReady
+    ) {
+      return c.json(
+        {
+          error: "authenticated recovery and payment replay state are not ready",
+        },
+        503,
+      );
+    }
+    const replayRequest = replayRequestIdentity(await readParams(c));
     let handlerStarted = false;
     const trackedNext = async () => {
+      if (currentFacilitatorState()?.replay?.beginFailed) {
+        c.res = new Response(
+          JSON.stringify({
+            error: "payment_replay_unavailable",
+            message:
+              "Payment was verified, but durable replay ownership could not be created. Nothing was delivered or settled; retry the same authorization shortly.",
+            charged: false,
+          }),
+          {
+            status: 503,
+            headers: { "content-type": "application/json", "retry-after": "60" },
+          },
+        );
+        return;
+      }
       handlerStarted = true;
       await next();
     };
     // The SDK settles after the handler returns and puts the receipt in the
-    // PAYMENT-RESPONSE header. Attaching that transaction to the archived
-    // report is what later lets the payer — and only the payer — recover it.
-    const linkSettlement = () => {
+    // PAYMENT-RESPONSE header. A failed receipt can still carry a transaction
+    // hash, so neither the hash nor the header alone proves settlement. Link a
+    // report only from a final, successful receipt on the network we charged.
+    const sameDelivery = (
+      current: archive.ArchiveRecord | null,
+      owner: archive.ArchiveRecord,
+    ): boolean => {
+      if (!current || current.contentType !== owner.contentType) return false;
+      const currentHashes = [current.paramsSha256, current.resolvedParamsSha256].filter(
+        (v): v is string => Boolean(v),
+      );
+      const ownerHashes = [owner.paramsSha256, owner.resolvedParamsSha256].filter(
+        (v): v is string => Boolean(v),
+      );
+      return currentHashes.some((hash) => ownerHashes.includes(hash));
+    };
+
+    /**
+     * A valid payment transaction is a one-delivery capability. If a client
+     * retries the same signed payment after the first response was lost, return
+     * the original archived bytes. If it retries it for another request, do not
+     * hand out a second report under the first transaction's recovery proof.
+     */
+    const resolveTransactionConflict = (
+      currentId: string,
+      tx: string,
+      response: Response,
+      normalizedHeader: string,
+      owner: archive.ArchiveRecord,
+    ): void => {
+      const current = archive.byId(currentId);
+      if (owner && sameDelivery(current, owner)) {
+        const headers = new Headers(response.headers);
+        headers.delete("content-length");
+        headers.set("payment-response", normalizedHeader);
+        (c as any).set("archiveId", owner.id);
+        c.res = new Response(owner.deliverable, { status: 200, headers });
+        return;
+      }
+
+      // The payment has already been accepted, but this request is not the
+      // report that transaction originally bought. Keep the proof header so a
+      // client can recover the original delivery, while making it explicit
+      // that no second report was delivered.
+      const headers = new Headers({
+        "content-type": "application/json",
+        "payment-response": normalizedHeader,
+      });
+      (c as any).set("archiveId", undefined);
+      c.res = new Response(
+        JSON.stringify({
+          error: "payment_already_used",
+          chargedAgain: false,
+          paymentTransaction: tx,
+          message:
+            "That payment transaction already identifies a different report. Recover the original report with this transaction hash.",
+        }),
+        { status: 409, headers },
+      );
+    };
+
+    const linkSettlement = (settlementState?: Unreached) => {
+      let stagedId: string | undefined;
+      let normalizedHeader: string | null | undefined;
       try {
-        const h = (c as any).get("archiveId");
-        const pr = c.res && c.res.headers.get("payment-response");
-        if (!h || !pr) return;
-        const receipt = JSON.parse(Buffer.from(pr, "base64").toString("utf8"));
-        if (receipt && receipt.transaction)
-          archive.linkTransaction(h, String(receipt.transaction));
-      } catch {
-        /* recovery is best effort and must never disturb the response */
+        const h = (c as any).get("archiveId") as string | undefined;
+        stagedId = h;
+        const response = c.res;
+        if (!response || response.status < 200 || response.status >= 300) return;
+        if (!h) {
+          const replay = settlementState?.replay;
+          if (replay?.fingerprint && replay.attemptToken) {
+            // No report was staged, so there is nothing to reconcile or serve
+            // on a retry. Remove the unused attempt instead of leaving a
+            // permanent `report_failed` sidecar that every retry can only
+            // answer as in-flight.
+            paymentReplay.release(replay.fingerprint, replay.attemptToken);
+          }
+          return;
+        }
+
+        const originalHeader = response.headers.get("payment-response");
+        const expected = settlementState?.settlementExpected;
+        const header = normalizeTimeoutRecoveryReceipt(
+          originalHeader,
+          settlementState?.settlementAnswer,
+          settlementState?.settlementPoll?.answer,
+          expected?.network
+            ? {
+                ...(expected.scheme ? { scheme: expected.scheme } : {}),
+                network: expected.network,
+                ...(expected.amount ? { amount: expected.amount } : {}),
+                ...(settlementState?.verifiedPayer
+                  ? { payer: settlementState.verifiedPayer }
+                  : {}),
+              }
+            : undefined,
+        );
+        normalizedHeader = header;
+        if (!expected?.scheme || !expected.network || !expected.amount) {
+          throw new Error("settlement requirements were not captured");
+        }
+        const parsed = validateSettlementReceipt(header, {
+          scheme: expected.scheme,
+          network: expected.network,
+          amount: expected.amount,
+          ...(settlementState?.verifiedPayer
+            ? { payer: settlementState.verifiedPayer }
+            : {}),
+        });
+        if (!parsed.ok) {
+          // Never include the header itself: facilitator extensions are outside
+          // our trust boundary and may contain data that does not belong in a
+          // journal. The bounded reason is enough to diagnose the decision.
+          console.error(`[x402] settlement receipt not linked: ${parsed.reason}`);
+          // Keep the staged report: a malformed, pending, or mismatched final
+          // receipt leaves the on-chain outcome unknown. Deleting the only
+          // candidate artefact would make later reconciliation impossible.
+          (c as any).set("archiveId", undefined);
+          const replay = settlementState?.replay;
+          if (replay?.fingerprint && replay.attemptToken) {
+            const candidateEvidence = candidateSettlementEvidence(settlementState);
+            paymentReplay.markUnknown(
+              replay.fingerprint,
+              replay.attemptToken,
+              settlementState?.settlementAnswer?.status === "timeout"
+                ? "settlement_timeout"
+                : "receipt_unconfirmed",
+              {
+                reportId: h,
+                ...(candidateEvidence
+                  ? { settlement: candidateEvidence, settlementEvidence: "candidate" as const }
+                  : {}),
+              },
+            );
+          }
+          c.res = undefined;
+          c.res = new Response(
+            JSON.stringify({
+              error: "settlement_unconfirmed",
+              charged: "unknown",
+              message:
+                "The payment facilitator did not provide a final receipt that matches this purchase, so no report was delivered. Retry with the same signed payment rather than authorizing a new one.",
+              ...(replay?.reconciliationId
+                ? { reconciliationId: replay.reconciliationId }
+                : {}),
+            }),
+            {
+              status: 503,
+              headers: {
+                "content-type": "application/json",
+                "retry-after": "60",
+              },
+            },
+          );
+          return;
+        }
+
+        // Repair the SDK's timeout-recovery header for the buyer as well as for
+        // our local validator. The normalized value is still derived only from
+        // the bounded direct settle answer and matching final header fields.
+        if (header && header !== originalHeader) {
+          response.headers.set("payment-response", header);
+        }
+
+        const linked = archive.linkConfirmedSettlement(h, {
+          status: "confirmed",
+          transaction: parsed.receipt.transaction,
+          network: parsed.receipt.network,
+          ...(parsed.receipt.amount !== undefined
+            ? { amount: parsed.receipt.amount }
+            : {}),
+          ...(parsed.receipt.payer !== undefined
+            ? { payer: parsed.receipt.payer }
+            : {}),
+        });
+        const confirmed = {
+          status: "confirmed" as const,
+          transaction: parsed.receipt.transaction,
+          network: parsed.receipt.network,
+          ...(parsed.receipt.amount !== undefined
+            ? { amount: parsed.receipt.amount }
+            : {}),
+          ...(parsed.receipt.payer !== undefined
+            ? { payer: parsed.receipt.payer }
+            : {}),
+        };
+        const replay = settlementState?.replay;
+        const finalizeReplay = (
+          ownerId: string,
+          settlement: paymentReplay.ReplaySettlement = confirmed,
+        ): boolean =>
+          !replay?.fingerprint ||
+          !replay.attemptToken ||
+          paymentReplay.finalize(
+            replay.fingerprint,
+            replay.attemptToken,
+            ownerId,
+            settlement,
+          );
+
+        switch (linked.kind) {
+          case "linked":
+          case "already_linked": {
+            (c as any).set("confirmedSettlement", confirmed);
+            if (!finalizeReplay(linked.owner.id)) {
+              if (replay?.fingerprint && replay.attemptToken) {
+                paymentReplay.markUnknown(
+                  replay.fingerprint,
+                  replay.attemptToken,
+                  "replay_commit_failed",
+                  {
+                    reportId: linked.owner.id,
+                    settlement: confirmed,
+                    settlementEvidence: "confirmed",
+                  },
+                );
+              }
+              (c as any).set("archiveId", undefined);
+              c.res = undefined;
+              c.res = new Response(
+                JSON.stringify({
+                  error: "payment_replay_unavailable",
+                  charged: "confirmed",
+                  paymentTransaction: confirmed.transaction,
+                  message:
+                    "Settlement and recovery ownership were confirmed, but retry state could not be committed. No report was delivered; contact support before retrying.",
+                  ...(replay?.reconciliationId
+                    ? { reconciliationId: replay.reconciliationId }
+                    : {}),
+                }),
+                {
+                  status: 503,
+                  headers: {
+                    "content-type": "application/json",
+                    "retry-after": "60",
+                    "payment-response": header!,
+                  },
+                },
+              );
+            }
+            break;
+          }
+          case "transaction_conflict": {
+            const ownerSettlement = replaySettlementFromArchive(linked.owner.settlement);
+            const ownerMatchesConfirmed = Boolean(
+              ownerSettlement &&
+                replaySettlementMatches(ownerSettlement, confirmed),
+            );
+            const conflictReplayCommitted =
+              !replay?.fingerprint ||
+              !replay.attemptToken ||
+              (ownerMatchesConfirmed &&
+                ownerSettlement &&
+                paymentReplay.adoptConflictOwner(
+                  replay.fingerprint,
+                  replay.attemptToken,
+                  h,
+                  linked.owner.id,
+                  ownerSettlement,
+                ));
+            if (
+              !ownerMatchesConfirmed ||
+              !conflictReplayCommitted
+            ) {
+              if (replay?.fingerprint && replay.attemptToken) {
+                // Settlement is final, but the replay owner transition was not
+                // durable. Move the attempt out of pending so an exact retry
+                // can reconcile the confirmed transaction instead of leaving
+                // a permanently in-flight payment.
+                paymentReplay.markUnknown(
+                  replay.fingerprint,
+                  replay.attemptToken,
+                  "replay_commit_failed",
+                  {
+                    reportId: h,
+                    settlement: confirmed,
+                    settlementEvidence: "confirmed",
+                  },
+                );
+              }
+              (c as any).set("archiveId", undefined);
+              c.res = undefined;
+              c.res = new Response(
+                JSON.stringify({
+                  error: "payment_replay_unavailable",
+                  charged: "confirmed",
+                  paymentTransaction: confirmed.transaction,
+                  message:
+                    "The existing payment owner was found, but durable retry state could not be committed. No report was delivered; contact support before retrying.",
+                  ...(replay?.reconciliationId
+                    ? { reconciliationId: replay.reconciliationId }
+                    : {}),
+                }),
+                {
+                  status: 503,
+                  headers: {
+                    "content-type": "application/json",
+                    "retry-after": "60",
+                    "payment-response": header!,
+                  },
+                },
+              );
+            } else {
+              (c as any).set("confirmedSettlement", linked.owner.settlement);
+              resolveTransactionConflict(
+                h,
+                parsed.receipt.transaction,
+                response,
+                header!,
+                linked.owner,
+              );
+              // Only discard after authoritative owner metadata and replay
+              // finalization are durable. Before that, this candidate is the
+              // last local artefact tied to the attempt and must survive.
+              archive.discard(h);
+            }
+            break;
+          }
+          case "record_missing":
+          case "record_unauthenticated":
+          case "record_conflict":
+          case "claim_invalid":
+          case "write_failed": {
+            // Settlement is confirmed; retaining the staged report is the only
+            // way support can reconcile a claim/index write failure.
+            (c as any).set("archiveId", undefined);
+            if (replay?.fingerprint && replay.attemptToken) {
+              paymentReplay.markUnknown(
+                replay.fingerprint,
+                replay.attemptToken,
+                "archive_link_failed",
+                {
+                  reportId: h,
+                  settlement: confirmed,
+                  settlementEvidence: "confirmed",
+                },
+              );
+            }
+            c.res = undefined;
+            c.res = new Response(
+              JSON.stringify({
+                error: "archive_unavailable",
+                charged: "confirmed",
+                message:
+                  "Settlement was confirmed, but the recovery record could not be committed. No report was delivered; contact support with the payment transaction before retrying.",
+                paymentTransaction: parsed.receipt.transaction,
+                ...(replay?.reconciliationId
+                  ? { reconciliationId: replay.reconciliationId }
+                  : {}),
+              }),
+              {
+                status: 503,
+                headers: {
+                  "content-type": "application/json",
+                  "retry-after": "60",
+                  "payment-response": header!,
+                },
+              },
+            );
+            console.error(`[x402] confirmed settlement could not be linked: ${linked.kind}`);
+            break;
+          }
+          default: {
+            const exhaustive: never = linked;
+            throw new Error(`unhandled transaction link result: ${String(exhaustive)}`);
+          }
+        }
+      } catch (e) {
+        console.error(
+          "[x402] settlement linking failed:",
+          (e as Error)?.message?.slice(0, 160) ?? e,
+        );
+        // An unexpected application exception is not permission to deliver a
+        // paid report without a durable recovery record. Keep the staged file
+        // for operator reconciliation (the on-chain outcome may be unknown),
+        // but fail the response closed.
+        if (stagedId && c.res && c.res.status >= 200 && c.res.status < 300) {
+          (c as any).set("archiveId", undefined);
+          const replay = settlementState?.replay;
+          if (replay?.fingerprint && replay.attemptToken) {
+            paymentReplay.markUnknown(
+              replay.fingerprint,
+              replay.attemptToken,
+              "archive_link_failed",
+              { reportId: stagedId },
+            );
+          }
+          const headers = new Headers({
+            "content-type": "application/json",
+            "retry-after": "60",
+          });
+          if (normalizedHeader) headers.set("payment-response", normalizedHeader);
+          c.res = undefined;
+          c.res = new Response(
+            JSON.stringify({
+              error: "archive_unavailable",
+              charged: "unknown",
+              message:
+                "Settlement processing could not be durably committed. No report was delivered; contact support and retry only with the same signed payment.",
+              ...(replay?.reconciliationId
+                ? { reconciliationId: replay.reconciliationId }
+                : {}),
+            }),
+            { status: 503, headers },
+          );
+        }
       }
     };
     return trackFacilitator(async (unreached) => {
+    unreached.replay = { request: replayRequest };
     // The SDK answers 402 both when the facilitator refused the payment and
     // when the facilitator never answered at all. The second is not a refusal,
     // and saying it is tells a buyer who has just signed a payment that their
@@ -951,6 +2068,35 @@ if (!config.devSkipPayment && paymentConfigured()) {
     const honest = (res: void | Response): void | Response => {
       const current = res ?? c.res;
       if (!current || current.status !== 402) return res;
+      const replayDecision = unreached.replay?.decision;
+      if (replayDecision?.kind === "confirmed") {
+        const request = unreached.replay?.request;
+        const state = replayDecision.state as {
+          reportId?: string;
+          settlement?: paymentReplay.ReplaySettlement;
+        };
+        if (state.settlement) {
+          (c as any).set("confirmedSettlement", {
+            status: "confirmed",
+            ...state.settlement,
+          });
+        }
+        c.res = undefined;
+        c.res = request
+          ? replayResponse(request, state)
+          : replayPendingResponse(unreached);
+        return c.res;
+      }
+      if (replayDecision) {
+        c.res = undefined;
+        c.res = replayPendingResponse(unreached);
+        return c.res;
+      }
+      if (unreached.settlementAnswer?.status === "timeout") {
+        c.res = undefined;
+        c.res = replayPendingResponse(unreached);
+        return c.res;
+      }
       if (!unreached.verify && !unreached.settle) return res;
       // Assigned rather than returned. Hono's `compose` only adopts a returned
       // Response while the context is unfinalized, and by here `next()` has run
@@ -962,29 +2108,161 @@ if (!config.devSkipPayment && paymentConfigured()) {
       c.res = unreachable(unreached);
       return c.res;
     };
+    const pendingResponseStatus = (): number => (c.res?.status ?? 0);
+    const retainUnknownReplay = (
+      reason: paymentReplay.ReplayUnknownReason,
+      reportId?: string,
+    ): void => {
+      const replay = unreached.replay;
+      if (!replay?.fingerprint || !replay.attemptToken) return;
+      const settlement = candidateSettlementEvidence(unreached);
+      paymentReplay.markUnknown(replay.fingerprint, replay.attemptToken, reason, {
+        ...(reportId ? { reportId } : {}),
+        ...(settlement
+          ? { settlement, settlementEvidence: "candidate" as const }
+          : {}),
+      });
+    };
+    const releaseUnsettledReplay = (): void => {
+      const replay = unreached.replay;
+      if (!replay?.fingerprint || !replay.attemptToken) return;
+      paymentReplay.release(replay.fingerprint, replay.attemptToken);
+    };
     try {
       // pay() returns a Response for the unpaid 402 path and undefined once a
       // verified payment has run the handler — both must be passed through
       // unchanged, or Hono reports the context as unfinalized.
       const res = await pay(c, trackedNext);
-      linkSettlement();
+      linkSettlement(unreached);
+      const staged = (c as any).get("archiveId") as string | undefined;
+      const current = res ?? c.res;
+      if (
+        staged &&
+        current?.status === 402 &&
+        !unreached.settle &&
+        settlementStateIsDefiniteFailure(unreached)
+      ) {
+        releaseUnsettledReplay();
+        archive.discard(staged);
+        (c as any).set("archiveId", undefined);
+      }
+      if (!staged && pendingResponseStatus() >= 400 && !unreached.settle) {
+        releaseUnsettledReplay();
+      }
+      if (
+        unreached.settlementAnswer?.status === "timeout" &&
+        pendingResponseStatus() >= 400
+      ) {
+        retainUnknownReplay("settlement_timeout", staged);
+      } else if (unreached.settle) {
+        retainUnknownReplay("settlement_unreachable", staged);
+      }
       return honest(res);
     } catch (e) {
-      if (handlerStarted) throw e;
+      if (handlerStarted) {
+        // The handler may already have durably attached a staged report. If no
+        // settle call was attempted, this exception is definitely uncharged
+        // and the attempt can be released for a clean retry. If settlement was
+        // entered (or its state is unclear), retain the bytes and mark the
+        // fingerprint unknown so the same authorization can be reconciled
+        // without ever settling a second time.
+        const replay = unreached.replay;
+        const staged = (c as any).get("archiveId") as string | undefined;
+        if (replay?.fingerprint && replay.attemptToken) {
+          if (unreached.settle || unreached.settlementAnswer) {
+            const settlement = candidateSettlementEvidence(unreached);
+            paymentReplay.markUnknown(
+              replay.fingerprint,
+              replay.attemptToken,
+              unreached.settlementAnswer?.status === "timeout"
+                ? "settlement_timeout"
+                : "settlement_unreachable",
+              {
+                ...(staged ? { reportId: staged } : {}),
+                ...(settlement
+                  ? { settlement, settlementEvidence: "candidate" as const }
+                  : {}),
+              },
+            );
+          } else {
+            if (staged) archive.discard(staged);
+            paymentReplay.release(replay.fingerprint, replay.attemptToken);
+            (c as any).set("archiveId", undefined);
+          }
+        }
+        throw e;
+      }
+      // Nothing reached the handler, so settlement cannot have started. If the
+      // failed pass had already claimed this payment fingerprint, release that
+      // request-owned claim before retrying; otherwise the retry sees its own
+      // state as an unrelated in-flight payment and cannot self-heal.
+      releaseUnsettledReplay();
+      unreached.replay = { request: replayRequest };
       await new Promise((r) => setTimeout(r, 500));
       try {
         const res = await pay(c, next);
-        linkSettlement();
+        linkSettlement(unreached);
+        const staged = (c as any).get("archiveId") as string | undefined;
+        const current = res ?? c.res;
+        if (
+          staged &&
+          current?.status === 402 &&
+          !unreached.settle &&
+          settlementStateIsDefiniteFailure(unreached)
+        ) {
+          releaseUnsettledReplay();
+          archive.discard(staged);
+          (c as any).set("archiveId", undefined);
+        }
+        if (!staged && pendingResponseStatus() >= 400 && !unreached.settle) {
+          releaseUnsettledReplay();
+        }
+        if (
+          unreached.settlementAnswer?.status === "timeout" &&
+          pendingResponseStatus() >= 400
+        ) {
+          retainUnknownReplay("settlement_timeout", staged);
+        } else if (unreached.settle) {
+          retainUnknownReplay("settlement_unreachable", staged);
+        }
         return honest(res);
       } catch (again) {
+        const replay = unreached.replay;
+        const staged = (c as any).get("archiveId") as string | undefined;
+        if (replay?.fingerprint && replay.attemptToken) {
+          if (unreached.settle || unreached.settlementAnswer) {
+            const settlement = candidateSettlementEvidence(unreached);
+            paymentReplay.markUnknown(
+              replay.fingerprint,
+              replay.attemptToken,
+              unreached.settlementAnswer?.status === "timeout"
+                ? "settlement_timeout"
+                : "settlement_unreachable",
+              {
+                ...(staged ? { reportId: staged } : {}),
+                ...(settlement
+                  ? { settlement, settlementEvidence: "candidate" as const }
+                  : {}),
+              },
+            );
+          } else {
+            if (staged) archive.discard(staged);
+            paymentReplay.release(replay.fingerprint, replay.attemptToken);
+            (c as any).set("archiveId", undefined);
+          }
+        }
         // The payment layer is unreachable or is refusing our credentials.
         // Go dark on the paid routes rather than 500, and above all stay
         // alive: the free surface has nothing to do with the facilitator.
-        // 503 is non-2xx, so nothing can settle on this path either.
         console.error(
           "[x402] payment layer unavailable:",
           (again as Error)?.message?.slice(0, 200) ?? again,
         );
+        if (unreached.settle || unreached.settlementAnswer) {
+          c.res = undefined;
+          c.res = replayPendingResponse(unreached);
+          return c.res;
+        }
         c.header("Retry-After", "60");
         return c.json(
           {
@@ -1072,19 +2350,31 @@ app.on(["GET", "POST"], "/dossier", async (c) => {
   if (!parsed.success) {
     return invalid(c, parsed.error.issues);
   }
+  const loggedJob = internalJobId(c);
+  if (parsed.data.format === "message" && !loggedJob) {
+    return c.json(
+      {
+        error: "format_not_available",
+        message:
+          "format=message is an internal fulfilment view of a report already delivered for a marketplace job. External paid calls must request html or json.",
+        charged: false,
+      },
+      400,
+    );
+  }
   // Recorded before the work starts, so a request that goes on to fail still
   // says which token it was for. A failed paid call is exactly the one we later
   // have to explain, and "they asked for X and got a 404" is the whole answer.
   (c as any).set("logToken", parsed.data.tokenAddress);
   if (parsed.data.chain) (c as any).set("logChain", parsed.data.chain);
-  const loggedJob = internalJobId(c);
   if (loggedJob) (c as any).set("logJob", loggedJob);
   try {
     const dossier = await buildDossier(parsed.data);
     const json = parsed.data.format === "json";
     const message = parsed.data.format === "message";
-    // Archive before responding, and remember the key so the settlement
-    // transaction can be attached once the SDK has settled.
+    // Archive before responding. External paid calls also durably attach this
+    // report to their payment fingerprint before the handler returns: the SDK
+    // starts settlement as soon as it sees our 2xx response.
     const id = archive.newId();
     const jobId = loggedJob;
     // A recovery code is minted only for task-mode deliveries, which are the
@@ -1115,8 +2405,9 @@ app.on(["GET", "POST"], "/dossier", async (c) => {
           })
         : renderDossierHtml(dossier);
     // The message is not a deliverable; archiving it would displace the report.
-    if (!message)
-      archive.save({
+    if (
+      !message &&
+      !archive.save({
         id,
         paramsSha256: archive.paramsHash(
           parsed.data as Record<string, unknown>,
@@ -1133,7 +2424,55 @@ app.on(["GET", "POST"], "/dossier", async (c) => {
         deliveredAt: new Date().toISOString(),
         ...(jobId ? { jobId } : {}),
         ...(recovery ? { recoveryCodeSha256: recovery.hash } : {}),
-      });
+      })
+    ) {
+      return c.json(
+        {
+          error: "archive_unavailable",
+          message:
+            "The report was built but could not be stored for recovery, so it was not delivered or charged. Retry shortly.",
+          charged: false,
+        },
+        503,
+      );
+    }
+    if (!message && !(c as any).get("internal") && !config.devSkipPayment) {
+      const replay = currentFacilitatorState()?.replay;
+      const attached = Boolean(
+        replay?.fingerprint &&
+          replay.attemptToken &&
+          paymentReplay.attachReport(replay.fingerprint, replay.attemptToken, id),
+      );
+      if (!attached) {
+        // This response stays non-2xx, so the SDK will not call settle. Remove
+        // both halves of the unused attempt where possible; either cleanup may
+        // fail under the same storage outage, but neither failure permits a
+        // payment or delivery.
+        const discarded = archive.discard(id);
+        const released = Boolean(
+          replay?.fingerprint &&
+            replay.attemptToken &&
+            paymentReplay.release(replay.fingerprint, replay.attemptToken),
+        );
+        (c as any).set("archiveId", undefined);
+        console.error(
+          `[x402] replay report attachment failed (archiveDiscarded=${discarded}, replayReleased=${released})`,
+        );
+        return c.json(
+          {
+            error: "payment_replay_unavailable",
+            message:
+              "The report was built but durable payment recovery state could not be stored, so it was not delivered or charged. Retry shortly.",
+            charged: false,
+            ...(replay?.reconciliationId
+              ? { reconciliationId: replay.reconciliationId }
+              : {}),
+          },
+          503,
+        );
+      }
+      replay!.reportId = id;
+    }
     if (!message) (c as any).set("archiveId", id);
     // The code leaves in a header rather than in the report body, which is
     // signed and archived: putting it there would write the capability into the

@@ -32,6 +32,59 @@ import { AsyncLocalStorage } from "node:async_hooks";
 export interface Unreached {
   verify?: string;
   settle?: string;
+  /** Bounded direct settle fields used to recognize SDK timeout recovery. */
+  settlementAnswer?: {
+    success?: boolean;
+    status?: string;
+    transaction?: string;
+    network?: string;
+    amount?: string;
+    payer?: string;
+  };
+  /** Requirements the facilitator was asked to settle for this request. */
+  settlementExpected?: {
+    scheme?: string;
+    network?: string;
+    amount?: string;
+    asset?: string;
+    payTo?: string;
+  };
+  /** Payer identity returned by the successful verification response. */
+  verifiedPayer?: string;
+  /** Bounded observations from the SDK's settle/status timeout polling. */
+  settlementPoll?: {
+    transaction?: string;
+    attempts: number;
+    unreached?: string;
+    answer?: {
+      success?: boolean;
+      status?: string;
+      transaction?: string;
+      network?: string;
+      amount?: string;
+      payer?: string;
+    };
+  };
+  /** Request-local durable replay state, populated by the pre-verify hook. */
+  replay?: {
+    fingerprint?: string;
+    attemptToken?: string;
+    reconciliationId?: string;
+    /** Report staged by the paid handler before settlement starts. */
+    reportId?: string;
+    request?: {
+      paramsSha256: string;
+      contentType: "text/html" | "application/json" | "invalid";
+    };
+    /** New authorization that passed facilitator verification but could not
+     * publish durable replay ownership. The response must fail closed before
+     * the paid handler is allowed to run. */
+    beginFailed?: true;
+    decision?:
+      | { kind: "confirmed"; state: unknown }
+      | { kind: "in_flight"; state: unknown }
+      | { kind: "corrupt" | "unavailable" };
+  };
 }
 
 const store = new AsyncLocalStorage<Unreached>();
@@ -43,6 +96,11 @@ const store = new AsyncLocalStorage<Unreached>();
 export function trackFacilitator<T>(fn: (unreached: Unreached) => Promise<T>): Promise<T> {
   const unreached: Unreached = {};
   return store.run(unreached, () => fn(unreached));
+}
+
+/** Current request's payment observations, for SDK lifecycle hooks and routes. */
+export function currentFacilitatorState(): Unreached | undefined {
+  return store.getStore();
 }
 
 const why = (e: unknown): string => {
@@ -57,10 +115,9 @@ const why = (e: unknown): string => {
  * then rethrown unchanged. The SDK's own handling is left exactly as it was;
  * this only remembers what happened.
  *
- * A Proxy rather than a subclass on purpose. The resource server also calls
- * `getSupported` and `getSettleStatus`, and the SDK is free to add more; every
- * method other than the two named here passes straight through, so a new one
- * cannot be silently dropped by this file.
+ * A Proxy rather than a subclass on purpose. Unknown methods pass through, but
+ * verify, settle, and timeout polling are bounded and observed because all
+ * three affect whether a buyer may safely retry.
  */
 export function watchFacilitator<T extends object>(inner: T): T {
   return new Proxy(inner, {
@@ -68,13 +125,81 @@ export function watchFacilitator<T extends object>(inner: T): T {
       const value = Reflect.get(target, prop, receiver);
       if (typeof value !== "function") return value;
       const fn = value as (...args: unknown[]) => unknown;
-      if (prop !== "verify" && prop !== "settle") return fn.bind(target);
+      if (prop !== "verify" && prop !== "settle" && prop !== "getSettleStatus") {
+        return fn.bind(target);
+      }
       return async (...args: unknown[]) => {
+        const unreached = store.getStore();
+        if (unreached && prop === "settle") {
+          const requirements = args[1];
+          if (requirements && typeof requirements === "object") {
+            const r = requirements as Record<string, unknown>;
+            unreached.settlementExpected = {
+              ...(typeof r.scheme === "string" ? { scheme: r.scheme } : {}),
+              ...(typeof r.network === "string" ? { network: r.network } : {}),
+              ...(typeof r.amount === "string" ? { amount: r.amount } : {}),
+              ...(typeof r.asset === "string" ? { asset: r.asset } : {}),
+              ...(typeof r.payTo === "string" ? { payTo: r.payTo } : {}),
+            };
+          }
+        }
+        if (unreached && prop === "getSettleStatus") {
+          const transaction = args[0];
+          unreached.settlementPoll ??= { attempts: 0 };
+          unreached.settlementPoll.attempts++;
+          if (typeof transaction === "string") {
+            unreached.settlementPoll.transaction = transaction;
+          }
+        }
         try {
-          return await fn.apply(target, args);
+          const answer = await fn.apply(target, args);
+          if (unreached && prop === "verify" && answer && typeof answer === "object") {
+            const a = answer as Record<string, unknown>;
+            if (a.isValid === true && typeof a.payer === "string") {
+              unreached.verifiedPayer = a.payer;
+            }
+          }
+          if (unreached && prop === "settle" && answer && typeof answer === "object") {
+            const a = answer as Record<string, unknown>;
+            unreached.settlementAnswer = {
+              ...(typeof a.success === "boolean" ? { success: a.success } : {}),
+              ...(typeof a.status === "string" ? { status: a.status } : {}),
+              ...(typeof a.transaction === "string"
+                ? { transaction: a.transaction }
+                : {}),
+              ...(typeof a.network === "string" ? { network: a.network } : {}),
+              ...(typeof a.amount === "string" ? { amount: a.amount } : {}),
+              ...(typeof a.payer === "string" ? { payer: a.payer } : {}),
+            };
+          }
+          if (
+            unreached &&
+            prop === "getSettleStatus" &&
+            answer &&
+            typeof answer === "object"
+          ) {
+            const a = answer as Record<string, unknown>;
+            unreached.settlementPoll ??= { attempts: 1 };
+            unreached.settlementPoll.answer = {
+              ...(typeof a.success === "boolean" ? { success: a.success } : {}),
+              ...(typeof a.status === "string" ? { status: a.status } : {}),
+              ...(typeof a.transaction === "string"
+                ? { transaction: a.transaction }
+                : {}),
+              ...(typeof a.network === "string" ? { network: a.network } : {}),
+              ...(typeof a.amount === "string" ? { amount: a.amount } : {}),
+              ...(typeof a.payer === "string" ? { payer: a.payer } : {}),
+            };
+          }
+          return answer;
         } catch (e) {
-          const unreached = store.getStore();
-          if (unreached) unreached[prop as "verify" | "settle"] = why(e);
+          if (unreached && (prop === "verify" || prop === "settle")) {
+            unreached[prop] = why(e);
+          }
+          if (unreached && prop === "getSettleStatus") {
+            unreached.settlementPoll ??= { attempts: 1 };
+            unreached.settlementPoll.unreached = why(e);
+          }
           throw e;
         }
       };

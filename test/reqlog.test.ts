@@ -7,20 +7,55 @@ function receipt(o: Record<string, unknown>): string {
   return Buffer.from(JSON.stringify(o), "utf8").toString("base64");
 }
 
+const TX = "0x" + "ab".repeat(32);
+
 describe("request log", () => {
   test("a settled payment yields the transaction and the payer", () => {
     const r = reqlog.decodeReceipt(
-      receipt({ transaction: "0xabc", payer: "0x51c2", network: "eip155:196" }),
+      receipt({
+        success: true,
+        status: "success",
+        transaction: TX,
+        payer: "0x" + "51".repeat(20),
+        network: "eip155:196",
+      }),
     );
-    assert.equal(r.settled, "0xabc");
-    assert.equal(r.payer, "0x51c2");
+    assert.equal(r.settled, TX);
+    assert.equal(r.payer, "0x" + "51".repeat(20));
   });
 
-  test("a receipt that names the transaction differently is still read", () => {
-    // The field has appeared as `transaction` and as `txHash` depending on the
-    // path; missing the settlement because of a key name would defeat the point.
-    assert.equal(reqlog.decodeReceipt(receipt({ txHash: "0xdef" })).settled, "0xdef");
-    assert.equal(reqlog.decodeReceipt(receipt({ from: "0xf00" })).payer, "0xf00");
+  test("a legacy successful receipt without status is still read", () => {
+    assert.equal(
+      reqlog.decodeReceipt(receipt({ success: true, transaction: TX, network: "eip155:196" })).settled,
+      TX,
+    );
+  });
+
+  test("a failed receipt carrying a transaction is not logged as settled", () => {
+    assert.deepEqual(
+      reqlog.decodeReceipt(
+        receipt({ success: false, status: "timeout", transaction: TX, network: "eip155:196" }),
+      ),
+      {},
+    );
+  });
+
+  test("pending settlement is not logged as settled", () => {
+    assert.deepEqual(
+      reqlog.decodeReceipt(
+        receipt({ success: true, status: "pending", transaction: TX, network: "eip155:196" }),
+      ),
+      {},
+    );
+  });
+
+  test("a receipt for another network is not logged as settled", () => {
+    assert.deepEqual(
+      reqlog.decodeReceipt(
+        receipt({ success: true, status: "success", transaction: TX, network: "eip155:1" }),
+      ),
+      {},
+    );
   });
 
   test("no receipt means no settlement claimed", () => {
@@ -41,7 +76,14 @@ describe("request log", () => {
     // the response receipt, so even a receipt that echoes a signature back must
     // not surface it.
     const r = reqlog.decodeReceipt(
-      receipt({ transaction: "0xabc", signature: "0xSECRET", authorization: "0xSECRET" }),
+      receipt({
+        success: true,
+        status: "success",
+        transaction: TX,
+        network: "eip155:196",
+        signature: "0xSECRET",
+        authorization: "0xSECRET",
+      }),
     );
     const dumped = JSON.stringify(r);
     assert.equal(dumped.includes("SECRET"), false, "no credential may reach the log");

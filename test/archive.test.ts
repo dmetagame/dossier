@@ -4,20 +4,35 @@
 
 import { test, describe, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
-import { writeFileSync, unlinkSync, readdirSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  renameSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+  unlinkSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+} from "node:fs";
 import { join } from "node:path";
 import { tempArchive } from "./helpers";
 
 // archive.ts resolves ARCHIVE_DIR on use, so a plain static import is enough
 // and the env var can be set here.
 import * as archive from "../src/dossier/archive";
+import * as replay from "../src/payment-replay";
+import { archiveRecordMac } from "../src/dossier/archive-format";
 type Archive = typeof archive;
 
 const { dir, cleanup } = tempArchive();
 process.env.ARCHIVE_DIR = dir;
 
 beforeEach(() => {
-  for (const f of readdirSync(dir)) unlinkSync(join(dir, f));
+  for (const f of readdirSync(dir)) rmSync(join(dir, f), { recursive: true, force: true });
   archive.resetIndex();
 });
 after(() => cleanup());
@@ -32,43 +47,289 @@ const rec = (id: string, over: Partial<Parameters<Archive["save"]>[0]> = {}) => 
   ...over,
 });
 
+function replayFingerprint(
+  requirements: replay.ReplayRequirements,
+  unique: string,
+): string {
+  const semanticRequirements = {
+    ...requirements,
+    maxTimeoutSeconds: 300,
+    extra: { name: "Archive Test Token", version: "1" },
+  };
+  const nonce = createHash("sha256").update(unique).digest("hex");
+  return replay.fingerprintPayment(
+    {
+      x402Version: 2,
+      accepted: semanticRequirements,
+      payload: {
+        signature: "0x" + "11".repeat(65),
+        authorization: {
+          from: "0x" + "10".repeat(20),
+          to: requirements.payTo,
+          value: requirements.amount,
+          validAfter: "0",
+          validBefore: "9999999999",
+          nonce: `0x${nonce}`,
+        },
+      },
+    },
+    semanticRequirements,
+  )!;
+}
+
 describe("recovery by settlement transaction", () => {
   test("a linked transaction returns the exact record", () => {
     const id = archive.newId();
+    const tx = "0x" + "01".repeat(32);
     archive.save(rec(id));
-    archive.linkTransaction(id, "0xTX");
-    assert.equal(archive.byTransaction("0xTX")?.deliverable, rec(id).deliverable);
+    archive.linkTransaction(id, tx);
+    assert.equal(archive.byTransaction(tx)?.deliverable, rec(id).deliverable);
   });
 
   test("lookup is case-insensitive", () => {
     const id = archive.newId();
+    const tx = `0x${"Ab".repeat(32)}`;
     archive.save(rec(id));
-    archive.linkTransaction(id, "0xAbCdEf");
-    assert.ok(archive.byTransaction("0xabcdef"));
+    archive.linkTransaction(id, tx);
+    assert.ok(archive.byTransaction(tx.toLowerCase()));
   });
 
   test("an unknown transaction returns null", () => {
-    assert.equal(archive.byTransaction("0xnope"), null);
+    assert.equal(archive.byTransaction("0x" + "fe".repeat(32)), null);
   });
 
   test("a record saved after the index was built is still found", () => {
     const first = archive.newId();
+    const firstTx = "0x" + "02".repeat(32);
     archive.save(rec(first));
-    archive.linkTransaction(first, "0xONE");
-    archive.byTransaction("0xONE"); // forces the index to build
+    archive.linkTransaction(first, firstTx);
+    archive.byTransaction(firstTx); // forces the index to build
     const second = archive.newId();
+    const secondTx = "0x" + "03".repeat(32);
     archive.save(rec(second));
-    archive.linkTransaction(second, "0xTWO");
-    assert.equal(archive.byTransaction("0xTWO")?.id, second);
+    archive.linkTransaction(second, secondTx);
+    assert.equal(archive.byTransaction(secondTx)?.id, second);
   });
 
   test("a deleted record returns null rather than stale index data", () => {
     const id = archive.newId();
+    const tx = "0x" + "04".repeat(32);
     archive.save(rec(id));
-    archive.linkTransaction(id, "0xGONE");
-    archive.byTransaction("0xGONE");
+    archive.linkTransaction(id, tx);
+    archive.byTransaction(tx);
     unlinkSync(join(dir, `${id}.json`));
-    assert.equal(archive.byTransaction("0xGONE"), null);
+    assert.equal(archive.byTransaction(tx), null);
+  });
+
+  test("transaction links and lookups reject surrounding whitespace", () => {
+    const id = archive.newId();
+    const tx = "0x" + "05".repeat(32);
+    archive.save(rec(id));
+
+    assert.equal(archive.linkTransaction(id, ` ${tx}`).kind, "record_conflict");
+    assert.equal(archive.linkTransaction(id, `${tx}\n`).kind, "record_conflict");
+    assert.equal(archive.byTransaction(` ${tx}`), null);
+    assert.equal(archive.byTransaction(`${tx}\n`), null);
+    assert.equal(archive.byId(id)?.paymentTransaction, undefined);
+  });
+
+  test("a confirmed settlement is explicit and idempotent", () => {
+    const id = archive.newId();
+    const tx = "0x" + "11".repeat(32);
+    const settlement = {
+      status: "confirmed" as const,
+      transaction: tx,
+      network: "eip155:196",
+      amount: "10000",
+      payer: "0x" + "22".repeat(20),
+    };
+    archive.save(rec(id));
+
+    assert.equal(archive.linkConfirmedSettlement(id, settlement).kind, "linked");
+    assert.equal(
+      archive.linkConfirmedSettlement(id, settlement).kind,
+      "already_linked",
+      "a settlement callback may be replayed safely",
+    );
+    assert.deepEqual(archive.byTransaction(tx)?.settlement, settlement);
+  });
+
+  test("a published claim repairs a crash before record enrichment", () => {
+    const id = archive.newId();
+    const tx = "0x" + "12".repeat(32);
+    const original = rec(id);
+    const settlement = {
+      status: "confirmed" as const,
+      transaction: tx,
+      network: "eip155:196",
+      payer: "0x" + "34".repeat(20),
+    };
+    archive.save(original);
+    assert.equal(archive.linkConfirmedSettlement(id, settlement).kind, "linked");
+
+    // The claim is published before the record is enriched. Restoring the
+    // staged bytes models a worker dying at exactly that boundary.
+    writeFileSync(join(dir, `${id}.json`), JSON.stringify(original));
+    archive.resetIndex();
+    assert.equal(archive.byId(id)?.settlement, undefined);
+    assert.deepEqual(archive.settledById(id)?.settlement, settlement);
+  });
+
+  test("a legacy transaction link can be upgraded to explicit confirmation", () => {
+    const id = archive.newId();
+    const tx = "0x" + "66".repeat(32);
+    const settlement = {
+      status: "confirmed" as const,
+      transaction: tx,
+      network: "eip155:196",
+    };
+    archive.save(rec(id));
+    assert.equal(archive.linkTransaction(id, tx).kind, "linked");
+    assert.equal(archive.linkConfirmedSettlement(id, settlement).kind, "already_linked");
+    assert.deepEqual(archive.byTransaction(tx)?.settlement, settlement);
+  });
+
+  test("a report's confirmed transaction cannot be overwritten", () => {
+    const id = archive.newId();
+    const first = "0x" + "33".repeat(32);
+    const second = "0x" + "44".repeat(32);
+    archive.save(rec(id));
+    assert.equal(
+      archive.linkConfirmedSettlement(id, {
+        status: "confirmed",
+        transaction: first,
+        network: "eip155:196",
+      }).kind,
+      "linked",
+    );
+    assert.equal(
+      archive.linkConfirmedSettlement(id, {
+        status: "confirmed",
+        transaction: second,
+        network: "eip155:196",
+      }).kind,
+      "record_conflict",
+    );
+    assert.equal(archive.byTransaction(first)?.id, id);
+    assert.equal(archive.byTransaction(second), null);
+  });
+
+  test("one confirmed transaction cannot be assigned to two reports", () => {
+    const tx = "0x" + "55".repeat(32);
+    const first = archive.newId();
+    const second = archive.newId();
+    archive.save(rec(first));
+    archive.save(rec(second));
+    assert.equal(
+      archive.linkConfirmedSettlement(first, {
+        status: "confirmed",
+        transaction: tx,
+        network: "eip155:196",
+      }).kind,
+      "linked",
+    );
+    assert.equal(
+      archive.linkConfirmedSettlement(second, {
+        status: "confirmed",
+        transaction: tx,
+        network: "eip155:196",
+      }).kind,
+      "transaction_conflict",
+    );
+    assert.equal(archive.byTransaction(tx)?.id, first);
+  });
+
+  test("a legacy owner conflict is upgraded with authoritative settlement metadata", () => {
+    const tx = "0x" + "56".repeat(32);
+    const first = archive.newId();
+    const second = archive.newId();
+    const settlement = {
+      status: "confirmed" as const,
+      transaction: tx,
+      network: "eip155:196",
+      payer: "0x" + "78".repeat(20),
+    };
+    archive.save(rec(first));
+    archive.save(rec(second));
+    assert.equal(archive.linkTransaction(first, tx).kind, "linked");
+    const conflict = archive.linkConfirmedSettlement(second, settlement);
+    assert.equal(conflict.kind, "transaction_conflict");
+    assert.equal(conflict.kind === "transaction_conflict" && conflict.owner.id, first);
+    assert.deepEqual(archive.byTransaction(tx)?.settlement, settlement);
+  });
+
+  test("an undelivered orphan can be discarded, but a linked record cannot", () => {
+    const orphan = archive.newId();
+    archive.save(rec(orphan));
+    assert.equal(archive.discard(orphan), true);
+    assert.equal(archive.byId(orphan), null);
+
+    const linked = archive.newId();
+    const tx = "0x" + "77".repeat(32);
+    archive.save(rec(linked));
+    archive.linkConfirmedSettlement(linked, {
+      status: "confirmed",
+      transaction: tx,
+      network: "eip155:196",
+    });
+    assert.equal(archive.discard(linked), false);
+    assert.equal(archive.byTransaction(tx)?.id, linked);
+  });
+
+  test("a replay hold protects a staged report from destructive cleanup", () => {
+    const id = archive.newId();
+    archive.save(rec(id));
+    writeFileSync(
+      join(dir, `.report-${id.toLowerCase()}.replay-hold`),
+      JSON.stringify({ protected: true }),
+    );
+    assert.equal(archive.discard(id), false);
+    assert.equal(archive.byId(id)?.id, id);
+  });
+
+  test("attaching a recovery code does not invalidate an existing transaction claim", () => {
+    const id = archive.newId();
+    const tx = "0x" + "88".repeat(32);
+    const jobId = "0x" + "aa".repeat(32);
+    archive.save(rec(id, { jobId }));
+    assert.equal(
+      archive.linkConfirmedSettlement(id, {
+        status: "confirmed",
+        transaction: tx,
+        network: "eip155:196",
+      }).kind,
+      "linked",
+    );
+    assert.ok(archive.attachRecoveryCode(jobId));
+    assert.equal(
+      archive.byTransaction(tx)?.id,
+      id,
+      "mutable recovery metadata is outside the immutable ownership digest",
+    );
+  });
+
+  test("a stale crash lock is reclaimed instead of causing a permanent outage", () => {
+    const id = archive.newId();
+    const tx = "0x" + "99".repeat(32);
+    archive.save(rec(id));
+    const lock = join(dir, `.transaction-${createHash("sha256").update(tx).digest("hex")}.lock`);
+    mkdirSync(lock, { mode: 0o700 });
+    writeFileSync(
+      join(lock, "owner"),
+      JSON.stringify({ pid: 2_147_483_647, startedAt: 1, token: "dead-worker-token" }),
+    );
+    const old = new Date(Date.now() - 60_000);
+    utimesSync(join(lock, "owner"), old, old);
+    utimesSync(lock, old, old);
+
+    assert.equal(
+      archive.linkConfirmedSettlement(id, {
+        status: "confirmed",
+        transaction: tx,
+        network: "eip155:196",
+      }).kind,
+      "linked",
+    );
   });
 });
 
@@ -137,6 +398,67 @@ describe("durability", () => {
     for (const id of ids) archive.save(rec(id, { paramsSha256: "c".repeat(64) })); // same request
     assert.equal(readdirSync(dir).filter((f) => f.endsWith(".json")).length, 3);
   });
+
+  test("the bounded readiness token changes for record, replay, hold, and claim mutations", () => {
+    const previousArchiveKey = process.env.ARCHIVE_MAC_KEY;
+    const previousRequired = process.env.ARCHIVE_MAC_REQUIRED;
+    const previousReplayKey = process.env.PAYMENT_REPLAY_KEY;
+    process.env.ARCHIVE_MAC_KEY = "readiness-version-archive-key";
+    process.env.ARCHIVE_MAC_REQUIRED = "1";
+    process.env.PAYMENT_REPLAY_KEY = "readiness-version-replay-key";
+    const nextVersion = (previous: string): string => {
+      const current = archive.readinessVersionForTests();
+      assert.match(current ?? "", /^[a-f0-9]{64}$/);
+      assert.notEqual(current, previous);
+      return current!;
+    };
+    try {
+      let version = archive.readinessVersionForTests();
+      assert.match(version ?? "", /^[a-f0-9]{64}$/);
+
+      const id = archive.newId();
+      assert.equal(archive.save(rec(id)), true);
+      version = nextVersion(version!);
+
+      const requirements: replay.ReplayRequirements = {
+        scheme: "exact",
+        network: "eip155:196",
+        amount: "10000",
+        asset: `0x${"01".repeat(20)}`,
+        payTo: `0x${"02".repeat(20)}`,
+      };
+      const fingerprint = replayFingerprint(requirements, "readiness-version");
+      const begun = replay.begin(
+        fingerprint,
+        { paramsSha256: "a".repeat(64), contentType: "text/html" },
+        requirements,
+      );
+      assert.equal(begun.kind, "created");
+      if (begun.kind !== "created") return;
+      version = nextVersion(version!);
+
+      assert.equal(replay.attachReport(fingerprint, begun.attemptToken, id), true);
+      version = nextVersion(version!);
+
+      assert.equal(
+        archive.linkConfirmedSettlement(id, {
+          status: "confirmed",
+          transaction: `0x${"33".repeat(32)}`,
+          network: requirements.network,
+          amount: requirements.amount,
+        }).kind,
+        "linked",
+      );
+      nextVersion(version!);
+    } finally {
+      if (previousArchiveKey === undefined) delete process.env.ARCHIVE_MAC_KEY;
+      else process.env.ARCHIVE_MAC_KEY = previousArchiveKey;
+      if (previousRequired === undefined) delete process.env.ARCHIVE_MAC_REQUIRED;
+      else process.env.ARCHIVE_MAC_REQUIRED = previousRequired;
+      if (previousReplayKey === undefined) delete process.env.PAYMENT_REPLAY_KEY;
+      else process.env.PAYMENT_REPLAY_KEY = previousReplayKey;
+    }
+  });
 });
 
 // Records were trusted because the file mode said 0600. That says who may write,
@@ -193,11 +515,47 @@ describe("archive records are authenticated, not just permissioned", () => {
     // The transaction is covered by the MAC, so it has to be recomputed on
     // link. Leaving it stale would strand the buyer who just paid.
     const r = rec();
+    const tx = "0x" + "06".repeat(32);
     archive.save(r);
-    archive.linkTransaction(r.id, "0xLINKTEST");
-    const back = archive.byTransaction("0xLINKTEST");
+    archive.linkTransaction(r.id, tx);
+    const back = archive.byTransaction(tx);
     assert.ok(back, "a linked record must still authenticate and be findable");
-    assert.equal(back!.paymentTransaction, "0xLINKTEST");
+    assert.equal(back!.paymentTransaction, tx);
+  }));
+
+  test("padded transaction metadata is neither saved nor served", () => withKey(() => {
+    const tx = "0x" + "07".repeat(32);
+    const paddedPayment = rec({ paymentTransaction: ` ${tx}` });
+    assert.equal(archive.save(paddedPayment), false);
+    assert.equal(archive.byId(paddedPayment.id), null);
+
+    const authenticatedPadded = {
+      ...paddedPayment,
+      mac: archiveRecordMac(paddedPayment, process.env.ARCHIVE_MAC_KEY)!,
+    };
+    writeFileSync(
+      join(dir, `${authenticatedPadded.id}.json`),
+      JSON.stringify(authenticatedPadded),
+    );
+    archive.resetIndex();
+    assert.equal(archive.byId(authenticatedPadded.id), null);
+    assert.equal(archive.byTransaction(tx), null);
+    assert.equal(
+      archive.byHash(authenticatedPadded.paramsSha256),
+      null,
+      "request-hash lookup must not serve a record with split transaction identity",
+    );
+
+    const paddedSettlement = rec({
+      paymentTransaction: tx,
+      settlement: {
+        status: "confirmed",
+        transaction: `${tx} `,
+        network: "eip155:196",
+      },
+    });
+    assert.equal(archive.save(paddedSettlement), false);
+    assert.equal(archive.byId(paddedSettlement.id), null);
   }));
 
   test("attaching a recovery code keeps the record readable", () => withKey(() => {
@@ -234,6 +592,252 @@ describe("archive records are authenticated, not just permissioned", () => {
       if (prevS) process.env.SIGNING_KEY = prevS;
     }
   });
+
+  test("strict mode without a key refuses readiness and unsigned writes", () => {
+    const prevKey = process.env.ARCHIVE_MAC_KEY;
+    const prevRequired = process.env.ARCHIVE_MAC_REQUIRED;
+    delete process.env.ARCHIVE_MAC_KEY;
+    process.env.ARCHIVE_MAC_REQUIRED = "1";
+    try {
+      const r = rec();
+      assert.equal(archive.ready(), false);
+      assert.equal(archive.save(r), false);
+      assert.equal(archive.macValid(r), false);
+    } finally {
+      if (prevKey === undefined) delete process.env.ARCHIVE_MAC_KEY;
+      else process.env.ARCHIVE_MAC_KEY = prevKey;
+      if (prevRequired === undefined) delete process.env.ARCHIVE_MAC_REQUIRED;
+      else process.env.ARCHIVE_MAC_REQUIRED = prevRequired;
+    }
+  });
+
+  test("invalid strict-mode values fail readiness instead of silently disabling it", () => {
+    const prev = process.env.ARCHIVE_MAC_REQUIRED;
+    process.env.ARCHIVE_MAC_REQUIRED = "true";
+    try {
+      const status = archive.readiness();
+      assert.equal(status.ready, false);
+      assert.equal(status.mode, "invalid");
+    } finally {
+      if (prev === undefined) delete process.env.ARCHIVE_MAC_REQUIRED;
+      else process.env.ARCHIVE_MAC_REQUIRED = prev;
+    }
+  });
+
+  test("readiness rejects a group- or world-accessible archive root", () => {
+    const previous = statSync(dir).mode & 0o777;
+    try {
+      chmodSync(dir, 0o777);
+      const status = archive.readiness();
+      assert.equal(status.ready, false);
+      assert.match(status.reason ?? "", /directory.*group- or world-accessible/);
+    } finally {
+      chmodSync(dir, previous);
+    }
+  });
+
+  test("strict readiness scans existing records before paid traffic is enabled", () => withKey(() => {
+    const prev = process.env.ARCHIVE_MAC_REQUIRED;
+    process.env.ARCHIVE_MAC_REQUIRED = "1";
+    try {
+      const legacyHash = "a".repeat(64);
+      writeFileSync(
+        join(dir, `${legacyHash}.json`),
+        JSON.stringify({
+          paramsSha256: legacyHash,
+          request: { tokenAddress: "0xlegacy" },
+          contentType: "text/html",
+          deliverable: "legacy report",
+          deliveredAt: new Date().toISOString(),
+        }),
+      );
+      const legacyStatus = archive.readiness();
+      assert.equal(legacyStatus.ready, false, "legacy v1 data blocks strict mode");
+      assert.match(legacyStatus.reason ?? "", /cold-archive migration/);
+
+      unlinkSync(join(dir, `${legacyHash}.json`));
+      const id = archive.newId();
+      writeFileSync(join(dir, `${id}.json`), JSON.stringify(rec({ id })));
+      assert.equal(archive.readiness().ready, false, "unsigned legacy data blocks strict mode");
+
+      unlinkSync(join(dir, `${id}.json`));
+      writeFileSync(join(dir, "not-json.json"), "{");
+      assert.equal(archive.readiness().ready, false, "malformed records block strict mode");
+    } finally {
+      if (prev === undefined) delete process.env.ARCHIVE_MAC_REQUIRED;
+      else process.env.ARCHIVE_MAC_REQUIRED = prev;
+    }
+  }));
+
+  test("readiness rejects malformed or dangling replay holds", () => withKey(() => {
+    const previousReplay = process.env.PAYMENT_REPLAY_KEY;
+    process.env.PAYMENT_REPLAY_KEY = "archive-readiness-hold-key";
+    const id = archive.newId();
+    try {
+      archive.save(rec({ id }));
+      const holdPath = join(dir, `.report-${id.toLowerCase()}.replay-hold`);
+      writeFileSync(holdPath, "{");
+      assert.match(archive.readiness().reason ?? "", /malformed replay hold/);
+
+      writeFileSync(
+        holdPath,
+        JSON.stringify({
+          v: 1,
+          reportId: id,
+          fingerprint: "a".repeat(64),
+          attemptToken: "b".repeat(32),
+          mac: "c".repeat(64),
+        }),
+      );
+      assert.match(archive.readiness().reason ?? "", /invalid replay hold/);
+    } finally {
+      if (previousReplay === undefined) delete process.env.PAYMENT_REPLAY_KEY;
+      else process.env.PAYMENT_REPLAY_KEY = previousReplay;
+    }
+  }));
+
+  test("readiness rejects a bad hold MAC separately from a mismatched replay owner", () => withKey(() => {
+    const previousReplay = process.env.PAYMENT_REPLAY_KEY;
+    process.env.PAYMENT_REPLAY_KEY = "archive-readiness-hold-key";
+    const first = archive.newId();
+    const second = archive.newId();
+    try {
+      archive.save(rec({ id: first }));
+      archive.save(rec({ id: second }));
+      const replayRequirements = {
+        scheme: "exact",
+        network: "eip155:196",
+        amount: "10000",
+        asset: "0x" + "01".repeat(20),
+        payTo: "0x" + "02".repeat(20),
+      };
+      const fingerprint = replayFingerprint(replayRequirements, "archive-hold-01");
+      const begun = replay.begin(
+        fingerprint,
+        { paramsSha256: "a".repeat(64), contentType: "text/html" },
+        replayRequirements,
+      );
+      assert.equal(begun.kind, "created");
+      if (begun.kind !== "created") return;
+      assert.equal(replay.attachReport(fingerprint, begun.attemptToken, first), true);
+
+      const firstHold = join(dir, `.report-${first.toLowerCase()}.replay-hold`);
+      const validHold = JSON.parse(readFileSync(firstHold, "utf8"));
+      writeFileSync(firstHold, JSON.stringify({ ...validHold, mac: "0".repeat(64) }));
+      assert.match(archive.readiness().reason ?? "", /invalid replay hold/);
+
+      // Keep the original authenticated bytes, but index them under another
+      // report. The MAC remains valid while the replay state still names first.
+      writeFileSync(firstHold, JSON.stringify(validHold));
+      const mismatchedHold = join(dir, `.report-${second.toLowerCase()}.replay-hold`);
+      renameSync(firstHold, mismatchedHold);
+      assert.match(archive.readiness().reason ?? "", /invalid replay hold/);
+    } finally {
+      if (previousReplay === undefined) delete process.env.PAYMENT_REPLAY_KEY;
+      else process.env.PAYMENT_REPLAY_KEY = previousReplay;
+    }
+  }));
+
+  test("readiness validates replay holds after collecting their records", () => withKey(() => {
+    const previousReplay = process.env.PAYMENT_REPLAY_KEY;
+    process.env.PAYMENT_REPLAY_KEY = "archive-readiness-order-key";
+    const id = archive.newId();
+    try {
+      archive.save(rec({ id }));
+      const replayRequirements = {
+        scheme: "exact",
+        network: "eip155:196",
+        amount: "10000",
+        asset: "0x" + "03".repeat(20),
+        payTo: "0x" + "04".repeat(20),
+      };
+      const fingerprint = replayFingerprint(replayRequirements, "archive-hold-02");
+      const begun = replay.begin(
+        fingerprint,
+        { paramsSha256: "b".repeat(64), contentType: "text/html" },
+        replayRequirements,
+      );
+      assert.equal(begun.kind, "created");
+      if (begun.kind !== "created") return;
+      assert.equal(replay.attachReport(fingerprint, begun.attemptToken, id), true);
+
+      const recordPath = join(dir, `${id}.json`);
+      const recordBody = readFileSync(recordPath, "utf8");
+      unlinkSync(recordPath);
+      writeFileSync(recordPath, recordBody);
+      assert.equal(
+        archive.readiness().ready,
+        true,
+        "a hold created before its record directory entry must not depend on readdir order",
+      );
+    } finally {
+      if (previousReplay === undefined) delete process.env.PAYMENT_REPLAY_KEY;
+      else process.env.PAYMENT_REPLAY_KEY = previousReplay;
+    }
+  }));
+
+  test("a confirmed replay-state crash residue does not disable paid readiness", () => withKey(() => {
+    const previousReplay = process.env.PAYMENT_REPLAY_KEY;
+    process.env.PAYMENT_REPLAY_KEY = "archive-confirmed-hold-key";
+    const id = archive.newId();
+    try {
+      archive.save(rec({ id }));
+      const requirements = {
+        scheme: "exact",
+        network: "eip155:196",
+        amount: "10000",
+        asset: "0x" + "05".repeat(20),
+        payTo: "0x" + "06".repeat(20),
+      };
+      const fingerprint = replayFingerprint(requirements, "archive-hold-03");
+      const begun = replay.begin(
+        fingerprint,
+        { paramsSha256: "c".repeat(64), contentType: "text/html" },
+        requirements,
+      );
+      assert.equal(begun.kind, "created");
+      if (begun.kind !== "created") return;
+      assert.equal(replay.attachReport(fingerprint, begun.attemptToken, id), true);
+      const holdPath = join(dir, `.report-${id.toLowerCase()}.replay-hold`);
+      const holdBody = readFileSync(holdPath, "utf8");
+      const settlement = {
+        status: "confirmed" as const,
+        transaction: "0x" + "71".repeat(32),
+        network: "eip155:196",
+      };
+      assert.equal(archive.linkConfirmedSettlement(id, settlement).kind, "linked");
+      assert.equal(
+        replay.finalize(fingerprint, begun.attemptToken, id, settlement),
+        true,
+      );
+      assert.equal(existsSync(holdPath), false);
+
+      // Model the process dying after the confirmed state fsync and before the
+      // redundant hold unlink became durable.
+      writeFileSync(holdPath, holdBody);
+      assert.equal(replay.begin(fingerprint, { paramsSha256: "c".repeat(64), contentType: "text/html" }, requirements).kind, "confirmed");
+      assert.equal(archive.readiness().ready, true);
+    } finally {
+      if (previousReplay === undefined) delete process.env.PAYMENT_REPLAY_KEY;
+      else process.env.PAYMENT_REPLAY_KEY = previousReplay;
+    }
+  }));
+
+  test("migration readiness is explicit about unsigned records", () => withKey(() => {
+    const prev = process.env.ARCHIVE_MAC_REQUIRED;
+    delete process.env.ARCHIVE_MAC_REQUIRED;
+    try {
+      const id = archive.newId();
+      writeFileSync(join(dir, `${id}.json`), JSON.stringify(rec({ id })));
+      const status = archive.readiness();
+      assert.equal(status.ready, true);
+      assert.equal(status.mode, "migration");
+      assert.equal(status.unsignedRecords, 1);
+    } finally {
+      if (prev === undefined) delete process.env.ARCHIVE_MAC_REQUIRED;
+      else process.env.ARCHIVE_MAC_REQUIRED = prev;
+    }
+  }));
 });
 
 // The point of the MAC is that a tampered file on disk is never served. Checking

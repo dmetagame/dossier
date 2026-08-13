@@ -26,9 +26,11 @@
 
 import { test, describe, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { readdirSync } from "node:fs";
-import { randomBytes } from "node:crypto";
+import { existsSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { createHash, createHmac, randomBytes } from "node:crypto";
+import { x402HTTPResourceServer } from "@okxweb3/x402-hono";
 import { stubUpstream, tempArchive, ADDR } from "./helpers";
+import { archiveRecordMac } from "../src/dossier/archive-format";
 
 const { dir, cleanup } = tempArchive();
 process.env.ARCHIVE_DIR = dir;
@@ -42,6 +44,9 @@ process.env.OKX_API_KEY = "sandbox-key-not-a-credential";
 process.env.OKX_SECRET_KEY = "sandbox-secret-not-a-credential";
 process.env.OKX_PASSPHRASE = "sandbox-passphrase-not-a-credential";
 process.env.PUBLIC_ORIGIN = "https://dossier.example";
+process.env.PAYMENT_REPLAY_KEY = "sandbox-payment-replay-key";
+process.env.ARCHIVE_MAC_KEY = "sandbox-archive-mac-key";
+process.env.ARCHIVE_MAC_REQUIRED = "1";
 
 const NETWORK = "eip155:196";
 const PAYER = "0x00000000000000000000000000000000000000ff";
@@ -60,6 +65,17 @@ const fac = {
   verifyReason: "invalid_exact_evm_payload_authorization_valid_before",
   settleOk: true,
   settleReason: "insufficient_funds",
+  settleFailureWithTx: false,
+  settleStatus: undefined as "pending" | "success" | "timeout" | undefined,
+  settleStatusResult: undefined as "pending" | "success" | "failed" | undefined,
+  settleStatusTransaction: undefined as string | undefined,
+  settleStatusNetwork: undefined as string | undefined,
+  settleStatusPayer: undefined as string | undefined,
+  settleStatusOmitPayer: false,
+  settleStatusDown: false,
+  settleStatusCalls: 0,
+  settleNetwork: NETWORK,
+  settleAmount: undefined as string | undefined,
   /**
    * Make a call unreachable, as an outage, a revoked key or a 500 would. This
    * is not the same as the facilitator answering "no", and the service must not
@@ -69,6 +85,10 @@ const fac = {
   settleDown: false,
   /** Archive size observed at the moment settle was called. */
   archivedAtSettle: -1,
+  /** Report id already committed to replay state when settlement begins. */
+  replayReportAtSettle: undefined as string | undefined,
+  /** Test-only hook after the pending replay/report is visible at settle. */
+  beforeSettleResponse: undefined as (() => void) | undefined,
   /**
    * A fresh transaction per test. The archive is keyed on this, and reusing one
    * hash made a later test recover an earlier test's report, which is the same
@@ -79,23 +99,98 @@ const fac = {
     this.calls = [];
     this.verifyValid = true;
     this.settleOk = true;
+    this.settleFailureWithTx = false;
+    this.settleStatus = undefined;
+    this.settleStatusResult = undefined;
+    this.settleStatusTransaction = undefined;
+    this.settleStatusNetwork = undefined;
+    this.settleStatusPayer = undefined;
+    this.settleStatusOmitPayer = false;
+    this.settleStatusDown = false;
+    this.settleStatusCalls = 0;
+    this.settleNetwork = NETWORK;
+    this.settleAmount = undefined;
     this.down = false;
     this.settleDown = false;
     this.archivedAtSettle = -1;
+    this.replayReportAtSettle = undefined;
+    this.beforeSettleResponse = undefined;
     this.tx = "0x" + randomBytes(32).toString("hex");
+    paymentSerial++;
   },
   ops(): Op[] {
     return this.calls.map((c) => c.op);
   },
 };
 
-const archivedCount = () => readdirSync(dir).length;
+let paymentSerial = 0;
+
+const archivedCount = () =>
+  readdirSync(dir).filter((name) => name.endsWith(".json") && !name.startsWith("."))
+    .length;
+
+const replayStateForReport = (reportId: string): string | undefined =>
+  readdirSync(dir)
+    .filter((name) => name.startsWith(".payment-") && name.endsWith(".state"))
+    .find((name) => {
+      try {
+        return JSON.parse(readFileSync(`${dir}/${name}`, "utf8")).reportId === reportId;
+      } catch {
+        return false;
+      }
+    });
+
+const canonicalReplayValue = (value: any): string => {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalReplayValue).join(",")}]`;
+  return `{${Object.entries(value)
+    .filter(([, item]) => item !== undefined)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([name, item]) => `${JSON.stringify(name)}:${canonicalReplayValue(item)}`)
+    .join(",")}}`;
+};
+
+const replayMacKey = () =>
+  createHash("sha256")
+    .update(`dossier-payment-replay:${process.env.PAYMENT_REPLAY_KEY}`)
+    .digest();
+
+function restoreReplayHold(state: {
+  reportId: string;
+  fingerprint: string;
+  attemptToken: string;
+}): void {
+  const unsigned = {
+    v: 1,
+    reportId: state.reportId,
+    fingerprint: state.fingerprint,
+    attemptToken: state.attemptToken,
+  };
+  const mac = createHmac("sha256", replayMacKey())
+    .update(canonicalReplayValue(unsigned))
+    .digest("hex");
+  writeFileSync(
+    `${dir}/.report-${state.reportId.toLowerCase()}.replay-hold`,
+    JSON.stringify({ ...unsigned, mac }),
+  );
+}
 
 const json = (data: unknown) =>
   new Response(JSON.stringify({ code: "0", data }), {
     status: 200,
     headers: { "content-type": "application/json" },
   });
+
+const originalProcessHTTPRequest = x402HTTPResourceServer.prototype.processHTTPRequest;
+let failBeforeHandler = 0;
+x402HTTPResourceServer.prototype.processHTTPRequest = async function (...args) {
+  const result = await originalProcessHTTPRequest.apply(this, args);
+  if (failBeforeHandler > 0 && result.type === "payment-verified") {
+    failBeforeHandler--;
+    throw new Error("simulated cold-start failure before handler dispatch");
+  }
+  return result;
+};
 
 // Installed before src/app is imported, because the module kicks off the
 // facilitator handshake as it loads. Non-facilitator traffic is handed to the
@@ -127,21 +222,58 @@ globalThis.fetch = (async (input: any, init?: RequestInit) => {
     );
   }
 
+  if (url.includes("/settle/status?")) {
+    fac.settleStatusCalls++;
+    if (fac.settleStatusDown) throw new Error("simulated settlement status outage");
+    return json({
+      success: fac.settleStatusResult !== "failed",
+      status: fac.settleStatusResult ?? "pending",
+      transaction: fac.settleStatusTransaction ?? fac.tx,
+      network: fac.settleStatusNetwork ?? fac.settleNetwork,
+      ...(!fac.settleStatusOmitPayer
+        ? { payer: fac.settleStatusPayer ?? PAYER }
+        : {}),
+    });
+  }
+
   if (url.endsWith("/settle")) {
     fac.calls.push({ op: "settle", body });
     if (fac.settleDown) throw new Error("simulated facilitator outage during settle");
     // Read at the moment money would move. The handler archives before it
     // responds, so a report that exists here is one the buyer is about to get.
     fac.archivedAtSettle = archivedCount();
+    const pendingReplay = readdirSync(dir)
+      .filter((name) => name.startsWith(".payment-") && name.endsWith(".state"))
+      .map((name) => {
+        try {
+          return JSON.parse(readFileSync(`${dir}/${name}`, "utf8")) as {
+            status?: string;
+            reportId?: string;
+          };
+        } catch {
+          return null;
+        }
+      })
+      .find((state) => state?.status === "pending" && state.reportId);
+    fac.replayReportAtSettle = pendingReplay?.reportId;
+    fac.beforeSettleResponse?.();
     return json(
       fac.settleOk
-        ? { success: true, status: "success", transaction: fac.tx, network: NETWORK, payer: PAYER }
+        ? {
+            success: true,
+            status: fac.settleStatus ?? "success",
+            transaction: fac.tx,
+            network: fac.settleNetwork,
+            payer: PAYER,
+            ...(fac.settleAmount !== undefined ? { amount: fac.settleAmount } : {}),
+          }
         : {
             success: false,
+            ...(fac.settleStatus ? { status: fac.settleStatus } : {}),
             errorReason: fac.settleReason,
             errorMessage: "settlement failed on chain",
-            transaction: "",
-            network: NETWORK,
+            transaction: fac.settleFailureWithTx ? fac.tx : "",
+            network: fac.settleNetwork,
             payer: PAYER,
           },
     );
@@ -152,6 +284,8 @@ globalThis.fetch = (async (input: any, init?: RequestInit) => {
 
 const { app, paymentLayerState } = await import("../src/app");
 const archive = await import("../src/dossier/archive");
+const paymentReplay = await import("../src/payment-replay");
+const ratelimit = await import("../src/ratelimit");
 
 const b64 = {
   encode: (o: unknown) => Buffer.from(JSON.stringify(o), "utf8").toString("base64"),
@@ -186,7 +320,7 @@ function payment(required: any) {
         value: required.accepts[0].amount,
         validAfter: "0",
         validBefore: String(Math.floor(Date.now() / 1000) + 300),
-        nonce: "0x" + "22".repeat(32),
+        nonce: "0x" + paymentSerial.toString(16).padStart(64, "0"),
       },
     },
   });
@@ -217,6 +351,7 @@ before(async () => {
   assert.equal(paymentLayerState(), "ready", "the sandbox facilitator must come up");
 });
 after(() => {
+  x402HTTPResourceServer.prototype.processHTTPRequest = originalProcessHTTPRequest;
   restore();
   globalThis.fetch = upstream;
   cleanup();
@@ -224,6 +359,7 @@ after(() => {
 beforeEach(() => {
   fac.reset();
   archive.resetIndex();
+  ratelimit.reset();
 });
 
 describe("the payment challenge", () => {
@@ -253,6 +389,106 @@ describe("the payment challenge", () => {
     assert.equal(archivedCount(), before, "a 402 must not archive anything");
     assert.deepEqual(fac.ops(), [], "and must not talk to the facilitator");
   });
+
+  test("an oversized payment authorization is rejected before SDK decoding", async () => {
+    const before = archivedCount();
+    const r = await app.request(`/dossier?tokenAddress=${ADDR.cake}`, {
+      headers: { "payment-signature": "a".repeat(16 * 1024 + 1) },
+    });
+    assert.equal(r.status, 431);
+    assert.equal((await r.json() as any).error, "payment_header_too_large");
+    assert.deepEqual(fac.ops(), [], "the facilitator never sees the oversized header");
+    assert.equal(archivedCount(), before);
+  });
+
+  test("new or invalid signed attempts are bounded, while an exact retry remains reachable", async () => {
+    const path = `/dossier?tokenAddress=${ADDR.cake}`;
+    const buyerPeer = "198.51.100.10";
+    const exhaustedPeer = "203.0.113.10";
+
+    // Establish a real, confirmed replay owner from a different client before
+    // exhausting the second client's public challenge budget.
+    const unpaid = await app.request(path, {
+      headers: { "x-forwarded-for": buyerPeer },
+    });
+    assert.equal(unpaid.status, 402);
+    const required = b64.decode(unpaid.headers.get("payment-required")!);
+    const signed = payment(required);
+    const first = await paidRequest(path, signed, {
+      headers: { "x-forwarded-for": buyerPeer },
+    });
+    assert.equal(first.status, 200);
+    const firstBody = await first.text();
+    const facilitatorCalls = fac.ops().length;
+
+    // Fill the exhausted client's bucket with unsigned challenges. These do
+    // not enter the payment/replay layer, so the next signed attempt can prove
+    // the limiter decision without adding facilitator calls or state files.
+    for (let i = 0; i < ratelimit.limits["/dossier"]!.max; i++) {
+      const challengeResponse = await app.request(path, {
+        headers: { "x-forwarded-for": exhaustedPeer },
+      });
+      assert.equal(challengeResponse.status, 402);
+    }
+
+    const beforeFiles = readdirSync(dir).sort();
+    const beforeVersion = archive.readinessVersionForTests();
+    const invalid = await app.request(path, {
+      headers: {
+        "x-forwarded-for": exhaustedPeer,
+        "payment-signature": "not-a-payment",
+      },
+    });
+    assert.equal(invalid.status, 429);
+    assert.equal(
+      fac.ops().length,
+      facilitatorCalls,
+      "a novel signed attempt must be rejected before facilitator verification",
+    );
+    assert.deepEqual(
+      readdirSync(dir).sort(),
+      beforeFiles,
+      "the limiter must reject new signed attempts before replay state churn",
+    );
+    assert.equal(
+      archive.readinessVersionForTests(),
+      beforeVersion,
+      "a rejected signed flood must not invalidate the durability scan",
+    );
+
+    const retry = await paidRequest(path, signed, {
+      headers: { "x-forwarded-for": exhaustedPeer },
+    });
+    assert.equal(retry.status, 200);
+    assert.equal(await retry.text(), firstBody);
+    assert.equal(
+      fac.ops().length,
+      facilitatorCalls,
+      "an exact durable retry bypasses the limiter without re-verifying or settling",
+    );
+  });
+
+  test("a valid-shaped payment rejected by the facilitator leaves no replay or cache churn", async () => {
+    const path = `/dossier?tokenAddress=${ADDR.cake}`;
+    const { required } = await challenge(path);
+    const beforeFiles = readdirSync(dir).sort();
+    const beforeVersion = archive.readinessVersionForTests();
+    fac.verifyValid = false;
+
+    const rejected = await paidRequest(path, payment(required));
+    assert.equal(rejected.status, 402);
+    assert.deepEqual(fac.ops(), ["verify"]);
+    assert.deepEqual(
+      readdirSync(dir).sort(),
+      beforeFiles,
+      "signature verification must happen before replay ownership is published",
+    );
+    assert.equal(
+      archive.readinessVersionForTests(),
+      beforeVersion,
+      "a rejected signature must not invalidate the cached durability scan",
+    );
+  });
 });
 
 describe("a paid call", () => {
@@ -271,6 +507,15 @@ describe("a paid call", () => {
     // The report was archived before money moved, so a settled payment always
     // has a document behind it.
     assert.equal(fac.archivedAtSettle, before + 1);
+    assert.match(
+      fac.replayReportAtSettle ?? "",
+      /^[a-z0-9-]{8,64}$/i,
+      "settlement must not begin until replay state points at the staged report",
+    );
+    assert.ok(
+      readdirSync(dir).includes(`${fac.replayReportAtSettle}.json`),
+      "the replay pointer visible at settle must resolve to the staged archive record",
+    );
 
     const receipt = b64.decode(r.headers.get("payment-response")!);
     assert.equal(receipt.success, true);
@@ -297,6 +542,18 @@ describe("a paid call", () => {
       document,
       "recovery returns the same bytes the buyer was sent, not a rebuild",
     );
+
+    const stored = archive.byTransaction(fac.tx);
+    assert.deepEqual(
+      stored?.settlement,
+      {
+        status: "confirmed",
+        transaction: fac.tx,
+        network: NETWORK,
+        payer: PAYER,
+      },
+      "new recovery records explicitly state that settlement was confirmed",
+    );
   });
 
   test("the payload must match our own requirements", async () => {
@@ -310,6 +567,578 @@ describe("a paid call", () => {
     );
     assert.equal(r.status, 402, "an underpayment is not a payment");
     assert.deepEqual(fac.ops(), [], "and is refused before the facilitator is asked");
+  });
+
+  test("a replay of the same payment returns the original archived bytes", async () => {
+    const { required } = await challenge();
+    const sig = payment(required);
+    const first = await paidRequest(`/dossier?tokenAddress=${ADDR.cake}`, sig);
+    const firstBody = await first.text();
+    const firstRecord = archive.byTransaction(fac.tx);
+    assert.ok(firstRecord);
+    const count = archivedCount();
+
+    const second = await paidRequest(`/dossier?tokenAddress=${ADDR.cake}`, sig);
+    assert.equal(second.status, 200);
+    assert.equal(await second.text(), firstBody, "a retry gets exactly the first delivery");
+    assert.equal(archive.byTransaction(fac.tx)?.id, firstRecord!.id);
+    assert.equal(archivedCount(), count, "the discarded replay does not consume archive space");
+    assert.deepEqual(
+      fac.ops(),
+      ["verify", "settle"],
+      "a finalized replay is served before facilitator verification can reject its used nonce",
+    );
+  });
+
+  test("a durable exact retry bypasses an exhausted public challenge budget", async () => {
+    const path = `/dossier?tokenAddress=${ADDR.cake}`;
+    const { required } = await challenge(path);
+    const sig = payment(required);
+    const first = await paidRequest(path, sig);
+    assert.equal(first.status, 200);
+    const delivered = await first.text();
+    const operations = fac.ops().length;
+
+    const peer = "203.0.113.77";
+    for (let i = 0; i < ratelimit.limits["/dossier"]!.max; i++) {
+      assert.equal(ratelimit.check("/dossier", peer).limited, false);
+    }
+    const retry = await app.request(path, {
+      headers: {
+        "x-forwarded-for": peer,
+        "payment-signature": sig,
+      },
+    });
+    assert.equal(retry.status, 200);
+    assert.equal(await retry.text(), delivered);
+    assert.equal(
+      fac.ops().length,
+      operations,
+      "the exempt retry reconciles locally without a second verify or settle",
+    );
+  });
+
+  test("buyer-only requirement extras cannot split one authorization into a second settlement", async () => {
+    const { required } = await challenge();
+    const sig = payment(required);
+    const first = await paidRequest(`/dossier?tokenAddress=${ADDR.cake}`, sig);
+    assert.equal(first.status, 200);
+    const firstBody = await first.text();
+    const owner = archive.byTransaction(fac.tx);
+    assert.ok(owner);
+    const count = archivedCount();
+    const before = fac.ops().length;
+
+    const replayPayload = b64.decode(sig);
+    replayPayload.accepted.extra = {
+      ...(replayPayload.accepted.extra ?? {}),
+      buyerOnly: { arbitrary: true },
+    };
+    replayPayload.resource = {
+      url: "https://buyer.example/inert-transport",
+      description: "not part of the signed authorization",
+    };
+    replayPayload.unknownTransportField = "ignored";
+    const replayed = await paidRequest(
+      `/dossier?tokenAddress=${ADDR.cake}`,
+      b64.encode(replayPayload),
+    );
+
+    assert.equal(replayed.status, 200);
+    assert.equal(await replayed.text(), firstBody);
+    assert.equal(archive.byTransaction(fac.tx)?.id, owner!.id);
+    assert.equal(archivedCount(), count, "no second archive candidate is created");
+    assert.equal(
+      fac.ops().length,
+      before,
+      "the semantic replay is resolved before facilitator verify or settle",
+    );
+  });
+
+  test("a used-nonce facilitator rejection is bypassed by finalized replay state", async () => {
+    const { required } = await challenge();
+    const sig = payment(required);
+    const first = await paidRequest(`/dossier?tokenAddress=${ADDR.cake}`, sig);
+    const firstBody = await first.text();
+    assert.equal(first.status, 200);
+
+    fac.verifyValid = false;
+    fac.verifyReason = "nonce_already_used";
+    const before = fac.ops().length;
+    const replayed = await paidRequest(`/dossier?tokenAddress=${ADDR.cake}`, sig);
+    assert.equal(replayed.status, 200);
+    assert.equal(await replayed.text(), firstBody);
+    assert.equal(
+      fac.ops().length,
+      before,
+      "the finalized fingerprint resolves before the used-nonce verification call",
+    );
+  });
+
+  test("a used payment cannot buy a different report", async () => {
+    const { required } = await challenge();
+    const sig = payment(required);
+    const first = await paidRequest(`/dossier?tokenAddress=${ADDR.cake}`, sig);
+    assert.equal(first.status, 200);
+    const firstBody = await first.text();
+    const firstRecord = archive.byTransaction(fac.tx);
+    assert.ok(firstRecord);
+    const count = archivedCount();
+
+    const second = await paidRequest(
+      `/dossier?tokenAddress=${ADDR.uni}&chain=ethereum`,
+      sig,
+    );
+    assert.equal(second.status, 409);
+    const conflict = (await second.json()) as any;
+    assert.equal(conflict.error, "payment_already_used");
+    assert.equal(conflict.chargedAgain, false);
+    assert.equal(archive.byTransaction(fac.tx)?.id, firstRecord!.id);
+    assert.equal(archivedCount(), count, "the rejected report is not retained as an orphan");
+
+    const recovered = await app.request("/dossier/recovery", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ paymentTransaction: fac.tx }),
+    });
+    assert.equal(recovered.status, 200);
+    assert.equal((await recovered.json() as any).deliverable, firstBody);
+  });
+
+  test("distinct payment fingerprints that settle to one transaction adopt its original owner", async () => {
+    const firstChallenge = await challenge(`/dossier?tokenAddress=${ADDR.cake}`);
+    const firstSig = payment(firstChallenge.required);
+    const first = await paidRequest(`/dossier?tokenAddress=${ADDR.cake}`, firstSig);
+    assert.equal(first.status, 200);
+    const firstBody = await first.text();
+    const transaction = fac.tx;
+    const owner = archive.byTransaction(transaction);
+    assert.ok(owner);
+    const ownerCount = archivedCount();
+
+    // Generate a distinct nonce/fingerprint but force the facilitator to return
+    // the already-owned transaction. This reaches the post-settle conflict
+    // branch that an exact signature replay short-circuits before verification.
+    fac.reset();
+    const secondChallenge = await challenge(
+      `/dossier?tokenAddress=${ADDR.uni}&chain=ethereum`,
+    );
+    const secondSig = payment(secondChallenge.required);
+    fac.tx = transaction;
+    const second = await paidRequest(
+      `/dossier?tokenAddress=${ADDR.uni}&chain=ethereum`,
+      secondSig,
+    );
+    assert.equal(second.status, 409);
+    assert.equal((await second.json() as any).error, "payment_already_used");
+    assert.deepEqual(fac.ops(), ["verify", "settle"]);
+    assert.equal(archive.byTransaction(transaction)?.id, owner!.id);
+    assert.equal(archivedCount(), ownerCount, "the losing staged report is discarded");
+    assert.equal(
+      readdirSync(dir).some((name) => name.endsWith(".replay-hold")),
+      false,
+      "the losing replay hold is removed after owner adoption",
+    );
+
+    const beforeRetry = fac.ops().length;
+    const retried = await paidRequest(
+      `/dossier?tokenAddress=${ADDR.uni}&chain=ethereum`,
+      secondSig,
+    );
+    assert.equal(retried.status, 409);
+    assert.equal((await retried.json() as any).error, "payment_already_used");
+    assert.equal(
+      fac.ops().length,
+      beforeRetry,
+      "the adopted fingerprint resolves without verifying or settling again",
+    );
+
+    const recovered = await app.request("/dossier/recovery", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ paymentTransaction: transaction }),
+    });
+    assert.equal(recovered.status, 200);
+    assert.equal((await recovered.json() as any).deliverable, firstBody);
+  });
+
+  test("a retry adopts an existing transaction owner after conflict recovery", async () => {
+    const firstChallenge = await challenge(`/dossier?tokenAddress=${ADDR.cake}`);
+    const first = await paidRequest(
+      `/dossier?tokenAddress=${ADDR.cake}`,
+      payment(firstChallenge.required),
+    );
+    assert.equal(first.status, 200);
+    const firstBody = await first.text();
+    const owner = archive.byTransaction(fac.tx);
+    assert.ok(owner?.settlement);
+    const ownerTransaction = owner!.settlement!.transaction;
+    const ownerCount = archivedCount();
+
+    fac.reset();
+    const secondChallenge = await challenge(
+      `/dossier?tokenAddress=${ADDR.uni}&chain=ethereum`,
+    );
+    const secondSig = payment(secondChallenge.required);
+    const decodedSecond = b64.decode(secondSig);
+    const secondRequirements = decodedSecond.accepted;
+    const secondRequest = {
+      paramsSha256: archive.paramsHash({
+        tokenAddress: ADDR.uni,
+        chain: "ethereum",
+      }),
+      contentType: "text/html" as const,
+    };
+    const fingerprint = paymentReplay.fingerprintPayment(
+      decodedSecond,
+      secondRequirements,
+    );
+    assert.ok(fingerprint);
+    const begun = paymentReplay.begin(
+      fingerprint!,
+      secondRequest,
+      secondRequirements,
+    );
+    assert.equal(begun.kind, "created");
+    if (begun.kind !== "created") return;
+
+    const candidateId = archive.newId();
+    assert.equal(
+      archive.save({
+        id: candidateId,
+        paramsSha256: secondRequest.paramsSha256,
+        request: { tokenAddress: ADDR.uni, chain: "ethereum" },
+        contentType: secondRequest.contentType,
+        deliverable: "losing recovery candidate",
+        deliveredAt: new Date().toISOString(),
+      }),
+      true,
+    );
+    assert.equal(
+      paymentReplay.attachReport(fingerprint!, begun.attemptToken, candidateId),
+      true,
+    );
+    assert.equal(
+      paymentReplay.markUnknown(
+        fingerprint!,
+        begun.attemptToken,
+        "archive_link_failed",
+        {
+          reportId: candidateId,
+          settlement: {
+            transaction: owner!.settlement!.transaction,
+            network: owner!.settlement!.network,
+            ...(owner!.settlement!.amount !== undefined
+              ? { amount: owner!.settlement!.amount }
+              : {}),
+            ...(owner!.settlement!.payer !== undefined
+              ? { payer: owner!.settlement!.payer }
+              : {}),
+          },
+          settlementEvidence: "confirmed",
+        },
+      ),
+      true,
+    );
+
+    const beforeRetry = fac.ops().length;
+    const retried = await paidRequest(
+      `/dossier?tokenAddress=${ADDR.uni}&chain=ethereum`,
+      secondSig,
+    );
+    assert.equal(retried.status, 409);
+    assert.equal((await retried.json() as any).error, "payment_already_used");
+    assert.equal(
+      fac.ops().length,
+      beforeRetry,
+      "recovery adopts durable ownership before verify or settle",
+    );
+    assert.equal(archive.byTransaction(ownerTransaction)?.id, owner!.id);
+    assert.equal(archive.byId(candidateId), null, "the losing candidate is discarded");
+    assert.equal(archivedCount(), ownerCount);
+    const repaired = paymentReplay.begin(
+      fingerprint!,
+      secondRequest,
+      secondRequirements,
+    );
+    assert.equal(repaired.kind, "confirmed");
+    if (repaired.kind === "confirmed") {
+      assert.equal(repaired.state.reportId, owner!.id);
+    }
+
+    const sameRequest = await paidRequest(
+      `/dossier?tokenAddress=${ADDR.cake}`,
+      secondSig,
+    );
+    assert.equal(sameRequest.status, 200);
+    assert.equal(await sameRequest.text(), firstBody);
+    assert.equal(
+      fac.ops().length,
+      beforeRetry,
+      "subsequent retries also resolve without facilitator calls",
+    );
+  });
+
+  test("a conflict replay-adoption failure is moved to unknown", async () => {
+    const firstChallenge = await challenge(`/dossier?tokenAddress=${ADDR.cake}`);
+    const first = await paidRequest(
+      `/dossier?tokenAddress=${ADDR.cake}`,
+      payment(firstChallenge.required),
+    );
+    assert.equal(first.status, 200);
+    const owner = archive.byTransaction(fac.tx);
+    assert.ok(owner?.settlement);
+    const ownerTransaction = owner!.settlement!.transaction;
+
+    fac.reset();
+    fac.tx = ownerTransaction;
+    let mutatedReportId: string | undefined;
+    const settlementC = {
+      transaction: "0x" + "cc".repeat(32),
+      network: NETWORK,
+      payer: PAYER,
+    };
+    fac.beforeSettleResponse = () => {
+      const pendingName = readdirSync(dir)
+        .filter((name) => name.startsWith(".payment-") && name.endsWith(".state"))
+        .find((name) => {
+          try {
+            return JSON.parse(readFileSync(`${dir}/${name}`, "utf8")).status === "pending";
+          } catch {
+            return false;
+          }
+        });
+      assert.ok(pendingName);
+      const statePath = `${dir}/${pendingName}`;
+      const current = JSON.parse(readFileSync(statePath, "utf8"));
+      assert.equal(typeof current.reportId, "string");
+      mutatedReportId = current.reportId;
+      const {
+        mac: _mac,
+        ownerPid: _ownerPid,
+        ownerStartedAt: _ownerStartedAt,
+        ownerToken: _ownerToken,
+        reason: _reason,
+        settlement: _settlement,
+        ...withoutVolatileFields
+      } = current;
+      const unknown = {
+        ...withoutVolatileFields,
+        status: "unknown",
+        reason: "replay_commit_failed",
+        settlement: settlementC,
+        settlementEvidence: "confirmed",
+        updatedAt: new Date().toISOString(),
+      };
+      const mac = createHmac("sha256", replayMacKey())
+        .update(canonicalReplayValue(unknown))
+        .digest("hex");
+      writeFileSync(statePath, JSON.stringify({ ...unknown, mac }));
+    };
+
+    const secondChallenge = await challenge(`/dossier?tokenAddress=${ADDR.uni}&chain=ethereum`);
+    const secondSig = payment(secondChallenge.required);
+    const retried = await paidRequest(
+      `/dossier?tokenAddress=${ADDR.uni}&chain=ethereum`,
+      secondSig,
+    );
+    assert.equal(retried.status, 503);
+    const body = (await retried.json()) as any;
+    assert.equal(body.error, "payment_replay_unavailable");
+    assert.equal(body.charged, "confirmed");
+    assert.equal(body.paymentTransaction, ownerTransaction);
+    assert.deepEqual(fac.ops(), ["verify", "settle"]);
+    assert.ok(mutatedReportId);
+
+    const decodedSecond = b64.decode(secondSig);
+    const fingerprint = paymentReplay.fingerprintPayment(decodedSecond, decodedSecond.accepted);
+    assert.ok(fingerprint);
+    const request = {
+      paramsSha256: archive.paramsHash({ tokenAddress: ADDR.uni, chain: "ethereum" }),
+      contentType: "text/html" as const,
+    };
+    const state = paymentReplay.begin(fingerprint!, request, decodedSecond.accepted);
+    assert.equal(state.kind, "in_flight");
+    if (state.kind === "in_flight") {
+      assert.equal(state.state.status, "unknown");
+      assert.equal(state.state.reason, "replay_commit_failed");
+      assert.equal(state.state.reportId, mutatedReportId);
+      assert.equal(state.state.settlement?.transaction, ownerTransaction);
+    }
+    assert.ok(archive.byId(mutatedReportId!));
+    assert.equal(
+      archive.byId(mutatedReportId!)?.settlement,
+      undefined,
+      "the losing staged candidate remains unclaimed for reconciliation",
+    );
+  });
+
+  test("a process restart repairs replay state from durable settlement ownership", async () => {
+    const { required } = await challenge();
+    const sig = payment(required);
+    const first = await paidRequest(`/dossier?tokenAddress=${ADDR.cake}`, sig);
+    const firstBody = await first.text();
+    const owner = archive.byTransaction(fac.tx);
+    assert.ok(owner?.settlement);
+
+    const stateName = replayStateForReport(owner!.id);
+    assert.ok(stateName);
+    const statePath = `${dir}/${stateName}`;
+    const confirmed = JSON.parse(readFileSync(statePath, "utf8"));
+    const { mac: _mac, settlement: _settlement, reason: _reason, ...pending } = confirmed;
+    const crashed = {
+      ...pending,
+      status: "pending",
+      updatedAt: new Date().toISOString(),
+    };
+    const mac = createHmac("sha256", replayMacKey())
+      .update(canonicalReplayValue(crashed))
+      .digest("hex");
+    restoreReplayHold(confirmed);
+    writeFileSync(statePath, JSON.stringify({ ...crashed, mac }));
+
+    const before = fac.ops().length;
+    const retried = await paidRequest(`/dossier?tokenAddress=${ADDR.cake}`, sig);
+    assert.equal(retried.status, 200);
+    assert.equal(await retried.text(), firstBody);
+    assert.equal(
+      fac.ops().length,
+      before,
+      "durable ownership repairs replay before verify or settle is attempted again",
+    );
+  });
+
+  test("a confirmed replay receipt repairs a transient archive-link failure", async () => {
+    const { required } = await challenge();
+    const sig = payment(required);
+    const first = await paidRequest(`/dossier?tokenAddress=${ADDR.cake}`, sig);
+    const firstBody = await first.text();
+    const owner = archive.byTransaction(fac.tx);
+    assert.ok(owner?.settlement);
+
+    const stateName = replayStateForReport(owner!.id);
+    assert.ok(stateName);
+    const statePath = `${dir}/${stateName}`;
+    const confirmed = JSON.parse(readFileSync(statePath, "utf8"));
+    const {
+      mac: _mac,
+      ownerPid: _ownerPid,
+      ownerStartedAt: _ownerStartedAt,
+      ownerToken: _ownerToken,
+      ...withoutMac
+    } = confirmed;
+    const unknown = {
+      ...withoutMac,
+      status: "unknown",
+      reason: "archive_link_failed",
+      settlementEvidence: "confirmed",
+      updatedAt: new Date().toISOString(),
+    };
+    const mac = createHmac("sha256", replayMacKey())
+      .update(canonicalReplayValue(unknown))
+      .digest("hex");
+    restoreReplayHold(confirmed);
+    writeFileSync(statePath, JSON.stringify({ ...unknown, mac }));
+
+    const claimName = `.tx-${createHash("sha256")
+      .update(fac.tx.toLowerCase())
+      .digest("hex")}.claim`;
+    unlinkSync(`${dir}/${claimName}`);
+    const staged = JSON.parse(readFileSync(`${dir}/${owner!.id}.json`, "utf8"));
+    delete staged.paymentTransaction;
+    delete staged.settlement;
+    delete staged.mac;
+    staged.mac = archiveRecordMac(staged, process.env.ARCHIVE_MAC_KEY)!;
+    writeFileSync(`${dir}/${owner!.id}.json`, JSON.stringify(staged));
+    archive.resetIndex();
+
+    const before = fac.ops().length;
+    const retried = await paidRequest(`/dossier?tokenAddress=${ADDR.cake}`, sig);
+    assert.equal(retried.status, 200);
+    assert.equal(await retried.text(), firstBody);
+    assert.equal(fac.ops().length, before, "repair occurs before verify or settle");
+    assert.deepEqual(archive.byTransaction(fac.tx)?.settlement, owner!.settlement);
+  });
+
+  test("an unknown replay never adopts a different durable settlement", async () => {
+    const path = `/dossier?tokenAddress=${ADDR.cake}`;
+    const { required } = await challenge(path);
+    const sig = payment(required);
+    const decoded = b64.decode(sig);
+    const requirements = decoded.accepted;
+    const fingerprint = paymentReplay.fingerprintPayment(decoded, requirements);
+    assert.ok(fingerprint);
+    const request = {
+      paramsSha256: archive.paramsHash({ tokenAddress: ADDR.cake }),
+      contentType: "text/html" as const,
+    };
+    const begun = paymentReplay.begin(fingerprint!, request, requirements);
+    assert.equal(begun.kind, "created");
+    if (begun.kind !== "created") return;
+
+    const candidateId = archive.newId();
+    assert.equal(
+      archive.save({
+        id: candidateId,
+        paramsSha256: request.paramsSha256,
+        request: { tokenAddress: ADDR.cake },
+        contentType: request.contentType,
+        deliverable: "candidate retained while settlements disagree",
+        deliveredAt: new Date().toISOString(),
+      }),
+      true,
+    );
+    assert.equal(
+      paymentReplay.attachReport(fingerprint!, begun.attemptToken, candidateId),
+      true,
+    );
+    const settlementA = {
+      transaction: "0x" + "aa".repeat(32),
+      network: NETWORK,
+      payer: PAYER,
+    };
+    const settlementB = {
+      status: "confirmed" as const,
+      transaction: "0x" + "bb".repeat(32),
+      network: NETWORK,
+      payer: PAYER,
+    };
+    assert.equal(
+      paymentReplay.markUnknown(
+        fingerprint!,
+        begun.attemptToken,
+        "archive_link_failed",
+        {
+          reportId: candidateId,
+          settlement: settlementA,
+          settlementEvidence: "confirmed",
+        },
+      ),
+      true,
+    );
+    assert.equal(archive.linkConfirmedSettlement(candidateId, settlementB).kind, "linked");
+
+    const before = fac.ops().length;
+    const retried = await paidRequest(path, sig);
+    assert.equal(retried.status, 503);
+    assert.equal((await retried.json() as any).error, "payment_reconciliation_pending");
+    assert.equal(
+      fac.ops().length,
+      before,
+      "a settlement-identity mismatch is refused before verify or settle",
+    );
+    const replayed = paymentReplay.begin(fingerprint!, request, requirements);
+    assert.equal(replayed.kind, "in_flight");
+    if (replayed.kind === "in_flight") {
+      assert.equal(replayed.state.status, "unknown");
+      assert.deepEqual(replayed.state.settlement, settlementA);
+      assert.equal(replayed.state.reportId, candidateId);
+    }
+    assert.deepEqual(archive.byId(candidateId)?.settlement, settlementB);
+    assert.equal(
+      archive.byId(candidateId)?.deliverable,
+      "candidate retained while settlements disagree",
+    );
   });
 });
 
@@ -467,17 +1296,418 @@ describe("settlement failing after the report was generated", () => {
     assert.equal(text.includes("<html"), false, "a failed settlement returns no document");
     assert.deepEqual(fac.ops(), ["verify", "settle"]);
 
-    // The report was still built and archived before settlement was attempted.
-    // That is not a leak — nothing was served — but it is a record with no
-    // transaction on it, and it must stay unreachable rather than become a
-    // free report for whoever guesses at it.
-    assert.equal(archivedCount(), before + 1, "the report is archived either way");
+    // A definite facilitator refusal is not an unknown on-chain outcome. The
+    // staged candidate is discarded so it cannot accumulate as an orphan or
+    // later be mistaken for a paid recovery record.
+    assert.equal(archivedCount(), before, "a definite settlement failure discards the staged report");
     const orphan = await app.request("/dossier/recovery", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ paymentTransaction: fac.tx }),
     });
     assert.equal(orphan.status, 404, "an unsettled report is not recoverable by transaction");
+  });
+
+  test("a failed receipt carrying a transaction hash is not linked or recoverable", async () => {
+    const { required } = await challenge();
+    fac.settleOk = false;
+    fac.settleFailureWithTx = true;
+
+    const r = await paidRequest(`/dossier?tokenAddress=${ADDR.cake}`, payment(required));
+    assert.ok(r.status >= 400, `expected an error status, got ${r.status}`);
+    assert.deepEqual(fac.ops(), ["verify", "settle"]);
+    assert.equal(
+      archive.byTransaction(fac.tx),
+      null,
+      "a failed settlement hash must never become a recovery proof",
+    );
+  });
+
+  test("a pending receipt is not treated as a confirmed recovery proof", async () => {
+    const { required } = await challenge();
+    const sig = payment(required);
+    const decoded = b64.decode(sig);
+    const fingerprint = paymentReplay.fingerprintPayment(decoded, decoded.accepted);
+    assert.ok(fingerprint);
+    fac.settleStatus = "pending";
+    const before = archivedCount();
+
+    const r = await paidRequest(`/dossier?tokenAddress=${ADDR.cake}`, sig);
+    assert.equal(r.status, 503, "a pending settlement cannot deliver an unrecoverable report");
+    assert.equal((await r.json() as any).error, "settlement_unconfirmed");
+    assert.equal(
+      archive.byTransaction(fac.tx),
+      null,
+      "pending settlement must not be indexed as confirmed",
+    );
+    assert.equal(
+      archivedCount(),
+      before + 1,
+      "the staged artefact is retained for reconciliation while outcome is unknown",
+    );
+    const replay = JSON.parse(
+      readFileSync(`${dir}/.payment-${fingerprint}.state`, "utf8"),
+    );
+    assert.equal(replay.status, "unknown");
+    assert.equal(replay.reason, "receipt_unconfirmed");
+    assert.deepEqual(replay.settlement, {
+      transaction: fac.tx,
+      network: NETWORK,
+      amount: decoded.accepted.amount,
+      payer: PAYER,
+    });
+    assert.equal(replay.settlementEvidence, "candidate");
+  });
+
+  test("an exact retry delivers after a pending settlement later confirms", async () => {
+    const { required } = await challenge();
+    const sig = payment(required);
+    fac.settleStatus = "pending";
+
+    const first = await paidRequest(`/dossier?tokenAddress=${ADDR.cake}`, sig);
+    assert.equal(first.status, 503);
+    assert.equal(archive.byTransaction(fac.tx), null);
+    const operationsBeforeRetry = fac.ops().length;
+    const statusCallsBeforeRetry = fac.settleStatusCalls;
+
+    fac.settleStatusResult = "success";
+    const retried = await paidRequest(`/dossier?tokenAddress=${ADDR.cake}`, sig);
+    assert.equal(retried.status, 200);
+    assert.ok((await retried.text()).includes("<html"));
+    assert.equal(
+      fac.ops().length,
+      operationsBeforeRetry,
+      "pending reconciliation does not verify or settle the authorization twice",
+    );
+    assert.equal(fac.settleStatusCalls, statusCallsBeforeRetry + 1);
+    assert.equal(archive.byTransaction(fac.tx)?.settlement?.status, "confirmed");
+  });
+
+  test("a pending settlement can reconcile when final status omits optional payer", async () => {
+    const { required } = await challenge();
+    const sig = payment(required);
+    fac.settleStatus = "pending";
+
+    const first = await paidRequest(`/dossier?tokenAddress=${ADDR.cake}`, sig);
+    assert.equal(first.status, 503);
+    const operationsBeforeRetry = fac.ops().length;
+    fac.settleStatusResult = "success";
+    fac.settleStatusOmitPayer = true;
+
+    const retried = await paidRequest(`/dossier?tokenAddress=${ADDR.cake}`, sig);
+    assert.equal(retried.status, 200);
+    assert.equal(fac.ops().length, operationsBeforeRetry);
+    assert.equal(archive.byTransaction(fac.tx)?.settlement?.payer, PAYER);
+  });
+
+  test("a still-pending exact retry remains unresolved without a claim", async () => {
+    const { required } = await challenge();
+    const sig = payment(required);
+    fac.settleStatus = "pending";
+
+    const first = await paidRequest(`/dossier?tokenAddress=${ADDR.cake}`, sig);
+    assert.equal(first.status, 503);
+    const operationsBeforeRetry = fac.ops().length;
+    const statusCallsBeforeRetry = fac.settleStatusCalls;
+    const claimsBeforeRetry = readdirSync(dir).filter(
+      (name) => name.startsWith(".tx-") && name.endsWith(".claim"),
+    ).length;
+
+    const retried = await paidRequest(`/dossier?tokenAddress=${ADDR.cake}`, sig);
+    assert.equal(retried.status, 503);
+    assert.equal((await retried.json() as any).error, "payment_reconciliation_pending");
+    assert.equal(fac.ops().length, operationsBeforeRetry);
+    assert.equal(fac.settleStatusCalls, statusCallsBeforeRetry + 1);
+    assert.equal(archive.byTransaction(fac.tx), null);
+    assert.equal(
+      readdirSync(dir).filter(
+        (name) => name.startsWith(".tx-") && name.endsWith(".claim"),
+      ).length,
+      claimsBeforeRetry,
+    );
+  });
+
+  test("a mismatched pending status result remains unresolved without a claim", async () => {
+    const { required } = await challenge();
+    const sig = payment(required);
+    fac.settleStatus = "pending";
+
+    const first = await paidRequest(`/dossier?tokenAddress=${ADDR.cake}`, sig);
+    assert.equal(first.status, 503);
+    const operationsBeforeRetry = fac.ops().length;
+    const statusCallsBeforeRetry = fac.settleStatusCalls;
+    const claimsBeforeRetry = readdirSync(dir).filter(
+      (name) => name.startsWith(".tx-") && name.endsWith(".claim"),
+    ).length;
+    fac.settleStatusResult = "success";
+    fac.settleStatusTransaction = "0x" + "66".repeat(32);
+
+    const retried = await paidRequest(`/dossier?tokenAddress=${ADDR.cake}`, sig);
+    assert.equal(retried.status, 503);
+    assert.equal((await retried.json() as any).error, "payment_reconciliation_pending");
+    assert.equal(fac.ops().length, operationsBeforeRetry);
+    assert.equal(fac.settleStatusCalls, statusCallsBeforeRetry + 1);
+    assert.equal(archive.byTransaction(fac.tx), null);
+    assert.equal(
+      readdirSync(dir).filter(
+        (name) => name.startsWith(".tx-") && name.endsWith(".claim"),
+      ).length,
+      claimsBeforeRetry,
+    );
+  });
+
+  test("a failed pending status result remains unresolved without a claim", async () => {
+    const { required } = await challenge();
+    const sig = payment(required);
+    fac.settleStatus = "pending";
+
+    const first = await paidRequest(`/dossier?tokenAddress=${ADDR.cake}`, sig);
+    assert.equal(first.status, 503);
+    const operationsBeforeRetry = fac.ops().length;
+    const claimsBeforeRetry = readdirSync(dir).filter(
+      (name) => name.startsWith(".tx-") && name.endsWith(".claim"),
+    ).length;
+    fac.settleStatusResult = "failed";
+
+    const retried = await paidRequest(`/dossier?tokenAddress=${ADDR.cake}`, sig);
+    assert.equal(retried.status, 503);
+    assert.equal((await retried.json() as any).error, "payment_reconciliation_pending");
+    assert.equal(fac.ops().length, operationsBeforeRetry);
+    assert.equal(archive.byTransaction(fac.tx), null);
+    assert.equal(
+      readdirSync(dir).filter(
+        (name) => name.startsWith(".tx-") && name.endsWith(".claim"),
+      ).length,
+      claimsBeforeRetry,
+    );
+  });
+
+  test("a pending status-query outage remains unresolved without a claim", async () => {
+    const { required } = await challenge();
+    const sig = payment(required);
+    fac.settleStatus = "pending";
+
+    const first = await paidRequest(`/dossier?tokenAddress=${ADDR.cake}`, sig);
+    assert.equal(first.status, 503);
+    const operationsBeforeRetry = fac.ops().length;
+    const statusCallsBeforeRetry = fac.settleStatusCalls;
+    const claimsBeforeRetry = readdirSync(dir).filter(
+      (name) => name.startsWith(".tx-") && name.endsWith(".claim"),
+    ).length;
+    fac.settleStatusDown = true;
+
+    const retried = await paidRequest(`/dossier?tokenAddress=${ADDR.cake}`, sig);
+    assert.equal(retried.status, 503);
+    assert.equal((await retried.json() as any).error, "payment_reconciliation_pending");
+    assert.equal(fac.ops().length, operationsBeforeRetry);
+    assert.equal(fac.settleStatusCalls, statusCallsBeforeRetry + 1);
+    assert.equal(archive.byTransaction(fac.tx), null);
+    assert.equal(
+      readdirSync(dir).filter(
+        (name) => name.startsWith(".tx-") && name.endsWith(".claim"),
+      ).length,
+      claimsBeforeRetry,
+    );
+  });
+
+  test("a successful-looking receipt for another network is not linked", async () => {
+    const { required } = await challenge();
+    fac.settleNetwork = "eip155:1";
+
+    const r = await paidRequest(`/dossier?tokenAddress=${ADDR.cake}`, payment(required));
+    assert.equal(r.status, 503);
+    assert.equal(
+      archive.byTransaction(fac.tx),
+      null,
+      "a receipt must match the network in the server's payment requirement",
+    );
+  });
+
+  test("a receipt that claims the wrong settled amount is not linked", async () => {
+    const { required } = await challenge();
+    fac.settleAmount = "1";
+
+    const r = await paidRequest(`/dossier?tokenAddress=${ADDR.cake}`, payment(required));
+    assert.equal(r.status, 503);
+    assert.equal(
+      archive.byTransaction(fac.tx),
+      null,
+      "the receipt amount must match the requirement passed to settlement",
+    );
+  });
+
+  test("a timeout that the SDK later confirms is linked and recoverable", async () => {
+    const { required } = await challenge();
+    fac.settleOk = false;
+    fac.settleFailureWithTx = true;
+    fac.settleStatus = "timeout";
+    fac.settleStatusResult = "success";
+
+    const r = await paidRequest(`/dossier?tokenAddress=${ADDR.cake}`, payment(required));
+    assert.equal(r.status, 200);
+    const receipt = b64.decode(r.headers.get("payment-response")!);
+    assert.equal(receipt.success, true, "the buyer receives the normalized final receipt");
+    assert.equal(receipt.status, "success");
+    assert.equal(archive.byTransaction(fac.tx)?.settlement?.status, "confirmed");
+  });
+
+  test("a timeout poll for another transaction is retained as unknown", async () => {
+    const { required } = await challenge();
+    const sig = payment(required);
+    const decoded = b64.decode(sig);
+    const fingerprint = paymentReplay.fingerprintPayment(decoded, decoded.accepted);
+    assert.ok(fingerprint);
+    fac.settleOk = false;
+    fac.settleFailureWithTx = true;
+    fac.settleStatus = "timeout";
+    fac.settleStatusResult = "success";
+    fac.settleStatusTransaction = "0x" + "77".repeat(32);
+
+    const r = await paidRequest(`/dossier?tokenAddress=${ADDR.cake}`, sig);
+    assert.equal(r.status, 503);
+    assert.equal(r.headers.get("payment-response"), null);
+    assert.equal(archive.byTransaction(fac.tx), null);
+    const replay = JSON.parse(
+      readFileSync(`${dir}/.payment-${fingerprint}.state`, "utf8"),
+    );
+    assert.equal(replay.status, "unknown");
+    assert.equal(replay.reason, "settlement_timeout");
+    assert.deepEqual(replay.settlement, {
+      transaction: fac.tx,
+      network: NETWORK,
+      amount: decoded.accepted.amount,
+      payer: PAYER,
+    });
+    assert.equal(replay.settlementEvidence, "candidate");
+
+    const claimsBeforeRetry = readdirSync(dir).filter(
+      (name) => name.startsWith(".tx-") && name.endsWith(".claim"),
+    ).length;
+    const operationsBeforeRetry = fac.ops().length;
+    const statusCallsBeforeRetry = fac.settleStatusCalls;
+    const peer = "198.51.100.91";
+    for (let i = 0; i < ratelimit.limits["/dossier"]!.max; i++) {
+      assert.equal(ratelimit.check("/dossier", peer).limited, false);
+    }
+    const retried = await paidRequest(`/dossier?tokenAddress=${ADDR.cake}`, sig, {
+      headers: { "x-forwarded-for": peer },
+    });
+    assert.equal(retried.status, 503);
+    assert.equal((await retried.json() as any).error, "payment_reconciliation_pending");
+    assert.equal(
+      fac.ops().length,
+      operationsBeforeRetry,
+      "a contradictory timeout status never re-verifies or re-settles",
+    );
+    assert.equal(fac.settleStatusCalls, statusCallsBeforeRetry + 1);
+    assert.equal(archive.byTransaction(fac.tx), null);
+    assert.equal(
+      readdirSync(dir).filter(
+        (name) => name.startsWith(".tx-") && name.endsWith(".claim"),
+      ).length,
+      claimsBeforeRetry,
+      "candidate timeout evidence cannot create a transaction claim",
+    );
+  });
+
+  test("a timeout status-query outage is retained as unknown rather than a fresh 402", async () => {
+    const { required } = await challenge();
+    const sig = payment(required);
+    const decoded = b64.decode(sig);
+    const fingerprint = paymentReplay.fingerprintPayment(decoded, decoded.accepted);
+    assert.ok(fingerprint);
+    fac.settleOk = false;
+    fac.settleFailureWithTx = true;
+    fac.settleStatus = "timeout";
+    fac.settleStatusDown = true;
+
+    const r = await paidRequest(`/dossier?tokenAddress=${ADDR.cake}`, sig);
+    assert.equal(r.status, 503);
+    const body = (await r.json()) as any;
+    assert.equal(body.error, "payment_reconciliation_pending");
+    assert.ok(body.reconciliationId);
+    assert.equal(r.headers.get("payment-response"), null);
+    const replay = JSON.parse(
+      readFileSync(`${dir}/.payment-${fingerprint}.state`, "utf8"),
+    );
+    assert.equal(replay.status, "unknown");
+    assert.equal(replay.reason, "settlement_timeout");
+    assert.deepEqual(replay.settlement, {
+      transaction: fac.tx,
+      network: NETWORK,
+      amount: decoded.accepted.amount,
+      payer: PAYER,
+    });
+    assert.equal(replay.settlementEvidence, "candidate");
+
+    const claimsBeforeRetry = readdirSync(dir).filter(
+      (name) => name.startsWith(".tx-") && name.endsWith(".claim"),
+    ).length;
+    const operationsBeforeRetry = fac.ops().length;
+    const statusCallsBeforeRetry = fac.settleStatusCalls;
+    const peer = "198.51.100.92";
+    for (let i = 0; i < ratelimit.limits["/dossier"]!.max; i++) {
+      assert.equal(ratelimit.check("/dossier", peer).limited, false);
+    }
+    const retried = await paidRequest(`/dossier?tokenAddress=${ADDR.cake}`, sig, {
+      headers: { "x-forwarded-for": peer },
+    });
+    assert.equal(retried.status, 503);
+    assert.equal((await retried.json() as any).error, "payment_reconciliation_pending");
+    assert.equal(
+      fac.ops().length,
+      operationsBeforeRetry,
+      "a status-query outage aborts before verify or settle",
+    );
+    assert.equal(fac.settleStatusCalls, statusCallsBeforeRetry + 1);
+    assert.equal(archive.byTransaction(fac.tx), null);
+    assert.equal(
+      readdirSync(dir).filter(
+        (name) => name.startsWith(".tx-") && name.endsWith(".claim"),
+      ).length,
+      claimsBeforeRetry,
+      "an unavailable status query cannot promote timeout evidence",
+    );
+  });
+
+  test("an exact retry delivers only after a fresh matching timeout status succeeds", async () => {
+    const { required } = await challenge();
+    const sig = payment(required);
+    const decoded = b64.decode(sig);
+    const fingerprint = paymentReplay.fingerprintPayment(decoded, decoded.accepted);
+    assert.ok(fingerprint);
+    fac.settleOk = false;
+    fac.settleFailureWithTx = true;
+    fac.settleStatus = "timeout";
+    fac.settleStatusResult = "success";
+    fac.settleStatusTransaction = "0x" + "88".repeat(32);
+
+    const first = await paidRequest(`/dossier?tokenAddress=${ADDR.cake}`, sig);
+    assert.equal(first.status, 503);
+    assert.equal(archive.byTransaction(fac.tx), null);
+    const before = fac.ops().length;
+    const statusBefore = fac.settleStatusCalls;
+
+    fac.settleStatusTransaction = undefined;
+    const retried = await paidRequest(`/dossier?tokenAddress=${ADDR.cake}`, sig);
+    assert.equal(retried.status, 200);
+    assert.ok((await retried.text()).includes("<html"));
+    assert.equal(
+      fac.ops().length,
+      before,
+      "reconciliation queries status but does not verify or settle twice",
+    );
+    assert.equal(fac.settleStatusCalls, statusBefore + 1);
+    assert.equal(archive.byTransaction(fac.tx)?.settlement?.status, "confirmed");
+    const replay = paymentReplay.begin(
+      fingerprint!,
+      {
+        paramsSha256: archive.paramsHash({ tokenAddress: ADDR.cake }),
+        contentType: "text/html",
+      },
+      decoded.accepted,
+    );
+    assert.equal(replay.kind, "confirmed");
   });
 });
 
@@ -520,6 +1750,33 @@ describe("a facilitator that gives no answer", () => {
     assert.equal((await app.request("/")).status, 200);
     assert.equal((await app.request("/health")).status, 200);
     assert.equal((await app.request("/dossier/sample")).status, 200);
+  });
+
+  test("two cold-start failures release their replay attempts before a clean retry", async () => {
+    const { required } = await challenge();
+    const sig = payment(required);
+    const decoded = b64.decode(sig);
+    const fingerprint = paymentReplay.fingerprintPayment(decoded, decoded.accepted);
+    assert.ok(fingerprint);
+    failBeforeHandler = 2;
+
+    const failed = await paidRequest(`/dossier?tokenAddress=${ADDR.cake}`, sig);
+    assert.equal(failed.status, 503);
+    assert.equal((await failed.json() as any).error, "payment layer temporarily unavailable — no payment was taken, retry shortly");
+    assert.deepEqual(fac.ops(), ["verify", "verify"]);
+    assert.equal(
+      existsSync(`${dir}/.payment-${fingerprint}.state`),
+      false,
+      "the second cold-start catch releases the request-owned replay state",
+    );
+
+    const retried = await paidRequest(`/dossier?tokenAddress=${ADDR.cake}`, sig);
+    assert.equal(retried.status, 200);
+    assert.deepEqual(
+      fac.ops(),
+      ["verify", "verify", "verify", "settle"],
+      "the same signed payment can verify and settle after the transient failures",
+    );
   });
 
   test("an unreachable settle says the outcome is unknown, not that payment is due", async () => {

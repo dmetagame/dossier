@@ -1,3 +1,6 @@
+import { config } from "./config";
+import { validateSettlementReceipt } from "./settlement-receipt";
+
 /**
  * One structured line per request.
  *
@@ -13,9 +16,10 @@
  *   `paid`    an authorisation was presented with the request
  *   `settled` money actually moved, and here is the transaction
  *
- * A buyer whose call 4xx'd shows `paid:true, settled:absent`. That is the exact
- * shape of "they tried to pay, we could not serve them, and they were not
- * charged", which is the thing we most often need to prove.
+ * A buyer whose call failed can show `paid:true, settled:absent`. That means the
+ * service did not validate and link a final settlement. It does not by itself
+ * prove the on-chain outcome when settlement was pending or communication was
+ * interrupted; those cases are reported separately as unknown.
  */
 
 /** A request line. Short keys because these are read in bulk, by eye and by grep. */
@@ -46,19 +50,32 @@ export function decodeReceipt(header: string | null | undefined): {
   settled?: string;
   payer?: string;
 } {
-  if (!header) return {};
-  try {
-    const r = JSON.parse(Buffer.from(header, "base64").toString("utf8")) as Record<string, unknown>;
-    const tx = r.transaction ?? r.txHash ?? r.tx;
-    const payer = r.payer ?? r.from ?? r.payerAddress;
-    return {
-      ...(tx ? { settled: String(tx) } : {}),
-      ...(payer ? { payer: String(payer) } : {}),
-    };
-  } catch {
-    // A receipt we cannot parse must not cost us the rest of the line.
+  const result = validateSettlementReceipt(header, { network: config.network });
+  if (!result.ok) return {};
+  return {
+    settled: result.receipt.transaction,
+    ...(result.receipt.payer ? { payer: result.receipt.payer } : {}),
+  };
+}
+
+/** Use settlement metadata already validated and linked by the payment path. */
+export function linkedReceipt(value: unknown): {
+  settled?: string;
+  payer?: string;
+} {
+  if (!value || typeof value !== "object") return {};
+  const r = value as Record<string, unknown>;
+  if (
+    r.status !== "confirmed" ||
+    typeof r.transaction !== "string" ||
+    !/^0x[0-9a-fA-F]{64}$/.test(r.transaction)
+  ) {
     return {};
   }
+  return {
+    settled: r.transaction,
+    ...(typeof r.payer === "string" ? { payer: r.payer } : {}),
+  };
 }
 
 /** Static assets say nothing worth keeping and would drown everything else. */

@@ -1,6 +1,6 @@
-// The archive is a convenience, never a dependency. If its directory cannot be
-// written — a read-only filesystem, a bad path — deliveries must still succeed;
-// only recovery is lost. This needs its own file because the directory is
+// A paid delivery must be recoverable. If its directory cannot be written — a
+// read-only filesystem, a bad path — save reports failure so the route can
+// refuse delivery before settlement. This needs its own file because the directory is
 // resolved per call now, but a bad directory is sticky, so it gets its own file.
 
 import { test, describe } from "node:test";
@@ -11,8 +11,8 @@ import * as archive from "../src/dossier/archive";
 process.env.ARCHIVE_DIR = "/dev/null/dossier-archive";
 
 describe("unwritable archive directory", () => {
-  test("saving degrades to a no-op instead of throwing", () => {
-    assert.doesNotThrow(() =>
+  test("saving reports failure instead of throwing", () => {
+    assert.equal(
       archive.save({
         id: archive.newId(),
         paramsSha256: "a".repeat(64),
@@ -21,6 +21,7 @@ describe("unwritable archive directory", () => {
         deliverable: "report",
         deliveredAt: new Date().toISOString(),
       }),
+      false,
     );
   });
 

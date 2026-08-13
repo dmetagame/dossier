@@ -1,6 +1,6 @@
-// The limiter protects the free surface. It must never touch a paid path, must
-// not be evadable by a header anyone can set, and must leave a trace when it
-// blocks someone.
+// The limiter protects unauthenticated work, including payment attempts that
+// are not yet backed by durable replay state. It must not be evadable by a
+// header anyone can set, and must leave a trace when it blocks someone.
 
 import { test, describe, beforeEach } from "node:test";
 import assert from "node:assert/strict";
@@ -15,6 +15,11 @@ const burst = (path: string, key: string, n: number) => {
 };
 
 describe("budgets", () => {
+  test("the unsigned payment challenge is bounded independently", () => {
+    assert.equal(burst("/dossier", "1.1.1.1", 120), 0);
+    assert.equal(rl.check("/dossier", "1.1.1.1").limited, true);
+  });
+
   test("recovery allows 60 a minute, then blocks", () => {
     assert.equal(burst("/dossier/recovery", "1.1.1.1", 60), 0);
     assert.equal(rl.check("/dossier/recovery", "1.1.1.1").limited, true);

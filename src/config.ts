@@ -22,8 +22,9 @@ export const config = {
   // `onchainos wallet` — the middleware is not mounted while this is empty, so a
   // misconfigured deploy serves nothing rather than quoting a bad recipient.
   payTo: (process.env.PAY_TO ?? "") as `0x${string}` | "",
-  // OKX facilitator credentials (dev portal). Used server-side to verify/settle
-  // payments; runs from Vercel, not the IP-blocked dev box.
+  // OKX facilitator credentials (dev portal). Used server-side to verify and
+  // settle payments on the standalone VPS. The Vercel entry is demo/free-only
+  // and refuses to start when paid configuration is present.
   okx: {
     apiKey: process.env.OKX_API_KEY ?? "",
     secretKey: process.env.OKX_SECRET_KEY ?? "",

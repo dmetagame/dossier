@@ -17,6 +17,7 @@
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { stubUpstream, tempArchive, ADDR } from "./helpers";
+import * as ratelimit from "../src/ratelimit";
 
 const KEY = "test-internal-key-payment-outage";
 
@@ -30,6 +31,7 @@ for (const v of ["OKX_API_KEY", "OKX_SECRET_KEY", "OKX_PASSPHRASE", "PAYOUT_ADDR
 
 const { dir, cleanup } = tempArchive();
 process.env.ARCHIVE_DIR = dir;
+process.env.PAYMENT_REPLAY_KEY = "payment-outage-replay-key";
 
 const { app } = await import("../src/app");
 
@@ -55,6 +57,7 @@ describe("a facilitator credential outage", () => {
     assert.equal(h.paymentConfigured, false);
     assert.equal(h.devSkipPayment, false);
     assert.equal(h.paymentLayer, "not_configured");
+    assert.equal(h.paidReady, false);
   });
 
   test("an external buyer gets 503, never a free report", async () => {
@@ -74,6 +77,28 @@ describe("a facilitator credential outage", () => {
     assert.equal(r.status, 200, "a task buyer's report does not depend on our x402 credentials");
     const j = (await r.json()) as Record<string, unknown>;
     assert.ok(j.riskVerdict, "and it is a real report, not an acknowledgement");
+  });
+
+  test("the fulfilment daemon bypasses an exhausted unsigned challenge budget", async () => {
+    const peer = "198.51.100.44";
+    ratelimit.reset();
+    for (let i = 0; i < ratelimit.limits["/dossier"]!.max; i++) {
+      assert.equal(ratelimit.check("/dossier", peer).limited, false);
+    }
+
+    const wrong = await call({
+      "x-forwarded-for": peer,
+      "x-internal-key": KEY + "x",
+    });
+    assert.equal(wrong.status, 429, "a near-miss secret remains rate limited");
+
+    const internal = await call({
+      "x-forwarded-for": peer,
+      "x-internal-key": KEY,
+    });
+    assert.equal(internal.status, 200, "an authenticated daemon must still reach fulfilment");
+    const report = (await internal.json()) as Record<string, unknown>;
+    assert.ok(report.riskVerdict, "the bypass reaches the real report handler");
   });
 
   test("the free surface is untouched by the outage", async () => {

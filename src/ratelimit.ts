@@ -1,13 +1,15 @@
-// Fixed-window rate limiting for the free surface.
+// Fixed-window rate limiting for unauthenticated work.
 //
-// Paid paths are never limited: a buyer who has paid must not be throttled,
-// and the 402 challenge itself is cheap to produce. This exists for the
-// unauthenticated endpoints, where one cheap HTTP request can cost us real
-// work — recovery reads the archive, the sample can rebuild on a cold cache.
+// An authenticated payment retry is never limited: a buyer who may already
+// have paid must always be able to reach replay reconciliation. An unsigned
+// `/dossier` request is only asking for a challenge, though, and remains an
+// attacker-controlled public surface. Bounding that path protects the payment
+// middleware and its durability checks without putting a settled buyer behind
+// a throttle.
 //
-// Starts in observe mode: it records what it *would* have blocked without
-// blocking anything, so real traffic (including OKX's validator and buyers'
-// retrying clients) can be checked against the limits before they bite.
+// Enforces by default. Observe mode must be selected explicitly when an
+// operator wants to measure what would have been blocked without returning
+// 429; authenticated durable retries never enter this limiter in either mode.
 
 export type Mode = "observe" | "enforce";
 
@@ -26,6 +28,7 @@ const MAX_TRACKED = 20_000;
 const buckets = new Map<string, Counter>();
 
 export const limits: Record<string, Limit> = {
+  "/dossier": { windowMs: 60_000, max: 120 },
   "/dossier/recovery": { windowMs: 60_000, max: 60 },
   "/dossier/sample": { windowMs: 60_000, max: 60 },
   // Preflight is the most expensive free route: it hits both upstream sources
