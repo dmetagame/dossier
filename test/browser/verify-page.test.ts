@@ -41,6 +41,61 @@ let restore: () => void;
 /** A real, signed report, straight out of the service. */
 let report: any;
 
+const PRESERVED_PRODUCTION_ATTESTATION = {
+  payload: {
+    schemaVersion: "dossier-attestation/2",
+    methodologyVersion: "engine/2026-08-03",
+    reportId: "e8bf89c0-e1f2-42f3-ad47-344462d9b3a5",
+    reportSha256: "55f2e42e4270aaab3a6dd7b39009a61c9b72ca8238d22dcecc43d50aa38252c9",
+    requestSha256: "82f630213f7953ac0cb90793da1e7d289866bb34e4f08ef5912388e826618160",
+    token: { chain: "bsc", address: "0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82" },
+    result: {
+      verdict: "caution",
+      coverage: 1,
+      maxSizeUsd: 19345,
+      checks: {
+        honeypot: "warn",
+        contractControl: "warn",
+        liquidity: "pass",
+        marketActivity: "pass",
+        holderConcentration: "pass",
+      },
+    },
+    chainId: 56,
+    blockNumber: 115773830,
+    observations: [
+      {
+        source: "goplus",
+        status: "ok",
+        url: "https://api.gopluslabs.io/api/v1/token_security/56?contract_addresses=0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82",
+        retrievedAt: "2026-08-13T22:07:45.987Z",
+        responseSha256: "b86817340c6434a494c7c7a35e9b0ed3a0e0b697f88caa9ffa665542a41f99cc",
+      },
+      {
+        source: "dexscreener",
+        status: "ok",
+        url: "https://api.dexscreener.com/latest/dex/tokens/0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82",
+        retrievedAt: "2026-08-13T22:07:45.510Z",
+        responseSha256: "8f6752a2b2a91f001490cc3b0201b8cc37b1d1872c34fb02d074f238e4d4911a",
+      },
+      {
+        source: "bsc-rpc",
+        status: "ok",
+        url: "https://bsc-rpc.publicnode.com",
+        retrievedAt: "2026-08-13T22:07:45.701Z",
+        responseSha256: "368ce2cb0c56e648d6310cac490d1540328afa35a737d56f80e2d94c61d021f0",
+      },
+    ],
+    issuedAt: "2026-08-13T22:07:45.989Z",
+    issuer: { agentId: 7012, name: "Dossier" },
+  },
+  payloadSha256: "97b1f88d0fca303ae3154374a5586e76774db09a7264608dd4d3f9073377d3cc",
+  signature: "aadVzIpiViBBujZhFdDKzrTUNB7kwV3Xni6H80-iD14omE-UynM_rXVu_hEYZwYpDZedXHcLj8c5eIeAVIfNCQ",
+  publicKey: "oOO5AkCXfVbXwSr3j6FBlKUv6mAwCKE9SE7f_zUS6e4",
+  algorithm: "ed25519",
+  verifyWith: "https://dossier.rouma.xyz/verify",
+};
+
 before(async () => {
   restore = stubUpstream();
   server = serve({ fetch: app.fetch, port: 0, hostname: "127.0.0.1" });
@@ -174,6 +229,13 @@ describe("checking a report", () => {
     assert.ok(html.includes("oOO5AkCXfVbXwSr3j6FBlKUv6mAwCKE9SE7f_zUS6e4"));
     assert.ok(html.includes("code-reviewed Dossier trust registry"));
     assert.equal(/fetch\([^)]*dossier-signing-keys/.test(html), false);
+  });
+
+  test("a preserved production attestation is trusted in the browser", async () => {
+    const rows = await verify(PRESERVED_PRODUCTION_ATTESTATION);
+    assert.equal(find(rows, "hashes to the value").verdict, "PASS");
+    assert.equal(find(rows, "signature is valid").verdict, "PASS");
+    assert.equal(find(rows, "Trusted Dossier issuer").verdict, "PASS");
   });
 });
 

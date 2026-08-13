@@ -59,7 +59,9 @@ function sameIssuer(actual, expected) {
 
 function instant(value) {
   if (typeof value !== "string") return null;
-  const m = value.match(/^(\\d{4})-(\\d{2})-(\\d{2})T(\\d{2}):(\\d{2}):(\\d{2})(?:\\.(\\d{1,3}))?(Z|[+-]\\d{2}:\\d{2})$/);
+  // SCRIPT is String.raw: `[0-9]` keeps the emitted regex unambiguous instead
+  // of accidentally asking the browser to match the literal characters `\\d`.
+  const m = value.match(/^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})(?:\.([0-9]{1,3}))?(Z|[+-][0-9]{2}:[0-9]{2})$/);
   if (!m) return null;
   const parsed = Date.parse(value);
   if (!Number.isFinite(parsed)) return null;
