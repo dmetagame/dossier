@@ -15,6 +15,7 @@ import {
   readApprovalReview,
   readBackupManifest,
   readPlan,
+  type QuarantineSelector,
   verifyStrictArchive,
   writeJsonExclusive,
 } from "../src/dossier/archive-migrate";
@@ -32,6 +33,7 @@ try {
   rejectArchiveOutputPaths(command, flags, archiveDir);
   switch (command) {
     case "audit": {
+      const quarantineRecords = values(flags.quarantine).map(parseQuarantine);
       const plan = auditArchive({
         archiveDir,
         archiveMacKey,
@@ -39,6 +41,7 @@ try {
         paymentReplayKey,
         pinnedSigningKey,
         coldArchiveDir: flags["cold-archive-dir"],
+        ...(quarantineRecords.length ? { quarantineRecords } : {}),
         ...(flags.approval ? { approval: readApproval(flags.approval) } : {}),
       });
       if (flags.out) writeJsonExclusive(flags.out, plan);
@@ -110,6 +113,8 @@ try {
         `alreadyApplied: ${result.alreadyApplied}`,
         `legacyMoved: ${result.legacyMoved}`,
         `legacyAlreadyMoved: ${result.legacyAlreadyMoved}`,
+        `quarantineMoved: ${result.quarantineMoved}`,
+        `quarantineAlreadyMoved: ${result.quarantineAlreadyMoved}`,
         ...(result.coldManifest
           ? [
               `coldArchive: ${result.coldManifest.coldArchivePath}`,
@@ -142,6 +147,8 @@ try {
         `alreadyApplied: ${result.apply.alreadyApplied}`,
         `legacyMoved: ${result.apply.legacyMoved}`,
         `legacyAlreadyMoved: ${result.apply.legacyAlreadyMoved}`,
+        `quarantineMoved: ${result.apply.quarantineMoved}`,
+        `quarantineAlreadyMoved: ${result.apply.quarantineAlreadyMoved}`,
         ...(result.apply.coldManifest
           ? [
               `coldArchive: ${result.apply.coldManifest.coldArchivePath}`,
@@ -180,7 +187,7 @@ type Flags = Record<string, string | string[] | undefined>;
 
 function parseFlags(input: string[], command: string): Flags {
   const parsed: Flags = {};
-  const repeatable = new Set(["approve"]);
+  const repeatable = new Set(["approve", "quarantine"]);
   const allowed = commandFlags(command);
   for (let i = 0; i < input.length; i++) {
     const item = input[i]!;
@@ -200,7 +207,7 @@ function parseFlags(input: string[], command: string): Flags {
 
 function commandFlags(command: string): Set<string> | undefined {
   const flags: Record<string, string[]> = {
-    audit: ["archive", "out", "approval", "approval-review-out", "cold-archive-dir", "signing-public-key"],
+    audit: ["archive", "out", "approval", "approval-review-out", "cold-archive-dir", "quarantine", "signing-public-key"],
     approve: ["archive", "approve", "out"],
     "approve-review": ["archive", "review", "reason", "out"],
     backup: ["plan", "backup-dir", "out"],
@@ -272,6 +279,17 @@ function parseApproval(value: string): { path: string; sha256: string; reason: s
   return { path: value.slice(0, first), sha256: value.slice(first + 1, second), reason: value.slice(second + 1) };
 }
 
+function parseQuarantine(value: string): QuarantineSelector {
+  const first = value.indexOf(":");
+  const second = value.indexOf(":", first + 1);
+  if (first < 1 || second < first + 2) throw new Error(`invalid quarantine value: ${value}`);
+  return {
+    path: value.slice(0, first),
+    sha256: value.slice(first + 1, second),
+    reason: value.slice(second + 1),
+  };
+}
+
 function requireValue(value: string | string[] | undefined, name: string): asserts value is string {
   if (typeof value !== "string" || !value) throw new Error(`${name} is required`);
 }
@@ -290,12 +308,14 @@ function printPlan(plan: ReturnType<typeof auditArchive>, out: string | string[]
     `records: ${plan.counts.records}`,
     `legacyRecords: ${plan.counts.legacyRecords}`,
     `approvedLegacyRecords: ${plan.counts.approvedLegacyRecords}`,
+    `approvedQuarantineRecords: ${plan.counts.approvedQuarantineRecords}`,
     `nonCanonicalTransactions: ${plan.counts.nonCanonicalTransactions}`,
     `coldArchive: ${plan.coldArchivePath ?? "not planned"}`,
     `claims: ${plan.counts.claims}`,
     `replayStates: ${plan.counts.replayStates}`,
     `replayHolds: ${plan.counts.replayHolds}`,
     `changes: ${plan.counts.changes}`,
+    `quarantineDispositions: ${plan.counts.quarantineDispositions}`,
     `errors: ${plan.counts.errors}`,
     `warnings: ${plan.counts.warnings}`,
   ].join("\n"));
@@ -306,5 +326,5 @@ function printPlan(plan: ReturnType<typeof auditArchive>, out: string | string[]
 }
 
 function usage(message: string): never {
-  throw new Error(`${message}\nusage:\n  npm run archive:migrate -- audit [--archive DIR] --out PLAN [--approval FILE] [--approval-review-out FILE] [--cold-archive-dir DIR] [--signing-public-key KEY]\n  npm run archive:migrate -- approve [--archive DIR] --approve path:sha256:reason --out APPROVAL\n  npm run archive:migrate -- approve-review [--archive DIR] --review FILE --reason TEXT --out APPROVAL\n  npm run archive:migrate -- backup --plan PLAN --backup-dir DIR --out MANIFEST\n  npm run archive:migrate -- apply --plan PLAN --backup-manifest MANIFEST --confirm PLAN_DIGEST\n  npm run archive:migrate -- apply-verify --plan PLAN --backup-manifest MANIFEST --confirm PLAN_DIGEST [--signing-public-key KEY]\n  npm run archive:migrate -- verify [--archive DIR] [--plan PLAN]`);
+  throw new Error(`${message}\nusage:\n  node --import tsx scripts/archive-migrate.ts audit [--archive DIR] --out PLAN [--approval FILE] [--approval-review-out FILE] [--cold-archive-dir DIR] [--quarantine path:sha256:reason] [--signing-public-key KEY]\n  node --import tsx scripts/archive-migrate.ts approve [--archive DIR] --approve path:sha256:reason --out APPROVAL\n  node --import tsx scripts/archive-migrate.ts approve-review [--archive DIR] --review FILE --reason TEXT --out APPROVAL\n  node --import tsx scripts/archive-migrate.ts backup --plan PLAN --backup-dir DIR --out MANIFEST\n  node --import tsx scripts/archive-migrate.ts apply --plan PLAN --backup-manifest MANIFEST --confirm PLAN_DIGEST\n  node --import tsx scripts/archive-migrate.ts apply-verify --plan PLAN --backup-manifest MANIFEST --confirm PLAN_DIGEST [--signing-public-key KEY]\n  node --import tsx scripts/archive-migrate.ts verify [--archive DIR] [--plan PLAN]`);
 }

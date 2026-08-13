@@ -3,8 +3,8 @@ import {
   constants as fsConstants,
   closeSync,
   copyFileSync,
-  chmodSync,
   existsSync,
+  fchmodSync,
   fstatSync,
   fsyncSync,
   linkSync,
@@ -47,11 +47,11 @@ import {
   validTransactionHash,
 } from "./archive-format";
 
-export const ARCHIVE_MIGRATION_PLAN_VERSION = "dossier-archive-migration-plan/1";
+export const ARCHIVE_MIGRATION_PLAN_VERSION = "dossier-archive-migration-plan/2";
 export const ARCHIVE_BACKUP_MANIFEST_VERSION = "dossier-archive-backup-manifest/1";
-export const ARCHIVE_APPROVAL_VERSION = "dossier-archive-approval/1";
-export const ARCHIVE_COLD_MANIFEST_VERSION = "dossier-archive-cold-manifest/1";
-export const ARCHIVE_APPROVAL_REVIEW_VERSION = "dossier-archive-approval-review/1";
+export const ARCHIVE_APPROVAL_VERSION = "dossier-archive-approval/2";
+export const ARCHIVE_COLD_MANIFEST_VERSION = "dossier-archive-cold-manifest/2";
+export const ARCHIVE_APPROVAL_REVIEW_VERSION = "dossier-archive-approval-review/2";
 
 const PLAN_MAC_CONTEXT = "dossier-archive-migration-plan:";
 const MANIFEST_MAC_CONTEXT = "dossier-archive-backup-manifest:";
@@ -60,6 +60,8 @@ const COLD_MANIFEST_MAC_CONTEXT = "dossier-archive-cold-manifest:";
 const MIGRATION_LOCK_NAME = ".archive-migration.lock";
 const ARCHIVE_LOCK_NAME = ".archive.lock";
 const COLD_MANIFEST_NAME = ".dossier-cold-archive-manifest.json";
+const COLD_COPY_TEMP_PREFIX = ".dossier-cold-copy-";
+const COLD_MANIFEST_TEMP_PREFIX = ".dossier-cold-manifest-";
 
 export type MigrationSeverity = "error" | "warning" | "info";
 
@@ -96,6 +98,28 @@ export interface LegacyDisposition {
   evidence: "operator-approval" | "unapproved";
 }
 
+export type QuarantineRecordValidation =
+  | "current-mac-valid"
+  | "unsigned"
+  | "mac-invalid"
+  | "shape-invalid";
+
+export interface QuarantineDisposition {
+  path: string;
+  inputSha256: string;
+  reason: string;
+  approvalRequired: true;
+  evidence: "operator-approval" | "unapproved";
+  validation: QuarantineRecordValidation;
+  observedMacSha256: string | null;
+}
+
+export interface QuarantineSelector {
+  path: string;
+  sha256: string;
+  reason: string;
+}
+
 export interface ArchiveMigrationPlan {
   version: typeof ARCHIVE_MIGRATION_PLAN_VERSION;
   archivePath: string;
@@ -120,15 +144,18 @@ export interface ArchiveMigrationPlan {
     unsignedClaims: number;
     approvedRecords: number;
     approvedLegacyRecords: number;
+    approvedQuarantineRecords: number;
     nonCanonicalTransactions: number;
     changes: number;
     legacyDispositions: number;
+    quarantineDispositions: number;
     errors: number;
     warnings: number;
   };
   findings: MigrationFinding[];
   changes: MigrationChange[];
   legacyDispositions: LegacyDisposition[];
+  quarantineDispositions: QuarantineDisposition[];
   planDigest: string;
   planMac: string | null;
 }
@@ -140,6 +167,7 @@ export interface ArchiveApproval {
   planDigest: string | null;
   coldArchivePath: string | null;
   approvedFiles: Array<{ path: string; sha256: string; reason: string }>;
+  quarantineFiles?: QuarantineSelector[];
   approvalDigest: string;
   approvalMac: string;
 }
@@ -165,7 +193,14 @@ export interface ArchiveColdManifest {
   planDigest: string;
   sourceInventoryDigest: string;
   status: "prepared" | "complete";
-  files: Array<{ path: string; sha256: string }>;
+  files: Array<{
+    path: string;
+    sha256: string;
+    disposition: "legacy-v1" | "quarantine-current-record";
+    reason: string | null;
+    validation: QuarantineRecordValidation | null;
+    observedMacSha256: string | null;
+  }>;
   filesDigest: string;
   manifestDigest: string;
   manifestMac: string;
@@ -180,10 +215,12 @@ export interface ArchiveApprovalReview {
   files: Array<{
     path: string;
     sha256: string;
+    reason?: string;
     actions: Array<
       | "authenticate-record"
       | "authenticate-claim"
       | "move-legacy-to-cold-archive"
+      | "quarantine-current-record"
     >;
   }>;
 }
@@ -196,6 +233,7 @@ export interface AuditOptions {
   pinnedSigningKey?: string;
   approval?: ArchiveApproval;
   coldArchiveDir?: string;
+  quarantineRecords?: QuarantineSelector[];
   now?: Date;
   ignoreOwnedMigrationLocks?: boolean;
 }
@@ -274,15 +312,29 @@ export function auditArchive(options: AuditOptions): ArchiveMigrationPlan {
   const claims: ParsedClaim[] = [];
   const states = new Map<string, { name: string; state: ReplayState }>();
   const holds: Array<{ name: string; hold: ReplayHold }> = [];
-  const approved = validateApproval(options.approval, archivePath, first.digest, options.archiveMacKey);
+  const approval = validateApproval(options.approval, archivePath, first.digest, options.archiveMacKey);
+  const approved = approval.approved;
   const changes: MigrationChange[] = [];
   const legacyDispositions: LegacyDisposition[] = [];
+  const quarantineDispositions: QuarantineDisposition[] = [];
+  const requestedQuarantine = options.quarantineRecords ?? approval.quarantine;
+  // A reviewed approval carries the exact quarantine selectors forward so
+  // re-audit cannot silently forget a destructive disposition.
+  if (approval.quarantine.length && options.quarantineRecords &&
+      !sameQuarantineSelectors(options.quarantineRecords, approval.quarantine)) {
+    throw new Error("quarantine selectors differ from the plan-bound approval");
+  }
+  const quarantineSelectors = validateQuarantineSelectors(
+    requestedQuarantine,
+    first.inventory,
+  );
   const reported = new Set<string>();
   let legacyRecords = 0;
   let unsignedRecords = 0;
   let unsignedClaims = 0;
   let approvedRecords = 0;
   let approvedLegacyRecords = 0;
+  let approvedQuarantineRecords = 0;
   let nonCanonicalTransactions = 0;
   const coldArchivePath = options.coldArchiveDir
     ? separateExternalDirectory(options.coldArchiveDir, archivePath, "cold archive")
@@ -320,6 +372,81 @@ export function auditArchive(options: AuditOptions): ArchiveMigrationPlan {
     const bytes = readFileSync(path);
     if (sha256(bytes) !== entry.sha256) {
       finding(findings, "error", "unstable_file", "file changed while it was being read", entry.path);
+      continue;
+    }
+
+    const quarantine = quarantineSelectors.get(entry.path);
+    if (quarantine) {
+      if (!coldArchivePath) {
+        finding(
+          findings,
+          "error",
+          "quarantine_cold_archive_required",
+          "an explicitly selected current-format record requires an external cold archive",
+          entry.path,
+        );
+        continue;
+      }
+      let value: unknown;
+      try {
+        value = JSON.parse(bytes.toString("utf8"));
+      } catch {
+        finding(
+          findings,
+          "error",
+          "quarantine_record_unrecognized",
+          "quarantine accepts only structurally recognizable current-format archive JSON",
+          entry.path,
+        );
+        continue;
+      }
+      if (!isRecognizableCurrentRecord(value, entry.path)) {
+        finding(
+          findings,
+          "error",
+          "quarantine_record_unrecognized",
+          "quarantine accepts only structurally recognizable current-format archive JSON",
+          entry.path,
+        );
+        continue;
+      }
+      const exactApproval = Boolean(
+        coldDispositionApproval &&
+        entry.sha256 &&
+        approved.has(`${entry.path}\0${entry.sha256}`) &&
+        approval.quarantine.some((item) =>
+          item.path === entry.path &&
+          item.sha256 === entry.sha256 &&
+          item.reason === quarantine.reason
+        ),
+      );
+      const validation = quarantineRecordValidation(
+        value,
+        entry.path,
+        options.archiveMacKey,
+      );
+      const observedMacSha256 = observedRecordMacSha256(value);
+      if (exactApproval) approvedQuarantineRecords++;
+      quarantineDispositions.push({
+        path: entry.path,
+        inputSha256: entry.sha256!,
+        reason: quarantine.reason,
+        approvalRequired: true,
+        evidence: exactApproval ? "operator-approval" : "unapproved",
+        validation,
+        observedMacSha256,
+      });
+      finding(
+        findings,
+        exactApproval ? "info" : "error",
+        exactApproval
+          ? "current_record_quarantine_planned"
+          : "current_record_quarantine_unapproved",
+        exactApproval
+          ? `operator-selected current-format record will be preserved byte-for-byte in authenticated cold storage; validation=${validation}; quarantine does not imply trust or ownership`
+          : "explicit current-format quarantine needs plan-bound approve-review authorization for this exact path, SHA-256, reason, and validation evidence",
+        entry.path,
+      );
       continue;
     }
 
@@ -630,6 +757,8 @@ export function auditArchive(options: AuditOptions): ArchiveMigrationPlan {
     const kind = a.kind === b.kind ? 0 : a.kind === "claim" ? -1 : 1;
     return kind || a.path.localeCompare(b.path);
   });
+  legacyDispositions.sort((a, b) => a.path.localeCompare(b.path));
+  quarantineDispositions.sort((a, b) => a.path.localeCompare(b.path));
   findings.sort((a, b) =>
     `${a.severity}:${a.code}:${a.path ?? ""}`.localeCompare(
       `${b.severity}:${b.code}:${b.path ?? ""}`,
@@ -659,15 +788,18 @@ export function auditArchive(options: AuditOptions): ArchiveMigrationPlan {
       unsignedClaims,
       approvedRecords,
       approvedLegacyRecords,
+      approvedQuarantineRecords,
       nonCanonicalTransactions,
       changes: changes.length,
       legacyDispositions: legacyDispositions.length,
+      quarantineDispositions: quarantineDispositions.length,
       errors: findings.filter((item) => item.severity === "error").length,
       warnings: findings.filter((item) => item.severity === "warning").length,
     },
     findings,
     changes,
     legacyDispositions,
+    quarantineDispositions,
   } satisfies Omit<ArchiveMigrationPlan, "planDigest" | "planMac">;
   const planDigest = digestObject(withoutDigest);
   if (options.approval?.planDigest) {
@@ -708,6 +840,9 @@ export function createArchiveApproval(
   const files = approvedFiles
     .map((item) => ({ path: safeRelativePath(item.path), sha256: item.sha256, reason: item.reason.trim() }))
     .sort((a, b) => a.path.localeCompare(b.path));
+  if (new Set(files.map((item) => item.path)).size !== files.length) {
+    throw new Error("approval file paths must be unique");
+  }
   if (files.some((item) => !SHA256_PATTERN.test(item.sha256) || !item.reason)) {
     throw new Error("every approval needs an exact SHA-256 and non-empty reason");
   }
@@ -744,6 +879,19 @@ export function createArchiveApprovalReview(
   };
 }
 
+export function quarantineSelectorsFromReview(
+  review: ArchiveApprovalReview,
+): QuarantineSelector[] {
+  assertApprovalReviewShape(review);
+  return review.files
+    .filter((item) => item.actions.includes("quarantine-current-record"))
+    .map((item) => ({
+      path: item.path,
+      sha256: item.sha256,
+      reason: item.reason!,
+    }));
+}
+
 export function createArchiveApprovalFromReview(
   archiveDir: string,
   review: ArchiveApprovalReview,
@@ -768,6 +916,7 @@ export function createArchiveApprovalFromReview(
     archiveMacKey,
     ...auditOptions,
     coldArchiveDir: requestedColdArchive,
+    quarantineRecords: quarantineSelectorsFromReview(review),
   });
   const freshReview = createArchiveApprovalReview(unsignedPlan);
   if (review.reviewDigest !== migrationReviewDigest(unsignedPlan)) {
@@ -778,7 +927,13 @@ export function createArchiveApprovalFromReview(
   }
   const base = createArchiveApproval(
     archivePath,
-    review.files.map((item) => ({ path: item.path, sha256: item.sha256, reason: reason.trim() })),
+    review.files.map((item) => ({
+      path: item.path,
+      sha256: item.sha256,
+      reason: item.actions.includes("quarantine-current-record")
+        ? `${reason.trim()}; quarantine basis: ${item.reason}`
+        : reason.trim(),
+    })),
     archiveMacKey,
   );
   const unsigned = {
@@ -788,6 +943,7 @@ export function createArchiveApprovalFromReview(
     planDigest: review.reviewDigest,
     coldArchivePath: requestedColdArchive ?? null,
     approvedFiles: base.approvedFiles,
+    quarantineFiles: quarantineSelectorsFromReview(review),
   } as const;
   const approvalDigest = digestObject(unsigned);
   return {
@@ -843,8 +999,23 @@ export function backupArchive(
       archiveMacKey,
       ...auditOptions,
       pinnedSigningKey: plan.pinnedSigningKey ?? undefined,
+      ...(plan.quarantineDispositions.length
+        ? {
+            coldArchiveDir: plan.coldArchivePath ?? undefined,
+            quarantineRecords: plan.quarantineDispositions.map((item) => ({
+              path: item.path,
+              sha256: item.inputSha256,
+              reason: item.reason,
+            })),
+          }
+        : {}),
     });
-    const admissible = new Set(["record_unapproved", "legacy_v1_cold_archive_required"]);
+    const admissible = new Set([
+      "record_unapproved",
+      "legacy_v1_cold_archive_required",
+      "legacy_v1_cold_archive_unapproved",
+      "current_record_quarantine_unapproved",
+    ]);
     const semanticBlockers = backupAudit.findings.filter(
       (item) => item.severity === "error" && !admissible.has(item.code),
     );
@@ -911,6 +1082,8 @@ export function applyArchiveMigration(
   alreadyApplied: number;
   legacyMoved: number;
   legacyAlreadyMoved: number;
+  quarantineMoved: number;
+  quarantineAlreadyMoved: number;
   coldManifest: ArchiveColdManifest | null;
 } {
   validateApplyInputs(plan, manifest, archiveMacKey, confirmedPlanDigest);
@@ -966,10 +1139,14 @@ function applyArchiveMigrationOwned(
   alreadyApplied: number;
   legacyMoved: number;
   legacyAlreadyMoved: number;
+  quarantineMoved: number;
+  quarantineAlreadyMoved: number;
   coldManifest: ArchiveColdManifest | null;
 } {
   const allowed = new Map(plan.inventory.map((entry) => [entry.path, entry]));
-  const dispositions = new Map(plan.legacyDispositions.map((entry) => [entry.path, entry]));
+  const dispositions = new Map(
+    allColdDispositions(plan).map((entry) => [entry.path, entry]),
+  );
   const current = { ...scanInventory(archivePath) };
   current.inventory = filteredInventory(current.inventory, archivePath);
   for (const entry of current.inventory) {
@@ -1006,8 +1183,10 @@ function applyArchiveMigrationOwned(
   return {
     changed,
     alreadyApplied,
-    legacyMoved: cold.moved,
-    legacyAlreadyMoved: cold.alreadyMoved,
+    legacyMoved: cold.legacyMoved,
+    legacyAlreadyMoved: cold.legacyAlreadyMoved,
+    quarantineMoved: cold.quarantineMoved,
+    quarantineAlreadyMoved: cold.quarantineAlreadyMoved,
     coldManifest: cold.manifest,
   };
 }
@@ -1063,8 +1242,8 @@ function verifyStrictArchiveOwned(
   }
   if (plan) {
     verifyPlannedFinalInventory(result, plan);
-    if (plan.legacyDispositions.length) {
-      if (!plan.coldArchivePath) throw new Error("planned legacy disposition has no cold archive");
+    if (allColdDispositions(plan).length) {
+      if (!plan.coldArchivePath) throw new Error("planned cold disposition has no cold archive");
       const manifestPath = join(plan.coldArchivePath, COLD_MANIFEST_NAME);
       if (!existsSync(manifestPath)) throw new Error("planned cold archive manifest is missing");
       const manifest = parseColdManifestFile(manifestPath);
@@ -1077,28 +1256,44 @@ function verifyStrictArchiveOwned(
 function applyColdArchiveDispositions(
   plan: ArchiveMigrationPlan,
   archiveMacKey: string,
-): { moved: number; alreadyMoved: number; manifest: ArchiveColdManifest | null } {
-  if (!plan.legacyDispositions.length) {
-    return { moved: 0, alreadyMoved: 0, manifest: null };
+): {
+  legacyMoved: number;
+  legacyAlreadyMoved: number;
+  quarantineMoved: number;
+  quarantineAlreadyMoved: number;
+  manifest: ArchiveColdManifest | null;
+} {
+  const dispositions = allColdDispositions(plan);
+  if (!dispositions.length) {
+    return {
+      legacyMoved: 0,
+      legacyAlreadyMoved: 0,
+      quarantineMoved: 0,
+      quarantineAlreadyMoved: 0,
+      manifest: null,
+    };
   }
-  if (!plan.coldArchivePath) throw new Error("legacy records remain but no cold archive was planned");
+  if (!plan.coldArchivePath) throw new Error("cold dispositions remain but no cold archive was planned");
   if (
     !plan.approvalReviewDigest ||
     plan.legacyDispositions.some((item) => item.evidence !== "operator-approval") ||
-    plan.counts.approvedLegacyRecords !== plan.legacyDispositions.length
+    plan.quarantineDispositions.some((item) => item.evidence !== "operator-approval") ||
+    plan.counts.approvedLegacyRecords !== plan.legacyDispositions.length ||
+    plan.counts.approvedQuarantineRecords !== plan.quarantineDispositions.length
   ) {
-    throw new Error("every legacy disposition requires plan-bound approve-review authorization");
+    throw new Error("every cold disposition requires plan-bound approve-review authorization");
   }
   const archivePath = realExistingDirectory(plan.archivePath);
   const coldPath = prepareColdArchiveDirectory(plan.coldArchivePath, archivePath);
-  const expectedFiles = plan.legacyDispositions
-    .map((item) => ({ path: item.path, sha256: item.inputSha256 }))
-    .sort((a, b) => a.path.localeCompare(b.path));
+  const expectedFiles = coldManifestFiles(plan);
   const manifestPath = join(coldPath, COLD_MANIFEST_NAME);
   let existingManifest: ArchiveColdManifest | null = null;
   if (existsSync(manifestPath)) {
     existingManifest = parseColdManifestFile(manifestPath);
     verifyColdManifest(existingManifest, plan, archiveMacKey, true);
+    if (existingManifest.status === "prepared") {
+      discardColdManifestTemp(coldPath, plan.planDigest);
+    }
   } else {
     assertColdArchiveContents(coldPath, new Set());
     existingManifest = createColdManifest(plan, coldPath, expectedFiles, "prepared", archiveMacKey);
@@ -1106,59 +1301,103 @@ function applyColdArchiveDispositions(
     syncTreeDirectories(coldPath);
   }
 
-  let moved = 0;
-  let alreadyMoved = 0;
+  let legacyMoved = 0;
+  let legacyAlreadyMoved = 0;
+  let quarantineMoved = 0;
+  let quarantineAlreadyMoved = 0;
   for (const item of expectedFiles) {
     const source = join(archivePath, safeRelativePath(item.path));
     const destination = join(coldPath, safeRelativePath(item.path));
     const sourceExists = existsSync(source);
     const destinationExists = existsSync(destination);
-    if (sourceExists && sha256(readFileSync(source)) !== item.sha256) {
-      throw new Error(`legacy source changed: ${item.path}`);
+    const copyTemp = join(coldPath, coldCopyTempName(plan.planDigest, item.path));
+    if (sourceExists && regularFileInfo(source).sha256 !== item.sha256) {
+      throw new Error(`cold-disposition source changed: ${item.path}`);
     }
-    if (destinationExists && sha256(readFileSync(destination)) !== item.sha256) {
-      throw new Error(`cold archive file checksum mismatch: ${item.path}`);
-    }
-    if (!sourceExists && !destinationExists) {
-      throw new Error(`legacy record is absent from active and cold archives: ${item.path}`);
-    }
-    if (!destinationExists) {
-      copyFileDurable(source, destination);
-      if (sha256(readFileSync(destination)) !== item.sha256) {
-        throw new Error(`cold archive copy verification failed: ${item.path}`);
+    if (destinationExists) {
+      const destinationInfo = regularFileInfo(destination);
+      if (destinationInfo.sha256 !== item.sha256) {
+        throw new Error(`cold archive file checksum mismatch: ${item.path}`);
+      }
+      if ((destinationInfo.mode & 0o077) !== 0) {
+        throw new Error(`cold archive file must be private: ${item.path}`);
       }
     }
-    if (sourceExists) {
-      unlinkSync(source);
-      syncDirectory(archivePath);
-      moved++;
+    if (!sourceExists && !destinationExists) {
+      throw new Error(`planned record is absent from active and cold archives: ${item.path}`);
+    }
+    if (!destinationExists) {
+      copyFileDurable(source, destination, copyTemp, item.sha256);
+      const published = regularFileInfo(destination);
+      if (published.sha256 !== item.sha256) {
+        throw new Error(`cold archive copy verification failed: ${item.path}`);
+      }
+      if ((published.mode & 0o077) !== 0) {
+        throw new Error(`cold archive file must be private: ${item.path}`);
+      }
     } else {
-      alreadyMoved++;
+      discardColdCopyTemp(copyTemp);
+    }
+    if (sourceExists) {
+      if (regularFileInfo(source).sha256 !== item.sha256) {
+        throw new Error(`cold-disposition source changed before removal: ${item.path}`);
+      }
+      removeExactRegularFile(source, item.sha256);
+      syncDirectory(archivePath);
+      if (item.disposition === "legacy-v1") legacyMoved++;
+      else quarantineMoved++;
+    } else {
+      if (item.disposition === "legacy-v1") legacyAlreadyMoved++;
+      else quarantineAlreadyMoved++;
     }
   }
 
   if (existingManifest.status === "complete") {
-    return { moved, alreadyMoved, manifest: existingManifest };
+    return {
+      legacyMoved,
+      legacyAlreadyMoved,
+      quarantineMoved,
+      quarantineAlreadyMoved,
+      manifest: existingManifest,
+    };
   }
-  const complete = createColdManifest(plan, coldPath, expectedFiles, "complete", archiveMacKey);
-  atomicReplace(manifestPath, Buffer.from(`${JSON.stringify(complete, null, 2)}\n`));
+  const complete = createColdManifest(
+    plan,
+    coldPath,
+    expectedFiles,
+    "complete",
+    archiveMacKey,
+    existingManifest.createdAt,
+  );
+  replaceColdManifestDurable(
+    manifestPath,
+    Buffer.from(`${JSON.stringify(complete, null, 2)}\n`),
+    join(coldPath, coldManifestTempName(plan.planDigest)),
+  );
   syncTreeDirectories(coldPath);
   verifyColdManifest(complete, plan, archiveMacKey);
-  return { moved, alreadyMoved, manifest: complete };
+  return {
+    legacyMoved,
+    legacyAlreadyMoved,
+    quarantineMoved,
+    quarantineAlreadyMoved,
+    manifest: complete,
+  };
 }
 
 function createColdManifest(
   plan: ArchiveMigrationPlan,
   coldPath: string,
-  files: Array<{ path: string; sha256: string }>,
+  files: ArchiveColdManifest["files"],
   status: ArchiveColdManifest["status"],
   archiveMacKey: string,
+  createdAt = new Date().toISOString(),
 ): ArchiveColdManifest {
   const unsigned = {
     version: ARCHIVE_COLD_MANIFEST_VERSION,
     archivePath: plan.archivePath,
     coldArchivePath: coldPath,
-    createdAt: new Date().toISOString(),
+    createdAt,
     planDigest: plan.planDigest,
     sourceInventoryDigest: plan.inventoryDigest,
     status,
@@ -1201,9 +1440,7 @@ export function verifyColdManifest(
   if (manifest.filesDigest !== digestObject(manifest.files)) {
     throw new Error("cold archive file inventory digest mismatch");
   }
-  const expected = plan.legacyDispositions
-    .map((item) => ({ path: item.path, sha256: item.inputSha256 }))
-    .sort((a, b) => a.path.localeCompare(b.path));
+  const expected = coldManifestFiles(plan);
   if (canonicalValue(manifest.files) !== canonicalValue(expected)) {
     throw new Error("cold archive manifest has a different file set");
   }
@@ -1212,18 +1449,50 @@ export function verifyColdManifest(
   if (manifest.status !== "complete" && !(allowPrepared && manifest.status === "prepared")) {
     throw new Error("cold archive manifest is not complete");
   }
-  assertColdArchiveContents(coldPath, new Set([COLD_MANIFEST_NAME, ...manifest.files.map((item) => item.path)]));
+  const allowedFiles = new Set([
+    COLD_MANIFEST_NAME,
+    ...manifest.files.map((item) => item.path),
+    ...(allowPrepared && manifest.status === "prepared"
+      ? [
+          ...manifest.files.map((item) => coldCopyTempName(manifest.planDigest, item.path)),
+          coldManifestTempName(manifest.planDigest),
+        ]
+      : []),
+  ]);
+  assertColdArchiveContents(coldPath, allowedFiles);
+  if (allowPrepared && manifest.status === "prepared") {
+    const manifestTemp = join(coldPath, coldManifestTempName(manifest.planDigest));
+    if (existsSync(manifestTemp)) {
+      const info = regularFileInfo(manifestTemp);
+      if ((info.mode & 0o077) !== 0) {
+        throw new Error("cold archive manifest temp must be private");
+      }
+    }
+    for (const item of manifest.files) {
+      const temp = join(coldPath, coldCopyTempName(manifest.planDigest, item.path));
+      if (!existsSync(temp)) continue;
+      const info = regularFileInfo(temp);
+      if ((info.mode & 0o077) !== 0) {
+        throw new Error(`cold archive copy temp must be private: ${item.path}`);
+      }
+    }
+  }
   for (const item of manifest.files) {
     const path = join(coldPath, safeRelativePath(item.path));
     if (!existsSync(path)) {
       if (allowPrepared && manifest.status === "prepared") continue;
       throw new Error(`cold archive file no longer matches its manifest: ${item.path}`);
     }
-    const stat = lstatSync(path);
-    if (!stat.isFile() || stat.isSymbolicLink() || sha256(readFileSync(path)) !== item.sha256) {
+    let info: ReturnType<typeof regularFileInfo>;
+    try {
+      info = regularFileInfo(path);
+    } catch {
       throw new Error(`cold archive file no longer matches its manifest: ${item.path}`);
     }
-    if ((stat.mode & 0o077) !== 0) {
+    if (info.sha256 !== item.sha256) {
+      throw new Error(`cold archive file no longer matches its manifest: ${item.path}`);
+    }
+    if ((info.mode & 0o077) !== 0) {
       throw new Error(`cold archive file must not be group- or world-accessible: ${item.path}`);
     }
   }
@@ -1341,8 +1610,8 @@ function validateApproval(
   archivePath: string,
   inventoryDigest: string,
   archiveMacKey: string | undefined,
-): Set<string> {
-  if (!approval) return new Set();
+): { approved: Set<string>; quarantine: QuarantineSelector[] } {
+  if (!approval) return { approved: new Set(), quarantine: [] };
   assertApprovalShape(approval);
   if (approval.version !== ARCHIVE_APPROVAL_VERSION) throw new Error("unsupported approval version");
   const { approvalDigest, approvalMac, ...unsigned } = approval;
@@ -1352,7 +1621,10 @@ function validateApproval(
   if (approval.archivePath !== archivePath || approval.inventoryDigest !== inventoryDigest) {
     throw new Error("approval is bound to a different archive snapshot");
   }
-  return new Set(approval.approvedFiles.map((item) => `${safeRelativePath(item.path)}\0${item.sha256}`));
+  return {
+    approved: new Set(approval.approvedFiles.map((item) => `${safeRelativePath(item.path)}\0${item.sha256}`)),
+    quarantine: approval.quarantineFiles ?? [],
+  };
 }
 
 function parseJsonFile(path: string, label: string): unknown {
@@ -1374,7 +1646,7 @@ function assertMigrationPlanShape(value: unknown): asserts value is ArchiveMigra
     "version", "archivePath", "createdAt", "inventory", "inventoryDigest",
     "archiveKeyFingerprint", "legacyArchiveKeyFingerprint", "replayKeyFingerprint", "pinnedSigningKey",
     "approvalDigest", "approvalReviewDigest", "coldArchivePath", "counts",
-    "findings", "changes", "legacyDispositions", "planDigest", "planMac",
+    "findings", "changes", "legacyDispositions", "quarantineDispositions", "planDigest", "planMac",
   ], "migration plan");
   requireString(plan.version, "migration plan version");
   requireString(plan.archivePath, "migration plan archivePath");
@@ -1394,7 +1666,8 @@ function assertMigrationPlanShape(value: unknown): asserts value is ArchiveMigra
   const counts = objectWithKeys(plan.counts, [
     "files", "records", "legacyRecords", "claims", "replayStates", "replayHolds",
     "unsignedRecords", "unsignedClaims", "approvedRecords", "approvedLegacyRecords",
-    "nonCanonicalTransactions", "changes", "legacyDispositions", "errors", "warnings",
+    "approvedQuarantineRecords", "nonCanonicalTransactions", "changes",
+    "legacyDispositions", "quarantineDispositions", "errors", "warnings",
   ], "migration plan counts");
   for (const [name, count] of Object.entries(counts)) {
     if (!Number.isSafeInteger(count) || (count as number) < 0) {
@@ -1437,13 +1710,45 @@ function assertMigrationPlanShape(value: unknown): asserts value is ArchiveMigra
       throw new Error("legacy disposition evidence is invalid");
     }
   });
+  if (!Array.isArray(plan.quarantineDispositions)) {
+    throw new Error("migration plan quarantineDispositions must be an array");
+  }
+  plan.quarantineDispositions.forEach((disposition, index) => {
+    const item = objectWithKeys(disposition, [
+      "path", "inputSha256", "reason", "approvalRequired", "evidence",
+      "validation", "observedMacSha256",
+    ], `migration plan quarantineDispositions[${index}]`);
+    safeRelativePath(requireString(item.path, "quarantine disposition path"));
+    requireSha256(item.inputSha256, "quarantine disposition inputSha256");
+    if (!requireString(item.reason, "quarantine disposition reason").trim()) {
+      throw new Error("quarantine disposition reason is empty");
+    }
+    if (item.approvalRequired !== true) throw new Error("quarantine disposition approvalRequired is invalid");
+    if (!["operator-approval", "unapproved"].includes(String(item.evidence))) {
+      throw new Error("quarantine disposition evidence is invalid");
+    }
+    if (!isQuarantineRecordValidation(item.validation)) {
+      throw new Error("quarantine disposition validation is invalid");
+    }
+    requireNullableSha256(item.observedMacSha256, "quarantine disposition observedMacSha256");
+  });
+  const dispositionPaths = new Set<string>();
+  for (const item of [
+    ...(plan.legacyDispositions as LegacyDisposition[]),
+    ...(plan.quarantineDispositions as QuarantineDisposition[]),
+  ]) {
+    if (dispositionPaths.has(item.path)) {
+      throw new Error("migration plan cold disposition paths must be unique");
+    }
+    dispositionPaths.add(item.path);
+  }
 }
 
 function assertApprovalShape(value: unknown): asserts value is ArchiveApproval {
   const approval = objectWithKeys(value, [
     "version", "archivePath", "inventoryDigest", "planDigest", "coldArchivePath",
     "approvedFiles", "approvalDigest", "approvalMac",
-  ], "archive approval");
+  ], "archive approval", ["quarantineFiles"]);
   requireString(approval.version, "approval version");
   requireString(approval.archivePath, "approval archivePath");
   requireSha256(approval.inventoryDigest, "approval inventoryDigest");
@@ -1458,6 +1763,38 @@ function assertApprovalShape(value: unknown): asserts value is ArchiveApproval {
     requireSha256(item.sha256, "approval file sha256");
     if (!requireString(item.reason, "approval file reason").trim()) throw new Error("approval file reason is empty");
   });
+  const approvedKeys = new Set<string>();
+  for (const item of approval.approvedFiles as ArchiveApproval["approvedFiles"]) {
+    const key = `${item.path}\0${item.sha256}`;
+    if (approvedKeys.has(key)) throw new Error("approval files must be unique");
+    approvedKeys.add(key);
+  }
+  if (approval.quarantineFiles !== undefined) {
+    if (!Array.isArray(approval.quarantineFiles)) {
+      throw new Error("approval quarantineFiles must be an array");
+    }
+    approval.quarantineFiles.forEach((file, index) => {
+      const item = objectWithKeys(
+        file,
+        ["path", "sha256", "reason"],
+        `approval quarantineFiles[${index}]`,
+      );
+      safeRelativePath(requireString(item.path, "approval quarantine path"));
+      requireSha256(item.sha256, "approval quarantine sha256");
+      if (!requireString(item.reason, "approval quarantine reason").trim()) {
+        throw new Error("approval quarantine reason is empty");
+      }
+    });
+    const quarantineKeys = new Set<string>();
+    for (const item of approval.quarantineFiles as QuarantineSelector[]) {
+      const key = `${item.path}\0${item.sha256}`;
+      if (quarantineKeys.has(key)) throw new Error("approval quarantine files must be unique");
+      if (!approvedKeys.has(key)) {
+        throw new Error("approval quarantine file is absent from approvedFiles");
+      }
+      quarantineKeys.add(key);
+    }
+  }
 }
 
 function assertApprovalReviewShape(value: unknown): asserts value is ArchiveApprovalReview {
@@ -1471,17 +1808,38 @@ function assertApprovalReviewShape(value: unknown): asserts value is ArchiveAppr
   requireNullableString(review.coldArchivePath, "approval review coldArchivePath");
   if (!Array.isArray(review.files)) throw new Error("approval review files must be an array");
   review.files.forEach((file, index) => {
-    const item = objectWithKeys(file, ["path", "sha256", "actions"], `approval review files[${index}]`);
+    const item = objectWithKeys(
+      file,
+      ["path", "sha256", "actions"],
+      `approval review files[${index}]`,
+      ["reason"],
+    );
     safeRelativePath(requireString(item.path, "approval review file path"));
     requireSha256(item.sha256, "approval review file sha256");
+    if (item.reason !== undefined && !requireString(item.reason, "approval review file reason").trim()) {
+      throw new Error("approval review file reason is empty");
+    }
     if (!Array.isArray(item.actions) || !item.actions.length || item.actions.some((action) =>
       action !== "authenticate-record" &&
       action !== "authenticate-claim" &&
-      action !== "move-legacy-to-cold-archive"
+      action !== "move-legacy-to-cold-archive" &&
+      action !== "quarantine-current-record"
     )) {
       throw new Error("approval review file actions are invalid");
     }
+    if (item.actions.includes("quarantine-current-record") &&
+        (item.actions.length !== 1 || typeof item.reason !== "string" || !item.reason.trim())) {
+      throw new Error("quarantine approval review action must be exclusive and include its reason");
+    }
+    if (!item.actions.includes("quarantine-current-record") && item.reason !== undefined) {
+      throw new Error("approval review reason is valid only for quarantine action");
+    }
   });
+  const reviewPaths = new Set<string>();
+  for (const item of review.files as ArchiveApprovalReview["files"]) {
+    if (reviewPaths.has(item.path)) throw new Error("approval review file paths must be unique");
+    reviewPaths.add(item.path);
+  }
 }
 
 function assertBackupManifestShape(value: unknown): asserts value is ArchiveBackupManifest {
@@ -1515,10 +1873,33 @@ function assertColdManifestShape(value: unknown): asserts value is ArchiveColdMa
   if (manifest.status !== "prepared" && manifest.status !== "complete") throw new Error("cold manifest status is invalid");
   if (!Array.isArray(manifest.files)) throw new Error("cold manifest files must be an array");
   manifest.files.forEach((file, index) => {
-    const item = objectWithKeys(file, ["path", "sha256"], `cold manifest files[${index}]`);
+    const item = objectWithKeys(file, [
+      "path", "sha256", "disposition", "reason", "validation", "observedMacSha256",
+    ], `cold manifest files[${index}]`);
     safeRelativePath(requireString(item.path, "cold manifest file path"));
     requireSha256(item.sha256, "cold manifest file sha256");
+    if (item.disposition !== "legacy-v1" && item.disposition !== "quarantine-current-record") {
+      throw new Error("cold manifest file disposition is invalid");
+    }
+    requireNullableString(item.reason, "cold manifest file reason");
+    if (item.validation !== null && !isQuarantineRecordValidation(item.validation)) {
+      throw new Error("cold manifest file validation is invalid");
+    }
+    requireNullableSha256(item.observedMacSha256, "cold manifest file observedMacSha256");
+    if (item.disposition === "legacy-v1" &&
+      (item.reason !== null || item.validation !== null || item.observedMacSha256 !== null)) {
+      throw new Error("legacy cold manifest evidence is invalid");
+    }
+    if (item.disposition === "quarantine-current-record" &&
+      (typeof item.reason !== "string" || !item.reason.trim() || item.validation === null)) {
+      throw new Error("quarantine cold manifest evidence is incomplete");
+    }
   });
+  const manifestPaths = new Set<string>();
+  for (const item of manifest.files as ArchiveColdManifest["files"]) {
+    if (manifestPaths.has(item.path)) throw new Error("cold manifest file paths must be unique");
+    manifestPaths.add(item.path);
+  }
   requireSha256(manifest.filesDigest, "cold manifest filesDigest");
   requireSha256(manifest.manifestDigest, "cold manifest digest");
   requireSha256(manifest.manifestMac, "cold manifest MAC");
@@ -1595,6 +1976,50 @@ function recordShapeError(value: unknown, name: string): string | null {
   if (record.recoveryCodeSha256 !== undefined && !SHA256_PATTERN.test(record.recoveryCodeSha256)) return "recovery-code hash is invalid";
   if (record.mac !== undefined && (typeof record.mac !== "string" || !SHA256_PATTERN.test(record.mac))) return "record MAC is invalid";
   return null;
+}
+
+function isRecognizableCurrentRecord(value: unknown, name: string): boolean {
+  if (!isRecordName(name) || !value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  return (
+    typeof record.id === "string" &&
+    RECORD_ID_PATTERN.test(record.id) &&
+    `${record.id}.json` === name &&
+    typeof record.paramsSha256 === "string" &&
+    SHA256_PATTERN.test(record.paramsSha256) &&
+    record.request !== null &&
+    typeof record.request === "object" &&
+    !Array.isArray(record.request) &&
+    typeof record.contentType === "string" &&
+    typeof record.deliverable === "string" &&
+    typeof record.deliveredAt === "string"
+  );
+}
+
+function quarantineRecordValidation(
+  value: unknown,
+  name: string,
+  archiveMacKey: string | undefined,
+): QuarantineRecordValidation {
+  if (recordShapeError(value, name)) return "shape-invalid";
+  const record = value as ArchiveRecord;
+  if (record.mac === undefined) return "unsigned";
+  return archiveRecordMacValid(record, archiveMacKey, true)
+    ? "current-mac-valid"
+    : "mac-invalid";
+}
+
+function observedRecordMacSha256(value: unknown): string | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const mac = (value as Record<string, unknown>).mac;
+  return typeof mac === "string" ? sha256(Buffer.from(mac, "utf8")) : null;
+}
+
+function isQuarantineRecordValidation(value: unknown): value is QuarantineRecordValidation {
+  return value === "current-mac-valid" || value === "unsigned" ||
+    value === "mac-invalid" || value === "shape-invalid";
 }
 
 /**
@@ -1929,13 +2354,151 @@ function assertColdArchiveContents(root: string, allowedFiles: Set<string>): voi
   }
 }
 
-function copyFileDurable(source: string, destination: string): void {
+function copyFileDurable(
+  source: string,
+  destination: string,
+  temp: string,
+  expectedSha256: string,
+): void {
   mkdirSync(dirname(destination), { recursive: true, mode: 0o700 });
-  copyFileSync(source, destination);
-  chmodSync(destination, 0o600);
-  const fd = openSync(destination, "r");
-  try { fsyncSync(fd); } finally { closeSync(fd); }
+  if (existsSync(temp)) {
+    let tempInfo: ReturnType<typeof regularFileInfo>;
+    try {
+      tempInfo = regularFileInfo(temp);
+    } catch {
+      throw new Error("cold archive copy temp is unsafe");
+    }
+    if ((tempInfo.mode & 0o077) !== 0) throw new Error("cold archive copy temp must be private");
+    if (tempInfo.sha256 !== expectedSha256) {
+      unlinkSync(temp);
+      syncDirectory(dirname(temp));
+    }
+  }
+  if (!existsSync(temp)) {
+    const sourceFd = openSync(source, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+    let tempFd: number | undefined;
+    try {
+      const sourceStat = fstatSync(sourceFd);
+      if (!sourceStat.isFile()) throw new Error("cold archive source is not a regular file");
+      const bytes = readFileSync(sourceFd);
+      if (sha256(bytes) !== expectedSha256) throw new Error("cold archive source checksum changed");
+      tempFd = openSync(
+        temp,
+        fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW,
+        0o600,
+      );
+      writeFileSync(tempFd, bytes);
+      fchmodSync(tempFd, 0o600);
+      fsyncSync(tempFd);
+      closeSync(tempFd);
+      tempFd = undefined;
+    } finally {
+      if (tempFd !== undefined) closeSync(tempFd);
+      closeSync(sourceFd);
+    }
+    syncDirectory(dirname(temp));
+  }
+  if (regularFileInfo(temp).sha256 !== expectedSha256) {
+    throw new Error("cold archive copy temp checksum mismatch");
+  }
+  try {
+    linkSync(temp, destination);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    try {
+      if (regularFileInfo(destination).sha256 !== expectedSha256) throw error;
+    } catch {
+      throw new Error("cold archive destination collision is unsafe");
+    }
+  }
   syncDirectory(dirname(destination));
+  discardColdCopyTemp(temp);
+}
+
+function discardColdCopyTemp(path: string): void {
+  if (!existsSync(path)) return;
+  const info = regularFileInfo(path);
+  if ((info.mode & 0o077) !== 0) throw new Error("cold archive copy temp must be private");
+  unlinkSync(path);
+  syncDirectory(dirname(path));
+}
+
+function discardColdManifestTemp(coldPath: string, planDigest: string): void {
+  const path = join(coldPath, coldManifestTempName(planDigest));
+  if (!existsSync(path)) return;
+  const info = regularFileInfo(path);
+  if ((info.mode & 0o077) !== 0) {
+    throw new Error("cold archive manifest temp must be private");
+  }
+  unlinkSync(path);
+  syncDirectory(coldPath);
+}
+
+function replaceColdManifestDurable(path: string, bytes: Buffer, temp: string): void {
+  if (existsSync(temp)) {
+    const info = regularFileInfo(temp);
+    if ((info.mode & 0o077) !== 0) {
+      throw new Error("cold archive manifest temp must be private");
+    }
+    unlinkSync(temp);
+    syncDirectory(dirname(temp));
+  }
+  let fd: number | undefined;
+  try {
+    fd = openSync(
+      temp,
+      fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW,
+      0o600,
+    );
+    writeFileSync(fd, bytes);
+    fchmodSync(fd, 0o600);
+    fsyncSync(fd);
+    closeSync(fd);
+    fd = undefined;
+    syncDirectory(dirname(temp));
+    renameSync(temp, path);
+    syncDirectory(dirname(path));
+  } finally {
+    if (fd !== undefined) try { closeSync(fd); } catch { /* preserve failure */ }
+  }
+}
+
+function coldCopyTempName(planDigest: string, path: string): string {
+  return `${COLD_COPY_TEMP_PREFIX}${sha256(Buffer.from(`${planDigest}\0${path}`, "utf8"))}.tmp`;
+}
+
+function coldManifestTempName(planDigest: string): string {
+  return `${COLD_MANIFEST_TEMP_PREFIX}${planDigest}.tmp`;
+}
+
+function regularFileInfo(path: string): { sha256: string; mode: number } {
+  const fd = openSync(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile()) throw new Error("path is not a regular file");
+    return { sha256: sha256(readFileSync(fd)), mode: stat.mode & 0o7777 };
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function removeExactRegularFile(path: string, expectedSha256: string): void {
+  const before = lstatSync(path);
+  if (!before.isFile() || before.isSymbolicLink()) {
+    throw new Error("cold-disposition source is not a regular file");
+  }
+  const info = regularFileInfo(path);
+  const after = lstatSync(path);
+  if (
+    info.sha256 !== expectedSha256 ||
+    !after.isFile() ||
+    after.isSymbolicLink() ||
+    before.dev !== after.dev ||
+    before.ino !== after.ino
+  ) {
+    throw new Error("cold-disposition source changed before unlink");
+  }
+  unlinkSync(path);
 }
 
 function assertPrivateDirectory(path: string, label: string): void {
@@ -1947,7 +2510,7 @@ function assertPrivateDirectory(path: string, label: string): void {
 
 function coldDispositionPresent(plan: ArchiveMigrationPlan, path: string, archiveMacKey?: string): boolean {
   if (!plan.coldArchivePath) return false;
-  const disposition = plan.legacyDispositions.find((item) => item.path === path);
+  const disposition = allColdDispositions(plan).find((item) => item.path === path);
   if (!disposition) return false;
   const manifestPath = join(plan.coldArchivePath, COLD_MANIFEST_NAME);
   if (!existsSync(manifestPath)) return false;
@@ -1960,9 +2523,7 @@ function coldDispositionPresent(plan: ArchiveMigrationPlan, path: string, archiv
       (manifest.status === "prepared" || manifest.status === "complete") &&
       manifest.files.some((item) => item.path === path && item.sha256 === disposition.inputSha256) &&
       existsSync(coldFile) &&
-      lstatSync(coldFile).isFile() &&
-      !lstatSync(coldFile).isSymbolicLink() &&
-      sha256(readFileSync(coldFile)) === disposition.inputSha256
+      regularFileInfo(coldFile).sha256 === disposition.inputSha256
     );
   } catch {
     return false;
@@ -2051,11 +2612,95 @@ function migrationReviewDigest(
   });
 }
 
+function allColdDispositions(
+  plan: Pick<ArchiveMigrationPlan, "legacyDispositions" | "quarantineDispositions">,
+): Array<{ path: string; inputSha256: string }> {
+  return [...plan.legacyDispositions, ...plan.quarantineDispositions]
+    .sort((a, b) => a.path.localeCompare(b.path));
+}
+
+function coldManifestFiles(
+  plan: Pick<ArchiveMigrationPlan, "legacyDispositions" | "quarantineDispositions">,
+): ArchiveColdManifest["files"] {
+  return [
+    ...plan.legacyDispositions.map((item) => ({
+      path: item.path,
+      sha256: item.inputSha256,
+      disposition: "legacy-v1" as const,
+      reason: null,
+      validation: null,
+      observedMacSha256: null,
+    })),
+    ...plan.quarantineDispositions.map((item) => ({
+      path: item.path,
+      sha256: item.inputSha256,
+      disposition: "quarantine-current-record" as const,
+      reason: item.reason,
+      validation: item.validation,
+      observedMacSha256: item.observedMacSha256,
+    })),
+  ].sort((a, b) => a.path.localeCompare(b.path));
+}
+
+function validateQuarantineSelectors(
+  selectors: QuarantineSelector[] | undefined,
+  inventory: MigrationInventoryEntry[],
+): Map<string, QuarantineSelector> {
+  const result = new Map<string, QuarantineSelector>();
+  for (const raw of selectors ?? []) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw) ||
+        typeof raw.path !== "string" || typeof raw.sha256 !== "string" ||
+        typeof raw.reason !== "string") {
+      throw new Error("every quarantine selector needs a path, exact lowercase SHA-256, and non-empty reason");
+    }
+    const path = safeRelativePath(raw.path);
+    const reason = raw.reason.trim();
+    if (!LOWER_SHA256_PATTERN.test(raw.sha256) || !reason) {
+      throw new Error("every quarantine selector needs an exact lowercase SHA-256 and non-empty reason");
+    }
+    if (result.has(path)) throw new Error(`duplicate quarantine selector: ${path}`);
+    const entry = inventory.find((item) => item.path === path);
+    if (!entry || entry.kind !== "file" || entry.sha256 !== raw.sha256) {
+      throw new Error(`quarantine selector does not match an archive file: ${path}`);
+    }
+    if (!isRecordName(path)) {
+      throw new Error(`quarantine selector is not a current-format record path: ${path}`);
+    }
+    result.set(path, { path, sha256: raw.sha256, reason });
+  }
+  return result;
+}
+
+function sameQuarantineSelectors(
+  left: QuarantineSelector[],
+  right: QuarantineSelector[],
+): boolean {
+  try {
+    const normalize = (items: QuarantineSelector[]) => items
+      .map((item) => {
+        if (!item || typeof item !== "object" || Array.isArray(item) ||
+            typeof item.path !== "string" || typeof item.sha256 !== "string" ||
+            typeof item.reason !== "string") {
+          throw new Error("invalid quarantine selector");
+        }
+        return {
+          path: safeRelativePath(item.path),
+          sha256: item.sha256,
+          reason: item.reason.trim(),
+        };
+      })
+      .sort((a, b) => a.path.localeCompare(b.path));
+    return canonicalValue(normalize(left)) === canonicalValue(normalize(right));
+  } catch {
+    return false;
+  }
+}
+
 function verifyPlannedFinalInventory(
   actual: ArchiveMigrationPlan,
   plan: ArchiveMigrationPlan,
 ): void {
-  const removed = new Set(plan.legacyDispositions.map((item) => item.path));
+  const removed = new Set(allColdDispositions(plan).map((item) => item.path));
   const changes = new Map(plan.changes.map((item) => [item.path, item]));
   const expected = plan.inventory
     .filter((entry) => !removed.has(entry.path))
@@ -2093,10 +2738,11 @@ function privateInventoryFindings(inventory: MigrationInventoryEntry[]): Migrati
 }
 
 function createReviewFiles(
-  plan: Pick<ArchiveMigrationPlan, "inventory" | "changes" | "legacyDispositions" | "findings">,
+  plan: Pick<ArchiveMigrationPlan, "inventory" | "changes" | "legacyDispositions" | "quarantineDispositions" | "findings">,
 ): ArchiveApprovalReview["files"] {
   type ReviewAction = ArchiveApprovalReview["files"][number]["actions"][number];
   const actions = new Map<string, Set<ReviewAction>>();
+  const reasons = new Map<string, string>();
   for (const change of plan.changes) {
     if (!change.approvalRequired) continue;
     const current = actions.get(change.path) ?? new Set();
@@ -2107,6 +2753,12 @@ function createReviewFiles(
     const current = actions.get(disposition.path) ?? new Set();
     current.add("move-legacy-to-cold-archive");
     actions.set(disposition.path, current);
+  }
+  for (const disposition of plan.quarantineDispositions) {
+    const current = actions.get(disposition.path) ?? new Set();
+    current.add("quarantine-current-record");
+    actions.set(disposition.path, current);
+    reasons.set(disposition.path, disposition.reason);
   }
   for (const item of plan.findings) {
     if (
@@ -2125,7 +2777,12 @@ function createReviewFiles(
     .map(([path, fileActions]) => {
       const entry = plan.inventory.find((candidate) => candidate.path === path);
       if (!entry?.sha256) throw new Error(`approval review file is absent from inventory: ${path}`);
-      return { path, sha256: entry.sha256, actions: [...fileActions].sort() };
+      return {
+        path,
+        sha256: entry.sha256,
+        ...(reasons.has(path) ? { reason: reasons.get(path) } : {}),
+        actions: [...fileActions].sort(),
+      };
     })
     .sort((a, b) => a.path.localeCompare(b.path));
 }

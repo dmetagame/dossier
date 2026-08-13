@@ -290,7 +290,7 @@ Before restarting a production instance, verify without printing secret values:
 - `ARCHIVE_MAC_KEY` and `ARCHIVE_MAC_REQUIRED` match the audited archive state.
 - The archive has been backed up and separately checked for unsigned, malformed,
   incompatible legacy-MAC, missing-owner, or ambiguous-transaction records.
-- `corepack pnpm archive:migrate -- apply-verify` reports `strictReady: true` before
+- `node --import tsx scripts/archive-migrate.ts apply-verify` reports `strictReady: true` before
   enabling strict archive mode.
 
 ### Offline archive migration
@@ -304,6 +304,35 @@ tool preserves them in a separately checksummed cold archive outside `ARCHIVE_DI
 instead of fabricating ids or silently deleting history. Moving those legacy records
 requires `approve-review`; the lower-level `approve` command can authorize ordinary
 record authentication but cannot authorize a cold-archive disposition.
+
+The tool never infers that a record is synthetic. A known synthetic/test artifact may
+use the same cold archive without being promoted to trusted history only when an
+operator selects it explicitly during the first audit with a relative path, exact
+lowercase SHA-256, and specific forensic reason:
+
+```bash
+node --import tsx scripts/archive-migrate.ts audit \
+  --archive "$ARCHIVE_DIR" \
+  --cold-archive-dir "$EVIDENCE_DIR/cold-archive" \
+  --quarantine 'record-id.json:exact-sha256:known production smoke-test artifact' \
+  --out "$EVIDENCE_DIR/plan.initial.json" \
+  --approval-review-out "$EVIDENCE_DIR/approval-review.json"
+```
+
+Quarantine accepts structurally recognizable current-format archive JSON even when it
+is unsigned, has an invalid MAC, or fails stricter current-record validation. It
+preserves the selected bytes verbatim, records the validation result and a fingerprint
+of any observed MAC in the authenticated cold manifest, and never treats quarantine as
+authentication, payment evidence, or ownership evidence. The selector, reason, archive
+snapshot, key fingerprints, and exclusive `quarantine-current-record` review action are
+plan-bound through `approve-review`; ordinary `approve` cannot authorize quarantine.
+Apply writes and fsyncs the prepared manifest and cold copy, verifies the exact checksum,
+and only then removes the matching active source. It fails closed on collisions and can
+resume an authenticated prepared manifest after a crash. Repeat the same selectors on a
+manual re-audit, or omit them when `--approval` is supplied because the authenticated
+approval carries the exact reviewed selector set forward. Do not use the package-script
+form with an extra literal `--` on hosts where pnpm forwards it to the CLI; invoking the
+script directly as above is unambiguous.
 
 Prepare the checkout, dependencies, and bundle before the outage, but do not restart yet.
 Use the repository's pnpm lockfile and a fixed pnpm 10 release compatible with CI
@@ -387,7 +416,9 @@ fi
 }
 
 # First pass: create a reviewable inventory of every byte set needing trust.
-corepack pnpm archive:migrate -- audit \
+# If and only if an exact current-format record is already known to be a test
+# artifact, add one reviewed --quarantine path:sha256:reason selector here.
+node --import tsx scripts/archive-migrate.ts audit \
   --archive "$ARCHIVE_DIR" \
   --cold-archive-dir "$EVIDENCE_DIR/cold-archive" \
   --out "$EVIDENCE_DIR/plan.initial.json" \
@@ -395,7 +426,7 @@ corepack pnpm archive:migrate -- audit \
 
 # Review the paths, SHA-256 values, findings, and intended actions. Then bind one
 # explicit reason to that exact reviewed inventory.
-corepack pnpm archive:migrate -- approve-review \
+node --import tsx scripts/archive-migrate.ts approve-review \
   --archive "$ARCHIVE_DIR" \
   --review "$EVIDENCE_DIR/approval-review.json" \
   --reason "matched reviewed production snapshot and deployment history" \
@@ -403,13 +434,13 @@ corepack pnpm archive:migrate -- approve-review \
 
 # Re-audit with approval. Resolve every ERROR before continuing; do not choose an
 # owner automatically for a real duplicated chain transaction.
-corepack pnpm archive:migrate -- audit \
+node --import tsx scripts/archive-migrate.ts audit \
   --archive "$ARCHIVE_DIR" \
   --cold-archive-dir "$EVIDENCE_DIR/cold-archive" \
   --approval "$EVIDENCE_DIR/approval.json" \
   --out "$EVIDENCE_DIR/plan.json"
 
-corepack pnpm archive:migrate -- backup \
+node --import tsx scripts/archive-migrate.ts backup \
   --plan "$EVIDENCE_DIR/plan.json" \
   --backup-dir "$EVIDENCE_DIR/active-pre-migration" \
   --out "$EVIDENCE_DIR/backup-manifest.json"
@@ -417,7 +448,7 @@ corepack pnpm archive:migrate -- backup \
 # Type the exact planDigest printed by audit. The combined operation is
 # idempotent and holds the migration interlock continuously through strict
 # verification, so the service cannot start between mutation and verification.
-corepack pnpm archive:migrate -- apply-verify \
+node --import tsx scripts/archive-migrate.ts apply-verify \
   --plan "$EVIDENCE_DIR/plan.json" \
   --backup-manifest "$EVIDENCE_DIR/backup-manifest.json" \
   --confirm <exact-plan-digest>

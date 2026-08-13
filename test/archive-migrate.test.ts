@@ -544,6 +544,8 @@ describe("archive backup and apply", () => {
       alreadyApplied: 0,
       legacyMoved: 0,
       legacyAlreadyMoved: 0,
+      quarantineMoved: 0,
+      quarantineAlreadyMoved: 0,
       coldManifest: null,
     });
     const stored = JSON.parse(readFileSync(join(dir, `${rec.id}.json`), "utf8")) as ArchiveRecord;
@@ -555,6 +557,8 @@ describe("archive backup and apply", () => {
       alreadyApplied: 1,
       legacyMoved: 0,
       legacyAlreadyMoved: 0,
+      quarantineMoved: 0,
+      quarantineAlreadyMoved: 0,
       coldManifest: null,
     });
     assert.equal(verifyStrictArchive({ archiveDir: dir, archiveMacKey: ARCHIVE_KEY }).counts.errors, 0);
@@ -848,6 +852,354 @@ describe("archive backup and apply", () => {
 
     const second = applyArchiveMigration(plan, manifest, ARCHIVE_KEY, plan.planDigest);
     assert.equal(second.legacyAlreadyMoved, 1);
+  });
+
+  test("explicit unsigned and invalid-MAC current records quarantine with exact-byte evidence", () => {
+    const dir = temp();
+    const cold = join(temp(), "cold");
+    const unsigned = record({
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      deliverable: "synthetic unsigned fixture",
+    });
+    const invalidMac = record({
+      id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      deliverable: "synthetic invalid-MAC fixture",
+      mac: "f".repeat(64),
+    });
+    const paths = [writeRecord(dir, unsigned), writeRecord(dir, invalidMac)];
+    const selectors = paths.map((path, index) => ({
+      path: `${index ? invalidMac.id : unsigned.id}.json`,
+      sha256: sha256(readFileSync(path)),
+      reason: index ? "known invalid-MAC load-test artifact" : "known unsigned smoke-test artifact",
+    }));
+
+    const initial = auditArchive({
+      archiveDir: dir,
+      archiveMacKey: ARCHIVE_KEY,
+      coldArchiveDir: cold,
+      quarantineRecords: selectors,
+    });
+    assert.deepEqual(
+      initial.quarantineDispositions.map((item) => item.validation),
+      ["unsigned", "mac-invalid"],
+    );
+    assert.deepEqual(
+      initial.quarantineDispositions.map((item) => item.observedMacSha256),
+      [null, sha256(Buffer.from("f".repeat(64)))],
+    );
+    assert.equal(initial.changes.length, 0, "quarantine must never authenticate selected bytes");
+    const review = createArchiveApprovalReview(initial);
+    assert.deepEqual(
+      review.files.map((item) => item.actions),
+      [["quarantine-current-record"], ["quarantine-current-record"]],
+    );
+    assert.deepEqual(review.files.map((item) => item.reason), selectors.map((item) => item.reason));
+
+    const approval = createArchiveApprovalFromReview(
+      dir,
+      review,
+      "reviewed exact synthetic artifacts",
+      ARCHIVE_KEY,
+    );
+    const plan = auditArchive({
+      archiveDir: dir,
+      archiveMacKey: ARCHIVE_KEY,
+      coldArchiveDir: cold,
+      approval,
+    });
+    assert.equal(plan.counts.errors, 0, JSON.stringify(plan.findings));
+    assert.equal(plan.counts.approvedQuarantineRecords, 2);
+    const manifest = backupArchive(plan, join(temp(), "snapshot"), ARCHIVE_KEY);
+    const applied = applyAndVerifyArchiveMigration(
+      plan,
+      manifest,
+      { archiveDir: dir, archiveMacKey: ARCHIVE_KEY },
+      plan.planDigest,
+    );
+    assert.equal(applied.apply.quarantineMoved, 2);
+    for (const selector of selectors) {
+      assert.equal(existsSync(join(dir, selector.path)), false);
+      assert.equal(sha256(readFileSync(join(cold, selector.path))), selector.sha256);
+    }
+    assert.deepEqual(
+      applied.apply.coldManifest?.files.map((item) => ({
+        path: item.path,
+        disposition: item.disposition,
+        reason: item.reason,
+        validation: item.validation,
+      })),
+      plan.quarantineDispositions.map((item) => ({
+        path: item.path,
+        disposition: "quarantine-current-record",
+        reason: item.reason,
+        validation: item.validation,
+      })),
+    );
+    const second = applyArchiveMigration(plan, manifest, ARCHIVE_KEY, plan.planDigest);
+    assert.equal(second.quarantineAlreadyMoved, 2);
+  });
+
+  test("quarantine selection and approval are exact, plan-bound, and path-safe", () => {
+    const dir = temp();
+    const cold = join(temp(), "cold");
+    const rec = authenticatedRecord({
+      id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      deliverable: "known synthetic authenticated fixture",
+    });
+    const path = writeRecord(dir, rec);
+    const selector = {
+      path: `${rec.id}.json`,
+      sha256: sha256(readFileSync(path)),
+      reason: "known authenticated synthetic fixture",
+    };
+    const ordinary = auditArchive({ archiveDir: dir, archiveMacKey: ARCHIVE_KEY });
+    assert.equal(
+      ordinary.quarantineDispositions.length,
+      0,
+      "the tool must never infer synthetic records from their content",
+    );
+    assert.throws(
+      () => auditArchive({
+        archiveDir: dir,
+        archiveMacKey: ARCHIVE_KEY,
+        coldArchiveDir: cold,
+        quarantineRecords: [{ ...selector, path: `../${selector.path}` }],
+      }),
+      /unsafe relative path/,
+    );
+    assert.throws(
+      () => auditArchive({
+        archiveDir: dir,
+        archiveMacKey: ARCHIVE_KEY,
+        coldArchiveDir: cold,
+        quarantineRecords: [{ ...selector, sha256: "0".repeat(64) }],
+      }),
+      /does not match an archive file/,
+    );
+
+    const manual = createArchiveApproval(dir, [selector], ARCHIVE_KEY);
+    const manualPlan = auditArchive({
+      archiveDir: dir,
+      archiveMacKey: ARCHIVE_KEY,
+      coldArchiveDir: cold,
+      quarantineRecords: [selector],
+      approval: manual,
+    });
+    assert.equal(manualPlan.counts.approvedQuarantineRecords, 0);
+    assert.ok(manualPlan.findings.some((item) => item.code === "current_record_quarantine_unapproved"));
+
+    const initial = auditArchive({
+      archiveDir: dir,
+      archiveMacKey: ARCHIVE_KEY,
+      coldArchiveDir: cold,
+      quarantineRecords: [selector],
+    });
+    assert.equal(initial.quarantineDispositions[0]?.validation, "current-mac-valid");
+    const review = createArchiveApprovalReview(initial);
+    assert.throws(
+      () => createArchiveApprovalFromReview(
+        dir,
+        {
+          ...review,
+          files: review.files.map((item) => ({
+            ...item,
+            actions: ["quarantine-current-record", "authenticate-record"],
+          })),
+        },
+        "tampered action",
+        ARCHIVE_KEY,
+      ),
+      /exclusive|altered/,
+    );
+    assert.throws(
+      () => createArchiveApprovalFromReview(
+        dir,
+        {
+          ...review,
+          files: review.files.map((item) => ({ ...item, reason: "different reason" })),
+        },
+        "tampered reason",
+        ARCHIVE_KEY,
+      ),
+      /digest no longer matches|altered/,
+    );
+
+    const approval = createArchiveApprovalFromReview(
+      dir,
+      review,
+      "reviewed exact synthetic artifact",
+      ARCHIVE_KEY,
+    );
+    const ordinaryApproval = createArchiveApproval(
+      dir,
+      [selector],
+      ARCHIVE_KEY,
+    );
+    const forgedUnsigned = {
+      version: ordinaryApproval.version,
+      archivePath: ordinaryApproval.archivePath,
+      inventoryDigest: ordinaryApproval.inventoryDigest,
+      planDigest: review.reviewDigest,
+      coldArchivePath: cold,
+      approvedFiles: ordinaryApproval.approvedFiles,
+    };
+    const forgedDigest = sha256(canonicalValue(forgedUnsigned));
+    const forgedDerived = createHash("sha256")
+      .update(`dossier-archive-approval:${ARCHIVE_KEY}`)
+      .digest();
+    const forgedApproval = {
+      ...forgedUnsigned,
+      approvalDigest: forgedDigest,
+      approvalMac: createHmac("sha256", forgedDerived).update(forgedDigest).digest("hex"),
+    };
+    const forgedPlan = auditArchive({
+      archiveDir: dir,
+      archiveMacKey: ARCHIVE_KEY,
+      coldArchiveDir: cold,
+      quarantineRecords: [selector],
+      approval: forgedApproval,
+    });
+    assert.equal(forgedPlan.counts.approvedQuarantineRecords, 0);
+    assert.ok(forgedPlan.findings.some((item) => item.code === "current_record_quarantine_unapproved"));
+    assert.throws(
+      () => auditArchive({
+        archiveDir: dir,
+        archiveMacKey: ARCHIVE_KEY,
+        coldArchiveDir: cold,
+        quarantineRecords: [{ ...selector, reason: "different reason" }],
+        approval,
+      }),
+      /differ from the plan-bound approval/,
+    );
+  });
+
+  test("quarantine rejects unrecognized JSON, collisions, tamper, and resumes prepared copies", () => {
+    const dir = temp();
+    const cold = join(temp(), "cold");
+    const rec = record({
+      id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+      deliverable: "known synthetic crash fixture",
+    });
+    const path = writeRecord(dir, rec);
+    const selector = {
+      path: `${rec.id}.json`,
+      sha256: sha256(readFileSync(path)),
+      reason: "known crash-test artifact",
+    };
+    const initial = auditArchive({
+      archiveDir: dir,
+      archiveMacKey: ARCHIVE_KEY,
+      coldArchiveDir: cold,
+      quarantineRecords: [selector],
+    });
+    const approval = createArchiveApprovalFromReview(
+      dir,
+      createArchiveApprovalReview(initial),
+      "reviewed crash fixture",
+      ARCHIVE_KEY,
+    );
+    const plan = auditArchive({
+      archiveDir: dir,
+      archiveMacKey: ARCHIVE_KEY,
+      coldArchiveDir: cold,
+      approval,
+    });
+    const backup = backupArchive(plan, join(temp(), "snapshot"), ARCHIVE_KEY);
+    const first = applyArchiveMigration(plan, backup, ARCHIVE_KEY, plan.planDigest);
+    assert.ok(first.coldManifest);
+
+    const manifestPath = join(cold, ".dossier-cold-archive-manifest.json");
+    const prepared = remacColdManifest({ ...first.coldManifest!, status: "prepared" }, ARCHIVE_KEY);
+    writePrivate(manifestPath, `${JSON.stringify(prepared, null, 2)}\n`);
+    const coldBytes = readFileSync(join(cold, selector.path));
+    writePrivate(path, coldBytes);
+    const copyTemp = join(
+      cold,
+      `.dossier-cold-copy-${sha256(Buffer.from(`${plan.planDigest}\0${selector.path}`))}.tmp`,
+    );
+    writePrivate(copyTemp, coldBytes);
+    const manifestTemp = join(cold, `.dossier-cold-manifest-${plan.planDigest}.tmp`);
+    writePrivate(manifestTemp, '{"partialCompleteManifest":');
+    rmSync(join(cold, selector.path));
+    const resumed = applyArchiveMigration(plan, backup, ARCHIVE_KEY, plan.planDigest);
+    assert.equal(resumed.quarantineMoved, 1);
+    assert.equal(resumed.coldManifest?.status, "complete");
+    assert.equal(existsSync(copyTemp), false);
+    assert.equal(existsSync(manifestTemp), false);
+
+    writePrivate(join(cold, selector.path), "tampered bytes");
+    assert.throws(
+      () => verifyColdManifest(resumed.coldManifest!, plan, ARCHIVE_KEY),
+      /no longer matches its manifest/,
+    );
+
+    const malformedDir = temp();
+    const malformedName = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee.json";
+    const malformedPath = join(malformedDir, malformedName);
+    writePrivate(malformedPath, JSON.stringify({ id: malformedName.slice(0, -5), hello: "world" }));
+    const malformed = auditArchive({
+      archiveDir: malformedDir,
+      archiveMacKey: ARCHIVE_KEY,
+      coldArchiveDir: join(temp(), "cold"),
+      quarantineRecords: [{
+        path: malformedName,
+        sha256: sha256(readFileSync(malformedPath)),
+        reason: "claimed synthetic fixture",
+      }],
+    });
+    assert.ok(malformed.findings.some((item) => item.code === "quarantine_record_unrecognized"));
+
+    const collisionDir = temp();
+    const collisionCold = join(temp(), "cold");
+    const collisionRecord = record({
+      id: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+      deliverable: "known collision fixture",
+    });
+    const collisionPath = writeRecord(collisionDir, collisionRecord);
+    const collisionSelector = {
+      path: `${collisionRecord.id}.json`,
+      sha256: sha256(readFileSync(collisionPath)),
+      reason: "known collision-test artifact",
+    };
+    const collisionAudit = auditArchive({
+      archiveDir: collisionDir,
+      archiveMacKey: ARCHIVE_KEY,
+      coldArchiveDir: collisionCold,
+      quarantineRecords: [collisionSelector],
+    });
+    const collisionApproval = createArchiveApprovalFromReview(
+      collisionDir,
+      createArchiveApprovalReview(collisionAudit),
+      "reviewed collision fixture",
+      ARCHIVE_KEY,
+    );
+    const collisionPlan = auditArchive({
+      archiveDir: collisionDir,
+      archiveMacKey: ARCHIVE_KEY,
+      coldArchiveDir: collisionCold,
+      approval: collisionApproval,
+    });
+    const collisionBackup = backupArchive(
+      collisionPlan,
+      join(temp(), "snapshot"),
+      ARCHIVE_KEY,
+    );
+    mkdirSync(collisionCold, { mode: 0o700 });
+    writePrivate(join(collisionCold, collisionSelector.path), "different existing cold bytes");
+    assert.throws(
+      () => applyArchiveMigration(
+        collisionPlan,
+        collisionBackup,
+        ARCHIVE_KEY,
+        collisionPlan.planDigest,
+      ),
+      /unexpected or unsafe cold archive entry|checksum mismatch/,
+    );
+    assert.equal(
+      sha256(readFileSync(collisionPath)),
+      collisionSelector.sha256,
+      "a cold collision must leave the active source untouched",
+    );
   });
 
   test("manual approval cannot authorize legacy cold-archive movement", () => {
