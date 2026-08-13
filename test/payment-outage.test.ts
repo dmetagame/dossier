@@ -58,6 +58,9 @@ describe("a facilitator credential outage", () => {
     assert.equal(h.devSkipPayment, false);
     assert.equal(h.paymentLayer, "not_configured");
     assert.equal(h.paidReady, false);
+    assert.equal(h.ready, false);
+    assert.equal((await app.request("/health/live")).status, 200);
+    assert.equal((await app.request("/health/ready")).status, 503);
   });
 
   test("an external buyer gets 503, never a free report", async () => {

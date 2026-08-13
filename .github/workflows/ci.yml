@@ -90,6 +90,7 @@ jobs:
 
       - name: Smoke the built bundle
         env:
+          NODE_ENV: "development"
           DEV_SKIP_PAYMENT: "1"
           PORT: "8799"
         run: |

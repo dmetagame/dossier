@@ -109,6 +109,8 @@ describe("the free surface", () => {
     // present, so "configured" was true, while every paid call answered 503.
     const j = (await (await get("/health")).json()) as Record<string, unknown>;
     assert.equal(j.ok, true);
+    assert.equal(j.live, true);
+    assert.equal(typeof j.ready, "boolean");
     assert.ok("paymentConfigured" in j);
     assert.ok("paymentLayer" in j, "the live state is what a monitor needs");
     assert.ok(
@@ -133,6 +135,17 @@ describe("the free surface", () => {
       "paidReady combines the live payment and durable recovery boundaries",
     );
     assert.ok("signing" in j);
+  });
+
+  test("liveness and paid readiness have distinct HTTP semantics", async () => {
+    const live = await get("/health/live");
+    assert.equal(live.status, 200);
+    assert.deepEqual(await live.json(), { live: true, ok: true });
+
+    const readiness = await get("/health/ready");
+    const body = (await readiness.json()) as Record<string, unknown>;
+    assert.equal(body.ready, body.paidReady);
+    assert.equal(readiness.status, body.ready ? 200 : 503);
   });
 
   test("/health reports the fulfilment watcher's age, and nothing else about it", async () => {

@@ -363,6 +363,19 @@ beforeEach(() => {
 });
 
 describe("the payment challenge", () => {
+  test("successful facilitator initialization is observable and ready", async () => {
+    const response = await app.request("/health/ready");
+    assert.equal(response.status, 200);
+    const health = (await response.json()) as Record<string, unknown>;
+    assert.equal(health.ready, true);
+    assert.equal(health.paymentLayer, "ready");
+    assert.ok(Number(health.facilitatorInitAttempts) >= 1);
+    assert.match(
+      String(health.facilitatorLastSuccessAt),
+      /^\d{4}-\d{2}-\d{2}T/,
+    );
+  });
+
   test("an unpaid call is answered 402 and quotes the real price and asset", async () => {
     const { res, required } = await challenge();
     assert.equal(required.x402Version, 2);

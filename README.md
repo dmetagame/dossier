@@ -186,8 +186,18 @@ curl -X POST localhost:8787/dossier -H 'content-type: application/json' \
   -d '{"tokenAddress":"0x0E09FaBB73Bd3Ade0a17ECC321fD13a19e81cE82"}'
 ```
 
-`DEV_SKIP_PAYMENT=1` unmounts the payment middleware for local testing; production
-requires the env vars in `.env.example` (set on the deploy host, never committed).
+`DEV_SKIP_PAYMENT=1` unmounts the payment middleware for local testing and is
+accepted only with `NODE_ENV=development` or `NODE_ENV=test`. The standalone
+entry refuses to listen unless production has the complete paid configuration
+in `.env.example`, strict authenticated storage, independent secrets, and a
+signing key matching `DOSSIER_SIGNING_PUBLIC_KEY` (set on the host, never
+committed).
+
+Before restarting a host, run `pnpm config:check` as the service user with the
+same protected environment file. It is read-only: it validates the exact
+production origin, network, price, payout wallet, private archive, strict MAC,
+replay key, signing-key pin, and listener settings without opening a lease or
+HTTP socket.
 
 ## Test
 
@@ -475,7 +485,8 @@ cold-archive manifest, plan, approval, and review inventory together in the time
 mode-0700 evidence directory. If a listed trigger unit did not exist or was not enabled
 before maintenance, do not create or enable it merely because it appears in the example.
 
-After restart, `/health` must report `paidReady: true`, `archiveReady: true`,
+After restart, `/health` and `/health/ready` must report `ready: true`,
+`paidReady: true`, `archiveReady: true`,
 `paymentReplayReady: true`, and `paymentLayer: "ready"`. Inspect `archiveMode`,
 `archiveUnsignedRecords`, and `archiveReadinessReason` explicitly; `ok: true` means
 the process and free surface are alive, not that paid delivery is available. The

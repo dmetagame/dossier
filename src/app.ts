@@ -11,7 +11,11 @@ import {
 import { ExactEvmScheme } from "@okxweb3/x402-evm/exact/server";
 import { OKXFacilitatorClient } from "@okxweb3/x402-core";
 import { decodePaymentSignatureHeader } from "@okxweb3/x402-core/http";
-import { config, paymentConfigured } from "./config";
+import {
+  assertPaymentBypassAllowed,
+  config,
+  paymentConfigured,
+} from "./config";
 import { SourcesUnavailableError } from "./engine/engine";
 import {
   DossierRequest,
@@ -50,6 +54,13 @@ import {
   validateSettlementReceipt,
 } from "./settlement-receipt";
 import * as paymentReplay from "./payment-replay";
+import { runFacilitatorInitBurst, singleFlight } from "./facilitator-init";
+
+// `app` is importable without the standalone production schema for unit tests
+// and free previews, but the payment bypass itself is never importable in an
+// unrecognised environment. This closes alternate-entry/import paths as well
+// as the listener boundary enforced by server.ts.
+assertPaymentBypassAllowed();
 
 // Constant-time comparison for the payment-bypass secret. A `===` on a secret
 // is a habit worth not having, even where a remote timing attack over TLS is
@@ -113,6 +124,10 @@ function durablePaymentRetry(header: string | undefined): boolean {
 type PaymentLayer =
   "disabled" | "not_configured" | "connecting" | "ready" | "failing";
 let paymentLayer: PaymentLayer = "connecting";
+let facilitatorInitAttempts = 0;
+let facilitatorLastAttemptAt: string | undefined;
+let facilitatorLastSuccessAt: string | undefined;
+let facilitatorLastFailureAt: string | undefined;
 export function paymentLayerState(): PaymentLayer {
   return paymentLayer;
 }
@@ -775,15 +790,23 @@ function archiveReadyForExternalPayments(state: archive.ArchiveReadiness): boole
   );
 }
 
-app.get("/health", (c) => {
+function healthSnapshot() {
   const durability = durabilityHealth();
   const archiveState = durability.archive;
   const replayReady = durability.replayReady;
-  return c.json({
-    // Process health only. `paidReady` is the externally useful signal for the
-    // paid service; the free sample, verifier, preflight, and recovery remain
-    // available when the facilitator or durable payment state is down.
-    ok: true,
+  const paidReady =
+    (config.devSkipPayment || paymentLayer === "ready") &&
+    (config.devSkipPayment
+      ? archiveState.ready
+      : archiveReadyForExternalPayments(archiveState)) &&
+    replayReady;
+  return {
+    // Liveness means the process can answer. Readiness is deliberately
+    // stricter: a supervisor must not infer that paid traffic is safe merely
+    // because the landing page is still alive during a facilitator outage.
+    live: true,
+    ready: paidReady,
+    ok: true, // Backward-compatible liveness alias for existing monitors.
     ...(() => {
       const f = fulfilment();
       return {
@@ -795,10 +818,11 @@ app.get("/health", (c) => {
     devSkipPayment: config.devSkipPayment,
     paymentConfigured: paymentConfigured(),
     paymentLayer: paymentLayer,
-    paidReady:
-      (config.devSkipPayment || paymentLayer === "ready") &&
-      (config.devSkipPayment ? archiveState.ready : archiveReadyForExternalPayments(archiveState)) &&
-      replayReady,
+    paidReady,
+    facilitatorInitAttempts,
+    ...(facilitatorLastAttemptAt ? { facilitatorLastAttemptAt } : {}),
+    ...(facilitatorLastSuccessAt ? { facilitatorLastSuccessAt } : {}),
+    ...(facilitatorLastFailureAt ? { facilitatorLastFailureAt } : {}),
     archiveReady: archiveState.ready,
     archiveMode: archiveState.mode,
     archiveUnsignedRecords: archiveState.unsignedRecords,
@@ -811,7 +835,19 @@ app.get("/health", (c) => {
     // env var happened to select, and nothing anywhere said which, so a deploy
     // that lost the variable throttled nobody and looked identical from outside.
     rateLimit: ratelimit.mode(),
-  });
+  };
+}
+
+// Liveness remains 200 while paid dependencies recover, so systemd or a load
+// balancer does not turn an upstream outage into a restart storm.
+app.get("/health", (c) => c.json(healthSnapshot()));
+app.get("/health/live", (c) => c.json({ live: true, ok: true }));
+
+// Readiness has HTTP semantics as well as a JSON field: 503 means this instance
+// must not receive a new payment. Free/recovery routes remain available.
+app.get("/health/ready", (c) => {
+  const health = healthSnapshot();
+  return c.json(health, health.ready ? 200 : 503);
 });
 
 /**
@@ -1579,26 +1615,51 @@ if (!config.devSkipPayment && paymentConfigured() && archiveConfiguredForPayment
 
   // Initialise on our own terms: the middleware cannot build a challenge until
   // the facilitator has told it which schemes are supported, so this must
-  // happen, but it must not be able to kill the process. Retries with backoff
-  // and keeps retrying in the background, so a facilitator outage degrades the
-  // paid routes to 503 and then heals itself without a restart.
+  // happen, but it must not be able to kill the process. A bounded retry burst
+  // degrades paid readiness; later bounded bursts heal in the background. This
+  // avoids one unbounded async loop while keeping the free surface alive.
+  const FACILITATOR_INIT_BURST = 5;
+  const FACILITATOR_INIT_TIMEOUT_MS = 10_000;
+  const FACILITATOR_INIT_RETRY_MS = [1_000, 2_000, 4_000, 8_000] as const;
+  const FACILITATOR_RETRY_BURST_AFTER_MS = 60_000;
+  const initializeFacilitator = singleFlight(() => httpResourceServer.initialize());
   const initFacilitator = async (): Promise<void> => {
-    for (let attempt = 1; ; attempt++) {
-      try {
-        await httpResourceServer.initialize();
-        paymentLayer = "ready";
-        console.log("[x402] facilitator ready");
-        return;
-      } catch (e) {
+    const result = await runFacilitatorInitBurst({
+      initialize: initializeFacilitator,
+      timeoutMs: FACILITATOR_INIT_TIMEOUT_MS,
+      burstSize: FACILITATOR_INIT_BURST,
+      retryDelaysMs: FACILITATOR_INIT_RETRY_MS,
+      onAttempt: () => {
+        facilitatorInitAttempts++;
+        facilitatorLastAttemptAt = new Date().toISOString();
+      },
+      onFailure: (attempt, error, wait) => {
         paymentLayer = "failing";
-        const wait = Math.min(60_000, 2 ** Math.min(attempt, 5) * 1000);
+        facilitatorLastFailureAt = new Date().toISOString();
         console.error(
-          `[x402] facilitator init failed (attempt ${attempt}), retrying in ${wait / 1000}s:`,
-          (e as Error)?.message?.slice(0, 160) ?? e,
+          `[x402] facilitator init failed (attempt ${attempt}/${FACILITATOR_INIT_BURST})${
+            wait ? `, retrying in ${wait / 1000}s` : ""
+          }:`,
+          (error as Error)?.message?.slice(0, 160) ?? error,
         );
-        await new Promise((r) => setTimeout(r, wait));
-      }
+      },
+    });
+    if (result.kind === "ready") {
+      paymentLayer = "ready";
+      facilitatorLastSuccessAt = new Date().toISOString();
+      console.log("[x402] facilitator ready");
+      return;
     }
+    console.error(
+      `[x402] facilitator init retry burst exhausted; paid readiness remains false, retrying a bounded burst in ${
+        FACILITATOR_RETRY_BURST_AFTER_MS / 1000
+      }s`,
+    );
+    const retry = setTimeout(
+      () => void initFacilitator(),
+      FACILITATOR_RETRY_BURST_AFTER_MS,
+    );
+    retry.unref();
   };
   void initFacilitator();
   // Startup resilience: in a fresh process the SDK's first facilitator sync

@@ -3,7 +3,12 @@ import {
   acquireServiceLeaseForServer,
   releaseServiceLeaseAfterDrain,
 } from "./dossier/archive";
+import { assertProductionConfig } from "./config";
 
+// The standalone entry is the paid deployment boundary. Validate it on every
+// start, without an opt-in "strict" switch, before taking a lease or accepting
+// traffic. App-only imports remain available to unit tests and free previews.
+assertProductionConfig();
 const port = Number(process.env.PORT ?? 8787);
 // Take the migration startup interlock before importing the app or opening the
 // listener. App initialization performs archive-backed readiness probes.
@@ -20,7 +25,7 @@ try {
 let listening = false;
 let server: ReturnType<typeof serve>;
 try {
-  server = serve({ fetch: app.fetch, port }, (info) => {
+  server = serve({ fetch: app.fetch, port, hostname: "127.0.0.1" }, (info) => {
     listening = true;
     console.log(`verdict listening on :${info.port}`);
   });
