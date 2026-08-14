@@ -740,7 +740,8 @@ function fulfilment(): {
 } {
   try {
     const raw = readFileSync(
-      join(homedir(), ".okx-agent-task", "fulfill-watcher-heartbeat.json"),
+      process.env.DOSSIER_FULFILL_HEARTBEAT_FILE ||
+        join(homedir(), ".okx-agent-task", "fulfill-watcher-heartbeat.json"),
       "utf8",
     );
     const beat = JSON.parse(raw);

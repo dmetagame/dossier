@@ -24,6 +24,7 @@ import importlib.util
 import json
 import os
 import shutil
+import stat
 import tempfile
 import time
 import types
@@ -578,6 +579,97 @@ class TestStateFailsClosed(unittest.TestCase):
     def test_a_round_trip_survives(self):
         fw.save_state({"0xjob": {"done": True}})
         self.assertEqual(fw.load_state(), {"0xjob": {"done": True}})
+        self.assertEqual(stat.S_IMODE(os.stat(fw.STATE_FILE).st_mode), 0o600)
+
+    def test_a_replaced_state_file_is_tightened_to_owner_only(self):
+        write_json(fw.STATE_FILE, {"old": True})
+        os.chmod(fw.STATE_FILE, 0o664)
+        fw.save_state({"new": True})
+        self.assertEqual(read_json(fw.STATE_FILE), {"new": True})
+        self.assertEqual(stat.S_IMODE(os.stat(fw.STATE_FILE).st_mode), 0o600)
+
+
+class TestDeploymentPreflight(unittest.TestCase):
+    def setUp(self):
+        self.d = scratch(self)
+        self.task_dir = os.path.join(self.d, "task")
+        self.bin_dir = os.path.join(self.d, "bin")
+        os.mkdir(self.task_dir, 0o700)
+        os.mkdir(self.bin_dir, 0o700)
+        self.key = os.path.join(self.task_dir, "internal-key.txt")
+        with open(self.key, "w") as fh:
+            fh.write("k" * 32)
+        os.chmod(self.key, 0o600)
+        self.tools = []
+        for name in ("onchainos", "okx-a2a", "curl"):
+            path = os.path.join(self.bin_dir, name)
+            with open(path, "w") as fh:
+                fh.write("#!/bin/sh\nexit 0\n")
+            os.chmod(path, 0o700)
+            self.tools.append(path)
+        names = ("KEY_FILE", "STATE_FILE", "HEARTBEAT_FILE", "ONCHAINOS", "OKXA2A", "CHILD_ENV")
+        self.saved = {name: getattr(fw, name) for name in names}
+        self.addCleanup(lambda: [setattr(fw, name, value) for name, value in self.saved.items()])
+        fw.KEY_FILE = self.key
+        fw.STATE_FILE = os.path.join(self.task_dir, "state.json")
+        fw.HEARTBEAT_FILE = os.path.join(self.task_dir, "heartbeat.json")
+        fw.ONCHAINOS, fw.OKXA2A = self.tools[:2]
+        fw.CHILD_ENV = dict(os.environ, PATH=self.bin_dir)
+
+    def test_a_complete_private_installation_passes(self):
+        self.assertEqual(fw.preflight_issues(), [])
+        self.assertEqual([name for name in os.listdir(self.task_dir)
+                          if name.startswith(".fulfill-watcher-preflight-")], [])
+
+    def test_the_heartbeat_can_live_in_a_separate_runtime_directory(self):
+        runtime = os.path.join(self.d, "runtime")
+        os.mkdir(runtime, 0o700)
+        fw.HEARTBEAT_FILE = os.path.join(runtime, "heartbeat.json")
+        self.assertEqual(fw.preflight_issues(), [])
+
+    def test_a_missing_or_exposed_heartbeat_directory_fails(self):
+        runtime = os.path.join(self.d, "runtime")
+        fw.HEARTBEAT_FILE = os.path.join(runtime, "heartbeat.json")
+        self.assertTrue(any("heartbeat directory is unavailable" in x
+                            for x in fw.preflight_issues()))
+        os.mkdir(runtime, 0o755)
+        self.assertTrue(any("heartbeat directory must be mode 0700" in x
+                            for x in fw.preflight_issues()))
+
+    def test_an_unwritable_heartbeat_directory_fails(self):
+        runtime = os.path.join(self.d, "runtime")
+        os.mkdir(runtime, 0o700)
+        fw.HEARTBEAT_FILE = os.path.join(runtime, "heartbeat.json")
+        original_open = fw.os.open
+
+        def deny_heartbeat_probe(path, flags, mode=0o777):
+            if path.startswith(runtime + os.sep + ".fulfill-watcher-preflight-"):
+                raise PermissionError("simulated read-only runtime directory")
+            return original_open(path, flags, mode)
+
+        fw.os.open = deny_heartbeat_probe
+        self.addCleanup(setattr, fw.os, "open", original_open)
+        self.assertTrue(any("heartbeat directory is not writable" in x
+                            for x in fw.preflight_issues()))
+
+    def test_missing_tools_and_an_exposed_key_fail_before_a_tick(self):
+        os.chmod(self.key, 0o644)
+        os.unlink(fw.OKXA2A)
+        issues = fw.preflight_issues()
+        self.assertTrue(any("internal key must not be group- or world-accessible" in x
+                            for x in issues))
+        self.assertTrue(any("okx-a2a executable is missing" in x for x in issues))
+
+    def test_existing_watcher_files_must_already_be_private(self):
+        write_json(fw.STATE_FILE, {})
+        write_json(fw.HEARTBEAT_FILE, {})
+        os.chmod(fw.STATE_FILE, 0o664)
+        os.chmod(fw.HEARTBEAT_FILE, 0o644)
+        issues = fw.preflight_issues()
+        self.assertTrue(any("watcher state must not be group- or world-accessible" in x
+                            for x in issues))
+        self.assertTrue(any("watcher heartbeat must not be group- or world-accessible" in x
+                            for x in issues))
 
 
 if __name__ == "__main__":

@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Dossier fulfilment watcher every 2 minutes
+
+[Timer]
+OnBootSec=90s
+OnUnitInactiveSec=120s
+AccuracySec=15s
+Unit=dossier-fulfill.service
+
+[Install]
+WantedBy=timers.target

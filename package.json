@@ -13,8 +13,12 @@
     "build:api": "pnpm build:client && esbuild src/vercel.ts --bundle --platform=node --target=node20 --format=esm --outfile=api/index.js",
     "deploy:vercel-demo": "pnpm build:api && npx vercel@latest deploy --yes",
     "build:client": "node scripts/build-assets.mjs && node scripts/build-client.mjs",
-    "build:server": "pnpm build:client && esbuild src/server.ts --bundle --platform=node --target=node20 --format=esm --outfile=dist/server.mjs && esbuild src/config-check.ts --bundle --platform=node --target=node20 --format=esm --outfile=dist/config-check.mjs",
+    "build:server": "pnpm build:client && esbuild src/server.ts --bundle --platform=node --target=node20 --format=esm --outfile=dist/server.mjs && esbuild src/config-check.ts --bundle --platform=node --target=node20 --format=esm --outfile=dist/config-check.mjs && node scripts/write-deployment-manifest.mjs",
     "build:assets": "node scripts/build-assets.mjs",
+    "check:server-build": "node scripts/check-server-reproducible.mjs",
+    "check:deployment": "node scripts/check-deployment-manifest.mjs --require-clean",
+    "check:deployment-local": "node scripts/check-deployment-manifest.mjs",
+    "check:systemd": "node scripts/check-systemd-units.mjs",
     "test": "NODE_ENV=test DEV_SKIP_PAYMENT=1 INTERNAL_KEY=test-internal-key node --import tsx --test test/*.test.ts",
     "test:browser": "NODE_ENV=test DEV_SKIP_PAYMENT=1 INTERNAL_KEY=test-internal-key node --import tsx --test test/browser/*.test.ts"
   },

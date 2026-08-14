@@ -68,6 +68,15 @@ jobs:
       - name: Build the server bundle
         run: pnpm build:server
 
+      - name: Server build is reproducible and current
+        run: pnpm check:server-build
+
+      - name: Bundle manifest binds the exact clean source revision
+        run: pnpm check:deployment
+
+      - name: Production units are hardened
+        run: pnpm check:systemd
+
       # A generated file that differs from its source means someone edited the
       # output, or forgot to rebuild before committing.
       - name: Generated assets are up to date

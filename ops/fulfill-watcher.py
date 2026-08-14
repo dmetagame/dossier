@@ -15,14 +15,17 @@ Per job with role=asp, agent 7012, status=accepted and no ASP deliverable yet:
   5. save a local deliverable record
 If the token cannot be resolved, ask the buyer once over A2A instead.
 """
-import datetime, fcntl, json, os, re, shutil, subprocess, sys, tempfile, time
+import datetime, fcntl, json, os, re, shutil, stat, subprocess, sys, tempfile, time
 
 ASP = "7012"
 ENDPOINT = "https://dossier.rouma.xyz/dossier"
 HOME = os.path.expanduser("~")
 KEY_FILE = os.path.join(HOME, ".okx-agent-task", "internal-key.txt")
 STATE_FILE = os.path.join(HOME, ".okx-agent-task", "fulfill-watcher-state.json")
-HEARTBEAT_FILE = os.path.join(HOME, ".okx-agent-task", "fulfill-watcher-heartbeat.json")
+HEARTBEAT_FILE = os.environ.get(
+    "DOSSIER_FULFILL_HEARTBEAT_FILE",
+    os.path.join(HOME, ".okx-agent-task", "fulfill-watcher-heartbeat.json"),
+)
 # How long to let the buyer's own paid replay land before messaging them.
 #
 # This guards a real race: the replay runs seconds after the task is created, and
@@ -207,16 +210,145 @@ def load_state():
     return data
 
 
+def write_private_json(path, value):
+    """Atomically publish JSON as an owner-only regular file.
+
+    The watcher state and heartbeat were created through plain ``open(..., "w")``.
+    Under the host's default umask that made both files 0664, even though they
+    describe private task state and operational activity. A unique O_EXCL temp,
+    an explicit fchmod and a durable rename make permissions independent of the
+    caller's shell or unit while retaining the crash-safe write shape.
+    """
+    parent = os.path.dirname(path) or "."
+    tmp = "%s.%d.%d.tmp" % (path, os.getpid(), time.time_ns())
+    fd = None
+    try:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        fd = os.open(tmp, flags, 0o600)
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            fd = None
+            json.dump(value, fh)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+        directory_fd = os.open(parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        if fd is not None:
+            os.close(fd)
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+
+
 def save_state(s):
-    tmp = STATE_FILE + ".tmp"
-    # Flushed and fsynced before the rename, so a crash mid-write leaves either
-    # the old state or the new one, never a half-written file that the loader
-    # would then have to refuse.
-    with open(tmp, "w") as fh:
-        json.dump(s, fh)
-        fh.flush()
-        os.fsync(fh.fileno())
-    os.replace(tmp, STATE_FILE)
+    write_private_json(STATE_FILE, s)
+
+
+def preflight_issues():
+    """Deployment faults that must be resolved before a tick can contact buyers."""
+    issues = []
+    state_dir = os.path.dirname(STATE_FILE)
+    heartbeat_dir = os.path.dirname(HEARTBEAT_FILE) or "."
+
+    def private_directory(path, label):
+        try:
+            info = os.lstat(path)
+        except OSError as e:
+            issues.append("%s is unavailable: %s (%s)" % (label, path, e))
+            return False
+        if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode):
+            issues.append("%s is not a real directory: %s" % (label, path))
+            return False
+        if info.st_uid != os.getuid():
+            issues.append("%s is not owned by this user: %s" % (label, path))
+        if stat.S_IMODE(info.st_mode) & 0o077:
+            issues.append("%s must be mode 0700: %s" % (label, path))
+        return True
+
+    state_dir_ok = private_directory(state_dir, "task state directory")
+    heartbeat_dir_ok = (
+        state_dir_ok if os.path.abspath(heartbeat_dir) == os.path.abspath(state_dir)
+        else private_directory(heartbeat_dir, "heartbeat directory")
+    )
+
+    def private_file(path, label, required=True):
+        try:
+            info = os.lstat(path)
+        except FileNotFoundError:
+            if required:
+                issues.append("%s is missing: %s" % (label, path))
+            return
+        except OSError as e:
+            issues.append("%s cannot be inspected: %s (%s)" % (label, path, e))
+            return
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+            issues.append("%s must be a regular non-symlink file: %s" % (label, path))
+            return
+        if info.st_uid != os.getuid():
+            issues.append("%s is not owned by this user: %s" % (label, path))
+        if stat.S_IMODE(info.st_mode) & 0o077:
+            issues.append("%s must not be group- or world-accessible: %s" % (label, path))
+
+    private_file(KEY_FILE, "internal key")
+    private_file(STATE_FILE, "watcher state", required=False)
+    private_file(HEARTBEAT_FILE, "watcher heartbeat", required=False)
+    private_file(STATE_FILE + ".lock", "watcher lock", required=False)
+    try:
+        with open(KEY_FILE) as fh:
+            if len(fh.read().strip()) < 32:
+                issues.append("internal key is empty or too short: %s" % KEY_FILE)
+    except OSError:
+        pass
+
+    for label, path in (("onchainos", ONCHAINOS), ("okx-a2a", OKXA2A)):
+        if not os.path.isfile(path) or not os.access(path, os.X_OK):
+            issues.append("%s executable is missing or not executable: %s" % (label, path))
+    for command in ("curl", "onchainos", "okx-a2a"):
+        if not shutil.which(command, path=CHILD_ENV.get("PATH")):
+            issues.append("%s is not discoverable in the watcher child PATH" % command)
+
+    def writable_directory(path, label):
+        probe = os.path.join(path, ".fulfill-watcher-preflight-%d-%d"
+                             % (os.getpid(), time.time_ns()))
+        fd = None
+        try:
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            fd = os.open(probe, flags, 0o600)
+            os.fchmod(fd, 0o600)
+        except OSError as e:
+            issues.append("%s is not writable: %s (%s)" % (label, path, e))
+        finally:
+            if fd is not None:
+                os.close(fd)
+            try:
+                os.unlink(probe)
+            except FileNotFoundError:
+                pass
+
+    if state_dir_ok:
+        writable_directory(state_dir, "task state directory")
+    if heartbeat_dir_ok and os.path.abspath(heartbeat_dir) != os.path.abspath(state_dir):
+        writable_directory(heartbeat_dir, "heartbeat directory")
+    return issues
+
+
+def preflight():
+    issues = preflight_issues()
+    for issue in issues:
+        log("PREFLIGHT:", issue)
+    if not issues:
+        log("preflight ok")
+    return not issues
 
 
 def fmt_price(n):
@@ -882,7 +1014,11 @@ def main():
     # of the state file discards whatever the first recorded.
     lock_path = STATE_FILE + ".lock"
     try:
-        lock_fd = os.open(lock_path, os.O_WRONLY | os.O_CREAT, 0o600)
+        flags = os.O_WRONLY | os.O_CREAT
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        lock_fd = os.open(lock_path, flags, 0o600)
+        os.fchmod(lock_fd, 0o600)
     except OSError as e:
         log("could not open the lock file (%s); skipping this tick" % e)
         return
@@ -967,15 +1103,17 @@ def _run_tick():
         ages = [now - st8.get(t["jobId"], {}).get("first_seen", now)
                 for t in still_open if t.get("jobId")]
         try:
-            with open(HEARTBEAT_FILE, "w") as fh:
-                json.dump({"at": now, "tasks": len(tasks),
-                           "accepted": len(todo), "open": len(still_open),
-                           # The one number that tells a wedged watcher from an
-                           # idle one. See TestAWedgedJobIsVisibleFromOutside.
-                           "oldestOpenSeconds": int(max(ages)) if ages else 0,
-                           # Set when our cached inbox id stopped matching what
-                           # the conversations say it is. See `learn_inbox`.
-                           "inboxMismatch": bool(st8.get(INBOX_KEY, {}).get("mismatch"))}, fh)
+            write_private_json(
+                HEARTBEAT_FILE,
+                {"at": now, "tasks": len(tasks),
+                 "accepted": len(todo), "open": len(still_open),
+                 # The one number that tells a wedged watcher from an
+                 # idle one. See TestAWedgedJobIsVisibleFromOutside.
+                 "oldestOpenSeconds": int(max(ages)) if ages else 0,
+                 # Set when our cached inbox id stopped matching what
+                 # the conversations say it is. See `learn_inbox`.
+                 "inboxMismatch": bool(st8.get(INBOX_KEY, {}).get("mismatch"))},
+            )
         except Exception:
             pass
 
@@ -1120,5 +1258,23 @@ def _run_tick():
     heartbeat(state)
 
 
-if __name__ == "__main__":
+def cli(argv):
+    if argv == ["--preflight"]:
+        return 0 if preflight() else 1
+    if argv == ["--run"]:
+        main()
+        return 0
+    if argv:
+        log("usage: fulfill-watcher.py [--preflight|--run]")
+        return 2
+    # Keep the no-argument behaviour for operator invocations and for a
+    # rolling upgrade from an older unit. The checked-in service calls
+    # --preflight explicitly before --run, so production still fails before any
+    # task is queried while an older unit cannot suddenly stop merely because it
+    # owns a state file created with its former umask.
     main()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(cli(sys.argv[1:]))

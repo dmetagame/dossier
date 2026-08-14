@@ -8,6 +8,9 @@
 
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { stubUpstream, tempArchive, ADDR } from "./helpers";
 import { app } from "../src/app";
 import * as archive from "../src/dossier/archive";
@@ -163,6 +166,37 @@ describe("the free surface", () => {
     // business volume on an unauthenticated endpoint, not a monitoring signal.
     for (const leak of ["tasks", "candidates", "jobs", "open", "accepted"]) {
       assert.ok(!(leak in j), `/health must not publish ${leak}`);
+    }
+  });
+
+  test("/health reads the configured private runtime heartbeat", async () => {
+    const runtime = mkdtempSync(join(tmpdir(), "dossier-heartbeat-"));
+    const heartbeat = join(runtime, "heartbeat.json");
+    const previous = process.env.DOSSIER_FULFILL_HEARTBEAT_FILE;
+    writeFileSync(
+      heartbeat,
+      JSON.stringify({
+        at: Date.now() / 1000 - 5,
+        oldestOpenSeconds: 321,
+        inboxMismatch: true,
+        tasks: 99,
+      }),
+      { mode: 0o600 },
+    );
+    process.env.DOSSIER_FULFILL_HEARTBEAT_FILE = heartbeat;
+    try {
+      const j = (await (await get("/health")).json()) as Record<string, unknown>;
+      assert.ok(
+        typeof j.fulfilmentAgeSeconds === "number" && j.fulfilmentAgeSeconds >= 4,
+        "the configured heartbeat, rather than the home-directory default, supplies the age",
+      );
+      assert.equal(j.oldestOpenJobSeconds, 321);
+      assert.equal(j.inboxMismatch, true);
+      assert.ok(!("tasks" in j), "the runtime heartbeat must not leak job volume");
+    } finally {
+      if (previous === undefined) delete process.env.DOSSIER_FULFILL_HEARTBEAT_FILE;
+      else process.env.DOSSIER_FULFILL_HEARTBEAT_FILE = previous;
+      rmSync(runtime, { recursive: true, force: true });
     }
   });
 
