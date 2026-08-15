@@ -36,6 +36,16 @@ describe("the published input contract", () => {
     assert.deepEqual(props.sort(), ["chain", "format", "tokenAddress"]);
   });
 
+  test("gives a concrete example for every call parameter", () => {
+    const properties = (ext.outputSchema as any).input.schema.properties;
+    for (const [name, property] of Object.entries(properties) as [string, any][]) {
+      assert.ok(
+        Array.isArray(property.examples) && property.examples.length > 0,
+        `${name} must publish at least one example in PAYMENT-REQUIRED`,
+      );
+    }
+  });
+
   test("constrains the address so a client can validate before paying", () => {
     const p = (ext.outputSchema as any).input.schema.properties.tokenAddress;
     assert.equal(p.type, "string");

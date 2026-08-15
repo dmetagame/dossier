@@ -34,14 +34,16 @@ export const EXTENSIONS_BUDGET_BYTES = 1500;
 const tokenAddressSchema = {
   type: "string",
   pattern: "^0x[a-fA-F0-9]{40}$",
+  examples: ["0x779ded0c9e1022225f8e0630b35a9b54be713736"],
   description: "EVM token contract address.",
 } as const;
 
 const chainSchema = {
   type: "string",
   enum: [...SUPPORTED_CHAINS],
+  examples: ["xlayer"],
   description:
-    "Optional. Auto-detected from live markets; when the address is deployed on several chains the deepest-liquidity deployment is analysed and the report states which chain was used.",
+    "Optional. Auto-detected from live markets; supply xlayer for X Layer-native tokens with no indexed market.",
 } as const;
 
 export const dossierInputSchema = {
@@ -53,6 +55,7 @@ export const dossierInputSchema = {
       type: "string",
       enum: ["html", "json"],
       default: "html",
+      examples: ["json"],
       description: "html returns the rendered report document; json returns the same data structured.",
     },
   },

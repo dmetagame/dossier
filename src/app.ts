@@ -1105,13 +1105,17 @@ function confirmedSettlementFromStatus(
     return null;
   }
   if (candidate.amount !== requirements.amount) return null;
+  // OKX's status endpoint serializes omitted optional fields as null. The
+  // signed requirement fixes the amount and the candidate retains the verified
+  // payer, so null means "not repeated here", not contradictory evidence.
   if (
     status.amount !== undefined &&
+    status.amount !== null &&
     (typeof status.amount !== "string" || status.amount !== candidate.amount)
   ) {
     return null;
   }
-  if (status.payer !== undefined) {
+  if (status.payer !== undefined && status.payer !== null) {
     if (
       typeof status.payer !== "string" ||
       !/^0x[0-9a-fA-F]{40}$/.test(status.payer) ||

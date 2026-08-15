@@ -70,7 +70,8 @@ const fac = {
   settleStatusResult: undefined as "pending" | "success" | "failed" | undefined,
   settleStatusTransaction: undefined as string | undefined,
   settleStatusNetwork: undefined as string | undefined,
-  settleStatusPayer: undefined as string | undefined,
+  settleStatusPayer: undefined as string | null | undefined,
+  settleStatusAmount: undefined as string | null | undefined,
   settleStatusOmitPayer: false,
   settleStatusDown: false,
   settleStatusCalls: 0,
@@ -105,6 +106,7 @@ const fac = {
     this.settleStatusTransaction = undefined;
     this.settleStatusNetwork = undefined;
     this.settleStatusPayer = undefined;
+    this.settleStatusAmount = undefined;
     this.settleStatusOmitPayer = false;
     this.settleStatusDown = false;
     this.settleStatusCalls = 0;
@@ -230,8 +232,16 @@ globalThis.fetch = (async (input: any, init?: RequestInit) => {
       status: fac.settleStatusResult ?? "pending",
       transaction: fac.settleStatusTransaction ?? fac.tx,
       network: fac.settleStatusNetwork ?? fac.settleNetwork,
+      ...(fac.settleStatusAmount !== undefined
+        ? { amount: fac.settleStatusAmount }
+        : {}),
       ...(!fac.settleStatusOmitPayer
-        ? { payer: fac.settleStatusPayer ?? PAYER }
+        ? {
+            payer:
+              fac.settleStatusPayer !== undefined
+                ? fac.settleStatusPayer
+                : PAYER,
+          }
         : {}),
     });
   }
@@ -1411,6 +1421,63 @@ describe("settlement failing after the report was generated", () => {
     assert.equal(retried.status, 200);
     assert.equal(fac.ops().length, operationsBeforeRetry);
     assert.equal(archive.byTransaction(fac.tx)?.settlement?.payer, PAYER);
+  });
+
+  test("a pending settlement reconciles when OKX serializes optional fields as null", async () => {
+    const { required } = await challenge();
+    const sig = payment(required);
+    fac.settleStatus = "pending";
+
+    const first = await paidRequest(`/dossier?tokenAddress=${ADDR.cake}`, sig);
+    assert.equal(first.status, 503);
+    const operationsBeforeRetry = fac.ops().length;
+    const statusCallsBeforeRetry = fac.settleStatusCalls;
+    fac.settleStatusResult = "success";
+    fac.settleStatusAmount = null;
+    fac.settleStatusPayer = null;
+
+    const retried = await paidRequest(`/dossier?tokenAddress=${ADDR.cake}`, sig);
+    assert.equal(retried.status, 200);
+    assert.equal(fac.ops().length, operationsBeforeRetry);
+    assert.equal(fac.settleStatusCalls, statusCallsBeforeRetry + 1);
+    assert.equal(archive.byTransaction(fac.tx)?.settlement?.amount, "10000");
+    assert.equal(archive.byTransaction(fac.tx)?.settlement?.payer, PAYER);
+  });
+
+  test("a contradictory non-null amount cannot confirm a pending settlement", async () => {
+    const { required } = await challenge();
+    const sig = payment(required);
+    fac.settleStatus = "pending";
+
+    const first = await paidRequest(`/dossier?tokenAddress=${ADDR.cake}`, sig);
+    assert.equal(first.status, 503);
+    const operationsBeforeRetry = fac.ops().length;
+    fac.settleStatusResult = "success";
+    fac.settleStatusAmount = "1";
+
+    const retried = await paidRequest(`/dossier?tokenAddress=${ADDR.cake}`, sig);
+    assert.equal(retried.status, 503);
+    assert.equal((await retried.json() as any).error, "payment_reconciliation_pending");
+    assert.equal(fac.ops().length, operationsBeforeRetry);
+    assert.equal(archive.byTransaction(fac.tx), null);
+  });
+
+  test("a contradictory non-null payer cannot confirm a pending settlement", async () => {
+    const { required } = await challenge();
+    const sig = payment(required);
+    fac.settleStatus = "pending";
+
+    const first = await paidRequest(`/dossier?tokenAddress=${ADDR.cake}`, sig);
+    assert.equal(first.status, 503);
+    const operationsBeforeRetry = fac.ops().length;
+    fac.settleStatusResult = "success";
+    fac.settleStatusPayer = "0x00000000000000000000000000000000000000aa";
+
+    const retried = await paidRequest(`/dossier?tokenAddress=${ADDR.cake}`, sig);
+    assert.equal(retried.status, 503);
+    assert.equal((await retried.json() as any).error, "payment_reconciliation_pending");
+    assert.equal(fac.ops().length, operationsBeforeRetry);
+    assert.equal(archive.byTransaction(fac.tx), null);
   });
 
   test("a still-pending exact retry remains unresolved without a claim", async () => {
