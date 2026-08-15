@@ -66,7 +66,7 @@ const fac = {
   settleOk: true,
   settleReason: "insufficient_funds",
   settleFailureWithTx: false,
-  settleStatus: undefined as "pending" | "success" | "timeout" | undefined,
+  settleStatus: undefined as "pending" | "success" | "timeout" | null | undefined,
   settleStatusResult: undefined as "pending" | "success" | "failed" | undefined,
   settleStatusTransaction: undefined as string | undefined,
   settleStatusNetwork: undefined as string | undefined,
@@ -273,7 +273,8 @@ globalThis.fetch = (async (input: any, init?: RequestInit) => {
       fac.settleOk
         ? {
             success: true,
-            status: fac.settleStatus ?? "success",
+            status:
+              fac.settleStatus !== undefined ? fac.settleStatus : "success",
             transaction: fac.tx,
             network: fac.settleNetwork,
             payer: fac.settlePayer,
@@ -549,6 +550,7 @@ describe("a paid call", () => {
 
   test("accepts OKX settle responses whose optional fields are null", async () => {
     const { required } = await challenge();
+    fac.settleStatus = null;
     fac.settleAmount = null;
     fac.settlePayer = null;
 

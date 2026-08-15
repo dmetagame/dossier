@@ -34,18 +34,21 @@ describe("PAYMENT-RESPONSE settlement validator", () => {
     }
   });
 
-  test("accepts a successful legacy receipt with no status", () => {
-    const result = validateSettlementReceipt(
-      header({ success: true, transaction: TX, network: NETWORK }),
-      { network: NETWORK },
-    );
-    assert.equal(result.ok, true);
+  test("accepts a successful receipt with an omitted or null status", () => {
+    for (const status of [undefined, null]) {
+      const result = validateSettlementReceipt(
+        header({ success: true, transaction: TX, network: NETWORK, status }),
+        { network: NETWORK },
+      );
+      assert.equal(result.ok, true);
+    }
   });
 
   for (const [name, receipt] of [
     ["failed", { success: false, transaction: TX, network: NETWORK }],
     ["pending", { success: true, status: "pending", transaction: TX, network: NETWORK }],
     ["timeout", { success: true, status: "timeout", transaction: TX, network: NETWORK }],
+    ["unknown-status", { success: true, status: "unknown", transaction: TX, network: NETWORK }],
     ["contradictory final", { success: false, status: "success", transaction: TX, network: NETWORK }],
   ] as const) {
     test(`rejects ${name} receipts even when they carry a hash`, () => {

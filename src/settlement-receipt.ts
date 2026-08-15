@@ -59,7 +59,7 @@ export type SettlementReceiptResult =
 const receiptSchema = z
   .object({
     success: z.boolean(),
-    status: z.enum(["pending", "success", "timeout"]).optional(),
+    status: z.enum(["pending", "success", "timeout"]).nullable().optional(),
     transaction: z.string().regex(/^0x[0-9a-fA-F]{64}$/),
     network: z.string().min(3),
     amount: z.string().nullable().optional(),
@@ -154,8 +154,8 @@ export function normalizeTimeoutRecoveryReceipt(
  * Decode and validate a PAYMENT-RESPONSE header as a confirmed settlement.
  *
  * `pending` and `timeout` are deliberately not confirmations. A legacy receipt
- * with no status is accepted only when its `success` flag is true; a modern OKX
- * synchronous receipt must say `status: "success"`.
+ * with no status, or an OKX receipt that serializes the omitted status as null,
+ * is accepted only when its `success` flag is true.
  */
 export function validateSettlementReceipt(
   header: string | null | undefined,
@@ -181,7 +181,7 @@ export function validateSettlementReceipt(
 
   const receipt = parsed.data;
   if (receipt.success !== true) return { ok: false, reason: "not_successful" };
-  if (receipt.status !== undefined && receipt.status !== "success") {
+  if (receipt.status != null && receipt.status !== "success") {
     return { ok: false, reason: "not_final" };
   }
   if (receipt.network !== expected.network) {
