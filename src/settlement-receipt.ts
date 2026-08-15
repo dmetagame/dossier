@@ -12,7 +12,7 @@ export interface ExpectedSettlement {
    * Whenever a receipt does include an amount, it must still match exactly.
    */
   amount?: string;
-  /** Successful verification's payer, when the facilitator returned it. */
+  /** Successful verification's payer, retained when a receipt omits it. */
   payer?: string;
 }
 
@@ -62,8 +62,8 @@ const receiptSchema = z
     status: z.enum(["pending", "success", "timeout"]).optional(),
     transaction: z.string().regex(/^0x[0-9a-fA-F]{64}$/),
     network: z.string().min(3),
-    amount: z.string().optional(),
-    payer: z.string().optional(),
+    amount: z.string().nullable().optional(),
+    payer: z.string().nullable().optional(),
   })
   .passthrough();
 
@@ -118,24 +118,24 @@ export function normalizeTimeoutRecoveryReceipt(
       String((decoded as any).transaction).toLowerCase() !== direct.transaction.toLowerCase() ||
       (decoded as any).network !== direct.network ||
       (polled.amount !== undefined &&
-        (decoded as any).amount !== undefined &&
+        (decoded as any).amount != null &&
         (decoded as any).amount !== polled.amount) ||
       (direct.amount !== undefined &&
-        (decoded as any).amount !== undefined &&
+        (decoded as any).amount != null &&
         (decoded as any).amount !== direct.amount) ||
       (expected?.amount !== undefined &&
-        (decoded as any).amount !== undefined &&
+        (decoded as any).amount != null &&
         (decoded as any).amount !== expected.amount) ||
       (polled.payer !== undefined &&
-        (decoded as any).payer !== undefined &&
+        (decoded as any).payer != null &&
         (typeof (decoded as any).payer !== "string" ||
           (decoded as any).payer.toLowerCase() !== polled.payer.toLowerCase())) ||
       (direct.payer !== undefined &&
-        (decoded as any).payer !== undefined &&
+        (decoded as any).payer != null &&
         (typeof (decoded as any).payer !== "string" ||
           (decoded as any).payer.toLowerCase() !== direct.payer.toLowerCase())) ||
       (expected?.payer !== undefined &&
-        (decoded as any).payer !== undefined &&
+        (decoded as any).payer != null &&
         (typeof (decoded as any).payer !== "string" ||
           (decoded as any).payer.toLowerCase() !== expected.payer.toLowerCase()))
     ) {
@@ -188,21 +188,21 @@ export function validateSettlementReceipt(
     return { ok: false, reason: "network_mismatch" };
   }
   if (
-    receipt.payer !== undefined &&
+    receipt.payer != null &&
     !/^0x[0-9a-fA-F]{40}$/.test(receipt.payer)
   ) {
     return { ok: false, reason: "invalid_receipt" };
   }
   if (
     expected.payer !== undefined &&
-    (receipt.payer === undefined ||
-      receipt.payer.toLowerCase() !== expected.payer.toLowerCase())
+    receipt.payer != null &&
+    receipt.payer.toLowerCase() !== expected.payer.toLowerCase()
   ) {
     return { ok: false, reason: "invalid_receipt" };
   }
   if (
     expected.amount !== undefined &&
-    receipt.amount !== undefined &&
+    receipt.amount != null &&
     receipt.amount !== expected.amount
   ) {
     return { ok: false, reason: "amount_mismatch" };
@@ -211,10 +211,18 @@ export function validateSettlementReceipt(
     expected.amount !== undefined &&
     expected.scheme !== undefined &&
     expected.scheme !== "exact" &&
-    receipt.amount === undefined
+    receipt.amount == null
   ) {
     return { ok: false, reason: "amount_mismatch" };
   }
+
+  const amount =
+    receipt.amount != null
+      ? receipt.amount
+      : expected.scheme === "exact"
+        ? expected.amount
+        : undefined;
+  const payer = receipt.payer ?? expected.payer;
 
   return {
     ok: true,
@@ -223,8 +231,8 @@ export function validateSettlementReceipt(
       ...(receipt.status === "success" ? { status: receipt.status } : {}),
       transaction: receipt.transaction,
       network: receipt.network,
-      ...(receipt.amount !== undefined ? { amount: receipt.amount } : {}),
-      ...(receipt.payer !== undefined ? { payer: receipt.payer } : {}),
+      ...(amount !== undefined ? { amount } : {}),
+      ...(payer !== undefined ? { payer } : {}),
     },
   };
 }

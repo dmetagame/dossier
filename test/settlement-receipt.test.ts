@@ -86,6 +86,13 @@ describe("PAYMENT-RESPONSE settlement validator", () => {
       true,
       "exact receipts omit amount because the settlement request already fixes it",
     );
+    if (exactWithoutAmount.ok) {
+      assert.equal(
+        exactWithoutAmount.receipt.amount,
+        "10000",
+        "the normalized proof retains the exact amount from the signed requirement",
+      );
+    }
 
     const variableWithoutAmount = validateSettlementReceipt(
       header({ success: true, status: "success", transaction: TX, network: NETWORK }),
@@ -103,6 +110,47 @@ describe("PAYMENT-RESPONSE settlement validator", () => {
       validateSettlementReceipt(Buffer.from("{oops", "utf8").toString("base64"), { network: NETWORK }),
       { ok: false, reason: "invalid_encoding" },
     );
+  });
+
+  test("normalizes a successful timeout poll when optional receipt fields are null", () => {
+    const payer = "0x00000000000000000000000000000000000000ff";
+    const normalized = normalizeTimeoutRecoveryReceipt(
+      header({
+        success: false,
+        status: "success",
+        transaction: TX,
+        network: NETWORK,
+        amount: null,
+        payer: null,
+      }),
+      {
+        success: false,
+        status: "timeout",
+        transaction: TX,
+        network: NETWORK,
+      },
+      {
+        success: true,
+        status: "success",
+        transaction: TX,
+        network: NETWORK,
+        payer,
+      },
+      { scheme: "exact", network: NETWORK, amount: "10000", payer },
+    );
+    const result = validateSettlementReceipt(normalized, {
+      scheme: "exact",
+      network: NETWORK,
+      amount: "10000",
+      payer,
+    });
+
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal(result.receipt.status, "success");
+      assert.equal(result.receipt.amount, "10000");
+      assert.equal(result.receipt.payer, payer);
+    }
   });
 
   test("normalizes only the SDK's successful timeout-poll header bug", () => {
@@ -318,8 +366,26 @@ describe("PAYMENT-RESPONSE settlement validator", () => {
     );
   });
 
-  test("validates the receipt payer against successful verification", () => {
+  test("retains trusted optional fields when omitted or null and rejects a contradiction", () => {
     const payer = "0x00000000000000000000000000000000000000ff";
+    for (const optional of [{}, { amount: null, payer: null }]) {
+      const result = validateSettlementReceipt(
+        header({
+          success: true,
+          status: "success",
+          transaction: TX,
+          network: NETWORK,
+          ...optional,
+        }),
+        { scheme: "exact", network: NETWORK, amount: "10000", payer },
+      );
+      assert.equal(result.ok, true);
+      if (result.ok) {
+        assert.equal(result.receipt.amount, "10000");
+        assert.equal(result.receipt.payer, payer);
+      }
+    }
+
     assert.equal(
       validateSettlementReceipt(
         header({

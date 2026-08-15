@@ -76,7 +76,8 @@ const fac = {
   settleStatusDown: false,
   settleStatusCalls: 0,
   settleNetwork: NETWORK,
-  settleAmount: undefined as string | undefined,
+  settleAmount: undefined as string | null | undefined,
+  settlePayer: PAYER as string | null | undefined,
   /**
    * Make a call unreachable, as an outage, a revoked key or a 500 would. This
    * is not the same as the facilitator answering "no", and the service must not
@@ -112,6 +113,7 @@ const fac = {
     this.settleStatusCalls = 0;
     this.settleNetwork = NETWORK;
     this.settleAmount = undefined;
+    this.settlePayer = PAYER;
     this.down = false;
     this.settleDown = false;
     this.archivedAtSettle = -1;
@@ -274,7 +276,7 @@ globalThis.fetch = (async (input: any, init?: RequestInit) => {
             status: fac.settleStatus ?? "success",
             transaction: fac.tx,
             network: fac.settleNetwork,
-            payer: PAYER,
+            payer: fac.settlePayer,
             ...(fac.settleAmount !== undefined ? { amount: fac.settleAmount } : {}),
           }
         : {
@@ -545,6 +547,23 @@ describe("a paid call", () => {
     assert.equal(receipt.transaction, fac.tx);
   });
 
+  test("accepts OKX settle responses whose optional fields are null", async () => {
+    const { required } = await challenge();
+    fac.settleAmount = null;
+    fac.settlePayer = null;
+
+    const paid = await paidRequest(`/dossier?tokenAddress=${ADDR.cake}`, payment(required));
+    assert.equal(paid.status, 200);
+    assert.ok((await paid.text()).includes("<html"));
+    assert.deepEqual(archive.byTransaction(fac.tx)?.settlement, {
+      status: "confirmed",
+      transaction: fac.tx,
+      network: NETWORK,
+      amount: "10000",
+      payer: PAYER,
+    });
+  });
+
   test("the settlement receipt is linked to the report, and recovers it", async () => {
     const { required } = await challenge();
     const paid = await paidRequest(`/dossier?tokenAddress=${ADDR.cake}`, payment(required));
@@ -573,6 +592,7 @@ describe("a paid call", () => {
         status: "confirmed",
         transaction: fac.tx,
         network: NETWORK,
+        amount: "10000",
         payer: PAYER,
       },
       "new recovery records explicitly state that settlement was confirmed",
