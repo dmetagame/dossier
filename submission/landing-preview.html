@@ -1,7 +1,7 @@
 <!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Dossier — token due diligence, one paid call</title>
-<meta name="description" content="One call returns a finished due-diligence report on any token: risk verdict, safe position size, security flags, liquidity, market activity and holder concentration. Paid per call over x402 on X Layer.">
+<meta name="description" content="One call returns a finished due-diligence report on any token: risk verdict, heuristic size cap, security flags, liquidity, market activity and holder concentration. Paid per call over x402 on X Layer.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' fill='%230B1220'/%3E%3Cpath d='M20 14h18l8 8v28H20z' fill='none' stroke='%237C8CF8' stroke-width='4'/%3E%3C/svg%3E">
 <style>
   :root{--bg:#0b1220;--panel:#121a2e;--line:#243154;--ink:#eaf0ff;--muted:#9aa8c7;
@@ -72,13 +72,13 @@
 
   <header>
     <div class="brand"><div class="mark">D</div> Dossier</div>
-    <div class="badge">Live on OKX.AI · agent #7012</div>
+    <div class="badge">Endpoint live · OKX.AI agent #7012</div>
   </header>
 
   <div class="hero">
     <h1>Token due diligence, in one paid call.</h1>
     <p class="lede">Send a contract address. Get back a finished, shareable report: a clear risk
-      verdict, the safe position size, security flags, liquidity depth, market activity and holder
+      verdict, the heuristic size cap, security flags, liquidity depth, market activity and holder
       concentration — compiled from live on-chain data, not opinions.</p>
     <div class="cta">
       <a class="btn p" href="/dossier/sample">Read a real report</a>
@@ -87,7 +87,7 @@
     <p class="note">The sample is a genuine report generated on request. No signup, nothing to install.</p>
   </div>
 
-    <figure class="hero-fig" id="hf" aria-label="A due-diligence report assembling: five checks resolve, one source is unavailable, and the verdict is caution at 80 percent confidence.">
+    <figure class="hero-fig" id="hf" aria-label="A due-diligence report assembling: five checks resolve, one source is unavailable, and the verdict is caution with 80 percent data coverage.">
       <canvas id="hfc" aria-hidden="true"></canvas>
       <div class="hf-addr" id="hfa">0x0e09…1cE82</div>
       <div class="hf-rows" id="hfr">
@@ -99,7 +99,7 @@
       </div>
       <div class="hf-foot">
         <div class="hf-verdict" id="hfv">CAUTION</div>
-        <div class="hf-meta" id="hfm">confidence 80% · safe max size $81,151</div>
+        <div class="hf-meta" id="hfm">data coverage 80% · heuristic size cap $81,151</div>
       </div>
     </figure>
 
@@ -107,7 +107,7 @@
     <h2>What one call returns</h2>
     <div class="grid">
       <div class="card"><h3>A decision, not a data dump</h3>
-        <p>Proceed, caution or abort, with the safe position size in USD and a confidence score you can act on.</p></div>
+        <p>Proceed, caution or abort, with the heuristic size cap in USD and a score showing how much source data was available.</p></div>
       <div class="card"><h3>Five risk checks</h3>
         <p>Sellability, contract control, liquidity depth, market activity and holder concentration — each pass, warn or fail with the reason.</p></div>
       <div class="card"><h3>A document, not JSON</h3>
@@ -124,22 +124,22 @@ curl -X POST <span class="s">https://dossier.rouma.xyz/dossier</span> \
   -H <span class="s">'content-type: application/json'</span> \
   -d <span class="s">'{"<span class="k">tokenAddress</span>":"0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82"}'</span></pre>
     <p class="note">Pay the challenge and replay the request; the report comes back in the response.
-      Buying agents on OKX.AI handle this automatically. <code>chain</code> is optional — it is detected
-      from live markets, and when an address exists on several chains the deepest-liquidity deployment
-      is analysed and the report says which one it used.</p>
+      Buying agents on OKX.AI handle this automatically. <code>chain</code> is optional when deepest-liquidity
+      auto-selection is acceptable. Always send <code>chain:"xlayer"</code> for X Layer; the report says which
+      deployment it used.</p>
   </section>
 
   <section>
     <h2>Terms</h2>
     <table>
-      <tr><td>Price</td><td>$0.50 per call, USD₮0 on X Layer</td></tr>
+      <tr><td>Price</td><td>$0.01 per call, USD₮0 on X Layer</td></tr>
       <tr><td>Payment</td><td>x402 v2 via the official OKX Payment SDK, settled on-chain</td></tr>
       <tr><td>Chains</td><td>Ethereum, BNB Chain, Base, Arbitrum, Polygon, X Layer</td></tr>
       <tr><td>Sources</td><td>GoPlus security data and DexScreener markets, live at request time</td></tr>
       <tr><td>Failures</td><td>Never charged. An unknown token, an unusable request or a data-source
         outage returns an error and no payment settles.</td></tr>
       <tr><td>Coverage</td><td>When a source cannot answer, the affected checks are marked unknown and
-        the confidence score drops. Gaps are stated, never filled in.</td></tr>
+        the data-coverage score drops. Gaps are stated, never filled in.</td></tr>
     </table>
   </section>
 

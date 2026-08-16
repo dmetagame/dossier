@@ -54,8 +54,11 @@ describe("the published input contract", () => {
   });
 
   test("lists exactly the chains the engine supports", () => {
-    const e = (ext.outputSchema as any).input.schema.properties.chain.enum;
+    const chain = (ext.outputSchema as any).input.schema.properties.chain;
+    const e = chain.enum;
     assert.deepEqual([...e].sort(), [...SUPPORTED_CHAINS].sort());
+    assert.match(chain.description, /always supply xlayer/i);
+    assert.deepEqual(chain.examples, ["xlayer"]);
   });
 
   test("says what comes back, so the buyer knows what they bought", () => {

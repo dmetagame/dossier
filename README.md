@@ -1,7 +1,8 @@
 # Dossier
 
 One paid call turns a token address into a polished, executive-ready due-diligence
-report. Live on OKX.AI as an A2MCP service (agent #7012) at
+report. Dossier is configured on OKX.AI as agent #7012; its marketplace listing is
+currently under review after remediation. The A2MCP endpoint remains live at
 `https://dossier.rouma.xyz/dossier`, paid per call over x402 on X Layer.
 
 An agent or analyst sends a token address; Dossier returns a **finished document**,
@@ -40,9 +41,10 @@ sent as a JSON body or as query-string parameters, on either method — buyers' 
 clients replay differently and OKX's own `payment quote` defaults to GET, so a
 POST-body-only service would answer a paying caller with 400.
 
-`chain` is optional. It is auto-detected from live markets; when an address is deployed
-on several chains the deepest-liquidity deployment is analysed and the report states
-which chain it used and what the alternatives were.
+`chain` is optional; omit it only when deepest-liquidity auto-selection is acceptable. For
+X Layer, always pass `chain: "xlayer"`; DexScreener cannot reliably infer the X Layer USD₮0
+deployment from the address alone. When an address is deployed on several supported chains,
+the report states which chain it used and what the alternatives were.
 
 ## Knowing what you get before you pay
 
@@ -63,7 +65,7 @@ price, liquidity, volume, or size cap, whatever the request looks like. Ask
 first, free:
 
 ```bash
-curl "https://dossier.rouma.xyz/dossier/preflight?tokenAddress=0x…&chain=(optional)"
+curl "https://dossier.rouma.xyz/dossier/preflight?tokenAddress=0x779ded0c9e1022225f8e0630b35a9b54be713736&chain=xlayer"
 ```
 
 It returns the resolved token and chain, which sources hold it, the expected
@@ -174,7 +176,7 @@ Five deterministic checks — sellability/honeypot, contract control, liquidity 
 market activity, holder concentration — with tri-state source handling (`ok` /
 `not_found` / `unavailable`: an API outage is never treated as knowledge about the
 token). Verdict is `proceed`/`caution`/`abort` plus `maxSizeUsd` (capped at 1% of
-pooled base-side liquidity, halved on caution) and a data-coverage confidence score.
+pooled base-side liquidity, halved on caution) and a data-coverage score.
 No LLM anywhere: results are reproducible and benchmarkable.
 
 ## Run locally

@@ -200,7 +200,7 @@ export function renderSiteHtml(opts: { price: string; agentId: number }): string
 
   <header>
     <div class="brand"><span class="mark">D</span> Dossier</div>
-    <div class="tag">Live on OKX.AI · agent #${agentId}</div>
+    <div class="tag">Endpoint live · OKX.AI agent #${agentId}</div>
   </header>
 
   <div class="hero">
@@ -244,8 +244,8 @@ curl -X POST <span class="s">https://dossier.rouma.xyz/dossier</span> \\
   -d <span class="s">'{"<span class="k">tokenAddress</span>":"0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82"}'</span></pre>
     <p class="caption">The payment challenge carries the input contract, so an agent discovers what to
       send before it authorises payment. Buying agents on OKX.AI handle the payment automatically.
-      <code>chain</code> is optional: it is detected from live markets, and when an address exists on
-      several chains the deepest-liquidity deployment is analysed and the report says which it used.</p>
+      <code>chain</code> is optional when deepest-liquidity auto-selection is acceptable. Always send
+      <code>chain:"xlayer"</code> for X Layer; the report says which deployment it used.</p>
   </section>
 
   <section>

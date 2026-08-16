@@ -1,5 +1,10 @@
 # Submission record
 
+This is a dated submission snapshot, not a claim about the current marketplace state.
+On 2026-08-15 OKX delisted agent 7012 after a paid response was withheld, and the
+corrected service description was resubmitted. The current state is **Listing under
+review**; see [listing.md](listing.md) for the remediation evidence.
+
 The audit of 2026-08-04 called this the most important non-code gap, and it was
 right: the listing being live proves the product exists, not that the entry was
 submitted.
@@ -40,7 +45,7 @@ closes the last gap in the entry.
 | Item | Value |
 |---|---|
 | Listing | https://www.okx.ai/agents/7012 |
-| Listing status | Listed, eligible for task recommendations, online |
+| Listing status at snapshot time | Listed, eligible for task recommendations, online |
 | Endpoint | https://dossier.rouma.xyz/dossier |
 | Price | 0.01 USD₮0 per call, x402 on X Layer (`eip155:196`) |
 | Marketplace record (2026-08-05) | ★4.33, 29 sold, 7 reviews |

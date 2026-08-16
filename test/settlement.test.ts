@@ -406,6 +406,9 @@ describe("the payment challenge", () => {
     const body = (await res.json()) as any;
     assert.equal(body.error, "Payment required");
     assert.ok(body.input, "the parameter contract must be in the unpaid body");
+    assert.equal(body.examples[1].request.chain, "xlayer");
+    assert.equal(body.examples[1].request.tokenAddress, ADDR.usdt0);
+    assert.match(body.examples[1].curl, /"chain":"xlayer"/);
     assert.ok(body.try_before_paying.sample_report.endsWith("/dossier/sample"));
   });
 

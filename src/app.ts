@@ -404,7 +404,8 @@ app.get("/info", (c) =>
         pricing: `${config.dossierPrice} per call (x402, USD₮0 on X Layer)`,
         body: {
           tokenAddress: "0x…",
-          chain: "(optional — auto-detected when unambiguous)",
+          chain:
+            'optional; auto-selects deepest liquidity, but send "xlayer" for X Layer tokens',
           format: "html | json",
         },
       },
@@ -419,7 +420,10 @@ app.get("/info", (c) =>
         path: "/dossier/preflight",
         method: "GET or POST",
         pricing: "free",
-        body: { tokenAddress: "0x…", chain: "(optional)" },
+        body: {
+          tokenAddress: "0x…",
+          chain: 'optional; send "xlayer" for X Layer tokens',
+        },
         description:
           "Coverage check for a specific token before paying: which data sources have it, expected coverage, which fields the report will contain, and whether it can be produced at all.",
       },
@@ -1570,7 +1574,7 @@ if (!config.devSkipPayment && paymentConfigured() && archiveConfiguredForPayment
         examples: [
           {
             description:
-              "Minimal call: the contract address is the only required field.",
+              "Minimal call for a token with an indexed market: the contract address is the only required field.",
             request: {
               tokenAddress: "0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82",
             },
@@ -1581,16 +1585,17 @@ if (!config.devSkipPayment && paymentConfigured() && archiveConfiguredForPayment
             returns: "The rendered report document (text/html).",
           },
           {
-            description: "Name the chain explicitly and take the data as JSON.",
+            description:
+              'X Layer call: send chain "xlayer" explicitly and take the report as JSON.',
             request: {
-              tokenAddress: "0x514910771af9ca656af840dff83e8264ecf986ca",
-              chain: "ethereum",
+              tokenAddress: "0x779ded0c9e1022225f8e0630b35a9b54be713736",
+              chain: "xlayer",
               format: "json",
             },
             curl:
               `curl -X POST ${config.publicOrigin}/dossier ` +
               `-H 'content-type: application/json' ` +
-              `-d '{"tokenAddress":"0x514910771af9ca656af840dff83e8264ecf986ca","chain":"ethereum","format":"json"}'`,
+              `-d '{"tokenAddress":"0x779ded0c9e1022225f8e0630b35a9b54be713736","chain":"xlayer","format":"json"}'`,
             returns:
               "JSON with riskVerdict (verdict, reasons, confidence, maxSizeUsd), token, checks, sources and a signed attestation.",
           },
@@ -2402,10 +2407,13 @@ const invalid = (c: any, issues: unknown) =>
   c.json(
     {
       error: "invalid request",
-      hint: "send tokenAddress either as a JSON body on POST or as a query parameter on GET or POST.",
+      hint:
+        'send tokenAddress either as a JSON body on POST or as a query parameter on GET or POST; for X Layer, include chain "xlayer".',
       examples: {
-        post: 'POST /dossier  {"tokenAddress":"0x…","chain":"(optional)"}',
-        get: "GET /dossier?tokenAddress=0x…&chain=(optional)",
+        post:
+          'POST /dossier  {"tokenAddress":"0x779ded0c9e1022225f8e0630b35a9b54be713736","chain":"xlayer","format":"json"}',
+        get:
+          "GET /dossier?tokenAddress=0x779ded0c9e1022225f8e0630b35a9b54be713736&chain=xlayer&format=json",
       },
       freeSample: "/dossier/sample",
       issues,

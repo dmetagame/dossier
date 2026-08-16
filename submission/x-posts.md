@@ -1,5 +1,9 @@
 # X posts (#OKXAI)
 
+Historical submission copy. These posts preserve the wording published while Dossier was
+listed; the current marketplace state is **Listing under review** after the 2026-08-15
+delisting remediation. See `listing.md` for the current record.
+
 Updated 2026-07-27 (evening). Written against the stated requirement: introduce the ASP,
 explain the use case, attach a clear demo video of up to 90 seconds, and share the product
 story, build process or a user scenario.

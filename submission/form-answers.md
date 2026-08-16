@@ -1,7 +1,10 @@
 # Submission answers — OKX.AI Genesis Hackathon
 
-Entry: **Dossier**, agent **#7012**, live and listed on OKX.AI.
+Entry: **Dossier**, agent **#7012**, submitted while listed on OKX.AI.
 Updated 2026-07-27, after the external review and the work that followed it.
+
+This is the original submission snapshot. The current status changed on 2026-08-15 to
+**Listing under review** after the delisting remediation; see `listing.md`.
 
 ## Identity
 
@@ -14,7 +17,7 @@ Updated 2026-07-27, after the external review and the work that followed it.
 | Price | 0.01 USD₮0 per call, x402 on X Layer (eip155:196) |
 | Endpoint | https://dossier.rouma.xyz/dossier |
 | Site | https://dossier.rouma.xyz |
-| Status | Listed, eligible for task recommendations, online |
+| Status at original submission snapshot | Listed, eligible for task recommendations, online |
 | Marketplace record | ★4.5, 83.33% positive, 28 sold, 6 written reviews (2026-08-04). See `revenue-ledger.md`: 11 of the 28 are external, from 6 distinct buyers |
 | X post | https://x.com/Herboobakar/status/2081858337553973363 |
 | Demo video | https://youtu.be/6Uq1ZCxPQ2o |

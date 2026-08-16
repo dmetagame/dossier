@@ -49,6 +49,8 @@ describe("the free surface", () => {
     const html = await r.text();
     assert.ok(html.includes("hero-viz"));
     assert.ok(html.includes('id="use"'), "the publicly linked anchor must exist");
+    assert.ok(html.includes('chain:"xlayer"'), "X Layer callers need the explicit chain example");
+    assert.equal(html.includes("Live on OKX.AI"), false, "review state must not be called listed");
   });
 
   test("the landing page is the only place motion loads", async () => {
@@ -100,10 +102,15 @@ describe("the free surface", () => {
   });
 
   test("/info describes every route a machine needs", async () => {
-    const j = (await (await get("/info")).json()) as { endpoints: { path: string }[] };
+    const j = (await (await get("/info")).json()) as {
+      endpoints: { path: string; body?: { chain?: string } }[];
+    };
     const paths = j.endpoints.map((e) => e.path);
     for (const p of ["/dossier", "/dossier/sample", "/dossier/preflight"]) {
       assert.ok(paths.includes(p), `${p} missing from /info`);
+    }
+    for (const endpoint of j.endpoints.filter((e) => e.body)) {
+      assert.match(endpoint.body?.chain ?? "", /xlayer/, `${endpoint.path} omits X Layer guidance`);
     }
   });
 
@@ -246,7 +253,10 @@ describe("input validation happens before anything is produced", () => {
     assert.equal(r.status, 400);
     const j = (await r.json()) as Record<string, any>;
     assert.ok(j.hint.includes("tokenAddress"));
+    assert.ok(j.hint.includes("xlayer"));
     assert.ok(j.examples.post && j.examples.get, "tell the caller both shapes");
+    assert.match(j.examples.post, /"chain":"xlayer"/);
+    assert.match(j.examples.get, /chain=xlayer/);
     assert.equal(j.freeSample, "/dossier/sample");
   });
 

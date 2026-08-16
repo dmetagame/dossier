@@ -43,7 +43,7 @@ const chainSchema = {
   enum: [...SUPPORTED_CHAINS],
   examples: ["xlayer"],
   description:
-    "Optional. Auto-detected from live markets; supply xlayer for X Layer-native tokens with no indexed market.",
+    "Optional. Auto-selects indexed markets; always supply xlayer for X Layer tokens.",
 } as const;
 
 export const dossierInputSchema = {

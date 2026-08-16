@@ -64,7 +64,7 @@ Job ids, external only:
 
 The last row is delivered but never closed by the buyer. Our own fulfilment
 record for it reads `delivered manually after buyer went silent`. It is excluded
-from the 4.03 figure because the payment has not been released, and it should
+from the 4.04 figure because the payment has not been released, and it should
 stay excluded unless it completes.
 
 ## Internal, self-paid
@@ -86,9 +86,9 @@ until 2026-07-28 and 0.01 since, so task count and gross do not move together.
 
 ## What we will and will not claim
 
-**Will:** live on OKX.AI, 29 completed tasks, 12 of them from 6 distinct external
-buyers, one of whom purchased five times, 4.04 USD₮0 of external gross settled
-through x402 on X Layer.
+**Will:** endpoint live; OKX.AI listing under review; 29 completed tasks, 12 of them
+from 6 distinct external buyers, one of whom purchased five times, and 4.04 USD₮0
+of external gross settled through x402 on X Layer.
 
 **Will not:** "28 sales" as organic traction. The counter includes 17 of our own
 purchases, and saying otherwise would be the kind of rounding this product is

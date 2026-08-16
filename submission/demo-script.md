@@ -1,5 +1,9 @@
 # Demo video — Dossier
 
+Historical submission artifact. The narration records Dossier while it was listed; the
+current marketplace state is **Listing under review** after the 2026-08-15 delisting
+remediation. See `listing.md` for the current record.
+
 Updated 2026-07-27 (evening). **The narrated video is finished.** Nothing is left to
 record; this file records what exists and how it was made.
 
@@ -57,8 +61,9 @@ On **2026-07-28** the price dropped from 0.50 to 0.01 USD₮0. The cue at 0:57 s
 cents on X Layer", and the purchase shown on screen settled 0.50, so the finished video now
 quotes a price we no longer charge.
 
-Nothing else in it went stale: the flow, the challenge, the signature check and the listing
-are all unchanged. Re-voicing is one line (see below), but it means re-rendering and
+At the time of the price change, nothing else in it was stale: the flow, the challenge, the
+signature check and listing matched production. Re-voicing is one line (see below), but it
+means re-rendering and
 re-uploading a video that is already submitted, and the figure is lower than what the video
 claims rather than higher, so no viewer is misled into expecting a better deal than exists.
 Left as is on purpose. Re-cut it only if the submission is reopened for other reasons.

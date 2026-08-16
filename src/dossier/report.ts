@@ -68,7 +68,7 @@ export class TokenNotFoundError extends Error {
 // behind it, so an agent gets both a human-ready asset and machine-readable fields.
 
 export const DossierRequest = z.object({
-  // Optional: omitted means "auto-detect", resolved only when unambiguous.
+  // Optional: omitted means auto-select the deepest-liquidity supported deployment.
   chain: ChainName.optional(),
   tokenAddress: z.string().regex(/^0x[a-fA-F0-9]{40}$/, "must be an EVM address"),
   // "message" returns the buyer-facing delivery text, generated here so that
