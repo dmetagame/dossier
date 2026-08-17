@@ -1,6 +1,6 @@
 # OKX.AI listing and remediation record
 
-Updated 2026-08-16. **This file previously described Verdict (#7008), which is parked and
+Updated 2026-08-17. **This file previously described Verdict (#7008), which is parked and
 is not the entry.** It records Dossier (#7012), including the delisting incident and the
 current resubmission state, so the repository does not claim that a rejected listing is live.
 
@@ -28,6 +28,41 @@ The endpoint remains available while marketplace review is pending. A live `x402
 against `https://dossier.rouma.xyz/dossier` returns the exact X Layer requirement: network
 `eip155:196`, USD₮0 asset `0x779ded0c9e1022225f8e0630b35a9b54be713736`, amount `10000`,
 and payout wallet `0x51c25782af63381056cd1c3c59c0544628d67697`.
+
+## Pre-payment validation remediation
+
+On 2026-08-17 OKX rejected the resubmission because missing or invalid service parameters
+could reach the x402 signature and deduction flow before they were rejected. Commits
+`9c58f83` and `018b10a` move request parsing and validation ahead of every payment, replay,
+archive, and report-generation action, including failures while reading the request stream.
+Production is deployed at `018b10a6e19e2f523646d972f1cd800e59db15a8`.
+
+The production response contract was rechecked through the public Caddy endpoint:
+
+| Request | Result | Payment headers |
+|---|---:|---|
+| GET with missing, malformed, unsupported, or unknown parameters | `400` | none |
+| POST with no body, malformed JSON, missing, unsupported, or unknown parameters | `400` | none |
+| Oversized request body | `413` | none |
+| Valid GET or POST with `tokenAddress`, `chain`, and `format` | `402` | `PAYMENT-REQUIRED` present |
+| Bare HEAD discovery probe | `402` | `PAYMENT-REQUIRED` present |
+
+The strict runtime contract matches the challenge schema's `additionalProperties: false`.
+External callers may request `html` or `json`; the internal fulfilment-only `message` format
+cannot be purchased through the public route. Regression coverage also asserts that invalid
+signed requests do not call facilitator verification or settlement.
+
+Both official checks pass against production, for a valid query-string GET and a valid JSON
+POST: `onchainos agent x402-check` reports x402 v2, `0.01 USDT`, network `eip155:196`, amount
+`10000`, the configured asset, and the configured payout wallet. The full test suite passes
+497 tests across 75 suites, and CI passed for the exact deployed SHA.
+
+The corrected listing was resubmitted on 2026-08-17. `submitApproval` returned
+`success: true` with `approvalStatus: 2`; the subsequent agent query reports **Listing under
+review** and **not listed**. The previous rejection text remains in the API's historical
+`approvalRemark`, so it is not evidence of a new rejection. Do not claim that Dossier is
+listed until OKX completes this review. No new paid transaction was initiated for this
+remediation; the prior paid-delivery evidence below remains the settlement proof.
 
 ## Agent description
 
