@@ -2,8 +2,10 @@
 
 This is a dated submission snapshot, not a claim about the current marketplace state.
 On 2026-08-15 OKX delisted agent 7012 after a paid response was withheld, and the
-corrected service description was resubmitted. The current state is **Listing under
-review**; see [listing.md](listing.md) for the remediation evidence.
+corrected service description was resubmitted. On 2026-08-17 OKX required invalid service
+parameters to be rejected before an x402 challenge; the corrected build was deployed and
+resubmitted that day. The current state is **Listing under review**; see
+[listing.md](listing.md) for the remediation evidence.
 
 The audit of 2026-08-04 called this the most important non-code gap, and it was
 right: the listing being live proves the product exists, not that the entry was

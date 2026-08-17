@@ -28,8 +28,9 @@ rejection.
 characters of plain narrative with no parameters and no examples, so that detail belongs to
 the service record, not the profile. Ours already matches that shape.
 
-The endpoint is unaffected throughout: `/dossier` answers 402, `paymentLayer` is ready, and
-anyone holding the URL can still buy. Only public discovery is dark.
+The endpoint is unaffected throughout: a valid `/dossier` request answers 402,
+`paymentLayer` is ready, and anyone holding the URL can still buy. Invalid requests answer
+400 before any payment challenge. Only public discovery is dark.
 
 ## 0. An A2A delivery does not close the sale
 
@@ -100,8 +101,9 @@ in use, or if support can clear the lock. Not worth chasing.
 "Listing under review", statusLabel "not listed". While in that state it is absent from
 public search, `www.okx.ai/agents/7012` returns 404, and `designated-route` returns zero
 services, so the marketplace purchase path is closed. The endpoint itself is unaffected:
-`/dossier` still answers 402, `x402-check` still reports valid, and a buyer holding the
-URL can still pay and be served.
+a valid `/dossier` request still answers 402, `x402-check` still reports valid, and a buyer
+holding the URL can still pay and be served. Missing or invalid inputs answer 400 before
+the x402 challenge.
 
 The review remark reads "AI quality review suggested pass", which is the same signal that
 preceded approval last time. Nothing to do but wait for it to clear.
