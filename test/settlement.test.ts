@@ -512,6 +512,24 @@ describe("the payment challenge", () => {
     });
   });
 
+  test("an unreadable request body is rejected before payment", async () => {
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.error(new Error("simulated request stream failure"));
+      },
+    });
+    const request = new Request("http://localhost/dossier", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body,
+      duplex: "half",
+    } as RequestInit & { duplex: "half" });
+    const r = await app.request(request);
+    assert.equal(r.status, 400);
+    assertNoPaymentResponseHeaders(r);
+    assert.deepEqual(fac.ops(), []);
+  });
+
   test("an oversized JSON body is rejected before payment", async () => {
     const r = await app.request("/dossier", {
       method: "POST",

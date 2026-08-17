@@ -2475,6 +2475,12 @@ async function dossierInput(c: any): Promise<DossierInput> {
           }
           chunks.push(next.value);
         }
+      } catch {
+        return save({
+          kind: "invalid",
+          raw: query,
+          issues: [{ code: "invalid_body", message: "body could not be read" }],
+        });
       } finally {
         reader.releaseLock();
       }
