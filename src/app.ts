@@ -80,6 +80,35 @@ function internalKeyMatches(given: string | undefined): boolean {
 export const app = new Hono();
 
 const PAYMENT_HEADER_MAX_BYTES = 16 * 1024;
+// A Dossier request is only a contract address plus two small selectors. Limit
+// the unauthenticated body before parsing it so an invalid purchase attempt
+// cannot turn the validation gate into an unbounded buffering endpoint.
+const DOSSIER_BODY_MAX_BYTES = 16 * 1024;
+
+const bodyTooLarge = (c: any) =>
+  c.json(
+    {
+      error: "request_body_too_large",
+      message: "Dossier request bodies must not exceed 16 KiB.",
+    },
+    413,
+  );
+
+type DossierInput =
+  | {
+      kind: "valid";
+      raw: Record<string, unknown>;
+      data: DossierRequest;
+    }
+  | {
+      kind: "invalid";
+      raw: Record<string, unknown>;
+      issues: unknown;
+    }
+  | {
+      kind: "body_too_large";
+      raw: Record<string, unknown>;
+    };
 
 function paymentHeader(c: {
   req: { header(name: string): string | undefined };
@@ -1714,6 +1743,25 @@ if (!config.devSkipPayment && paymentConfigured() && archiveConfiguredForPayment
     if ((c as any).get("internal")) {
       return next();
     }
+    const isDossierRequest =
+      c.req.path === "/dossier" &&
+      ["GET", "POST", "HEAD"].includes(c.req.method);
+    const input = isDossierRequest ? await dossierInput(c) : undefined;
+    if (input?.kind === "body_too_large") return bodyTooLarge(c);
+    if (input?.kind === "invalid") {
+      // Empty HEAD is the one discovery probe that must reach x402: validators
+      // use it to establish availability without asking for a deliverable. Every
+      // GET/POST, and every HEAD that supplies business parameters, is validated
+      // before a payment can be requested or verified.
+      const bareHead =
+        c.req.method === "HEAD" &&
+        Object.keys(input.raw).length === 0 &&
+        !paymentHeader(c);
+      if (!bareHead) return invalid(c, input.issues);
+    }
+    if (input?.kind === "valid" && input.data.format === "message") {
+      return unavailableMessageFormat(c);
+    }
     const liveDurability = durabilityHealth();
     if (
       !archiveReadyForExternalPayments(liveDurability.archive) ||
@@ -1726,7 +1774,13 @@ if (!config.devSkipPayment && paymentConfigured() && archiveConfiguredForPayment
         503,
       );
     }
-    const replayRequest = replayRequestIdentity(await readParams(c));
+    const replayRequest = replayRequestIdentity(
+      input
+        ? input.kind === "valid"
+          ? input.data as Record<string, unknown>
+          : input.raw
+        : await readParams(c),
+    );
     let handlerStarted = false;
     const trackedNext = async () => {
       if (currentFacilitatorState()?.replay?.beginFailed) {
@@ -2390,6 +2444,73 @@ async function readParams(c: any): Promise<Record<string, unknown>> {
   return { ...query, ...(body as Record<string, unknown>) };
 }
 
+async function dossierInput(c: any): Promise<DossierInput> {
+  const cached = (c as any).get("dossierInputRead") as DossierInput | undefined;
+  if (cached) return cached;
+  const save = (input: DossierInput): DossierInput => {
+    (c as any).set("dossierInputRead", input);
+    return input;
+  };
+  const query = c.req.query() as Record<string, string>;
+  let body: unknown = {};
+  const method = c.req.method;
+  if (method !== "GET" && method !== "HEAD") {
+    const declared = Number(c.req.header("content-length"));
+    if (Number.isFinite(declared) && declared > DOSSIER_BODY_MAX_BYTES) {
+      return save({ kind: "body_too_large", raw: query });
+    }
+    const stream = c.req.raw.body;
+    if (stream) {
+      const reader = stream.getReader();
+      const chunks: Uint8Array[] = [];
+      let size = 0;
+      try {
+        while (true) {
+          const next = await reader.read();
+          if (next.done) break;
+          size += next.value.byteLength;
+          if (size > DOSSIER_BODY_MAX_BYTES) {
+            await reader.cancel().catch(() => undefined);
+            return save({ kind: "body_too_large", raw: query });
+          }
+          chunks.push(next.value);
+        }
+      } finally {
+        reader.releaseLock();
+      }
+      if (size > 0) {
+        const bytes = new Uint8Array(size);
+        let offset = 0;
+        for (const chunk of chunks) {
+          bytes.set(chunk, offset);
+          offset += chunk.byteLength;
+        }
+        try {
+          body = JSON.parse(new TextDecoder().decode(bytes));
+        } catch {
+          return save({
+            kind: "invalid",
+            raw: query,
+            issues: [{ code: "invalid_json", message: "body must be valid JSON" }],
+          });
+        }
+      }
+    }
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      return save({
+        kind: "invalid",
+        raw: query,
+        issues: [{ code: "invalid_type", message: "body must be a JSON object" }],
+      });
+    }
+  }
+  const raw = { ...query, ...(body as Record<string, unknown>) };
+  const parsed = DossierRequest.safeParse(raw);
+  return parsed.success
+    ? save({ kind: "valid", raw, data: parsed.data })
+    : save({ kind: "invalid", raw, issues: parsed.error.issues });
+}
+
 /** e.g. dossier-uni-ethereum-20260727.html — safe on every filesystem. */
 function downloadName(
   d: { token: { symbol?: string; chain: string; address: string } },
@@ -2421,6 +2542,17 @@ const invalid = (c: any, issues: unknown) =>
     400,
   );
 
+const unavailableMessageFormat = (c: any) =>
+  c.json(
+    {
+      error: "format_not_available",
+      message:
+        "format=message is an internal fulfilment view of a report already delivered for a marketplace job. External paid calls must request html or json.",
+      charged: false,
+    },
+    400,
+  );
+
 app.on(["GET", "POST"], "/dossier", async (c) => {
   // Reached only after the middleware has verified payment (or in dev-skip mode).
 
@@ -2448,32 +2580,24 @@ app.on(["GET", "POST"], "/dossier", async (c) => {
     );
   }
 
-  const parsed = DossierRequest.safeParse(await readParams(c));
-  if (!parsed.success) {
-    return invalid(c, parsed.error.issues);
-  }
+  const input = await dossierInput(c);
+  if (input.kind === "body_too_large") return bodyTooLarge(c);
+  if (input.kind === "invalid") return invalid(c, input.issues);
+  const parsed = input.data;
   const loggedJob = internalJobId(c);
-  if (parsed.data.format === "message" && !loggedJob) {
-    return c.json(
-      {
-        error: "format_not_available",
-        message:
-          "format=message is an internal fulfilment view of a report already delivered for a marketplace job. External paid calls must request html or json.",
-        charged: false,
-      },
-      400,
-    );
+  if (parsed.format === "message" && !loggedJob) {
+    return unavailableMessageFormat(c);
   }
   // Recorded before the work starts, so a request that goes on to fail still
   // says which token it was for. A failed paid call is exactly the one we later
   // have to explain, and "they asked for X and got a 404" is the whole answer.
-  (c as any).set("logToken", parsed.data.tokenAddress);
-  if (parsed.data.chain) (c as any).set("logChain", parsed.data.chain);
+  (c as any).set("logToken", parsed.tokenAddress);
+  if (parsed.chain) (c as any).set("logChain", parsed.chain);
   if (loggedJob) (c as any).set("logJob", loggedJob);
   try {
-    const dossier = await buildDossier(parsed.data);
-    const json = parsed.data.format === "json";
-    const message = parsed.data.format === "message";
+    const dossier = await buildDossier(parsed);
+    const json = parsed.format === "json";
+    const message = parsed.format === "message";
     // Archive before responding. External paid calls also durably attach this
     // report to their payment fingerprint before the handler returns: the SDK
     // starts settlement as soon as it sees our 2xx response.
@@ -2512,15 +2636,15 @@ app.on(["GET", "POST"], "/dossier", async (c) => {
       !archive.save({
         id,
         paramsSha256: archive.paramsHash(
-          parsed.data as Record<string, unknown>,
+          parsed as Record<string, unknown>,
         ),
         // Also index by the chain actually analysed, since that is the one the
         // report prints and the one our own recovery instructions quote.
         resolvedParamsSha256: archive.paramsHash({
-          ...(parsed.data as Record<string, unknown>),
+          ...(parsed as Record<string, unknown>),
           chain: dossier.token.chain,
         }),
-        request: parsed.data as Record<string, unknown>,
+        request: parsed as Record<string, unknown>,
         contentType: json ? "application/json" : "text/html",
         deliverable: body,
         deliveredAt: new Date().toISOString(),

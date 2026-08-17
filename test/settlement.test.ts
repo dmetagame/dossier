@@ -314,6 +314,34 @@ async function challenge(path = `/dossier?tokenAddress=${ADDR.cake}`) {
   return { res: r, required: b64.decode(header!) };
 }
 
+function assertNoPaymentResponseHeaders(r: Response): void {
+  assert.equal(
+    r.headers.get("payment-required"),
+    null,
+    "a rejected request must not carry a payment challenge",
+  );
+  assert.equal(
+    r.headers.get("payment-response"),
+    null,
+    "a rejected request must not carry a settlement receipt",
+  );
+}
+
+async function rejectedBeforePayment(
+  path: string,
+  init: RequestInit = {},
+): Promise<Response> {
+  const r = await app.request(path, init);
+  assert.equal(r.status, 400);
+  assertNoPaymentResponseHeaders(r);
+  assert.deepEqual(
+    fac.ops(),
+    [],
+    "invalid input must be rejected before facilitator verification or settlement",
+  );
+  return r;
+}
+
 /**
  * A payment payload built the way a buyer's client builds one: the `accepted`
  * block is the server's own requirement, echoed back verbatim. The inner
@@ -410,6 +438,157 @@ describe("the payment challenge", () => {
     assert.equal(body.examples[1].request.tokenAddress, ADDR.usdt0);
     assert.match(body.examples[1].curl, /"chain":"xlayer"/);
     assert.ok(body.try_before_paying.sample_report.endsWith("/dossier/sample"));
+  });
+
+  test("valid GET and POST inputs still receive a payment challenge", async () => {
+    const requests: Array<{ path: string; init?: RequestInit }> = [
+      {
+        path:
+          `/dossier?tokenAddress=${ADDR.usdt0}&chain=xlayer&format=json`,
+      },
+      {
+        path: "/dossier",
+        init: {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            tokenAddress: ADDR.usdt0,
+            chain: "xlayer",
+            format: "json",
+          }),
+        },
+      },
+    ];
+
+    for (const request of requests) {
+      fac.reset();
+      const r = await app.request(request.path, request.init);
+      assert.equal(r.status, 402);
+      assert.ok(r.headers.get("payment-required"));
+      assert.equal(r.headers.get("payment-response"), null);
+      assert.deepEqual(fac.ops(), [], "an unpaid challenge does not contact the facilitator");
+    }
+  });
+
+  test("a bare unpaid HEAD remains an x402 discovery probe", async () => {
+    const r = await app.request("/dossier", { method: "HEAD" });
+    assert.equal(r.status, 402);
+    assert.ok(r.headers.get("payment-required"));
+    assert.equal(r.headers.get("payment-response"), null);
+    assert.deepEqual(fac.ops(), []);
+  });
+
+  test("missing GET input is rejected before payment", async () => {
+    await rejectedBeforePayment("/dossier");
+  });
+
+  test("an empty POST object is rejected before payment", async () => {
+    await rejectedBeforePayment("/dossier", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+  });
+
+  test("a POST with no body is rejected before payment", async () => {
+    await rejectedBeforePayment("/dossier", { method: "POST" });
+  });
+
+  test("malformed JSON is rejected before payment", async () => {
+    const r = await rejectedBeforePayment("/dossier", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: `{"tokenAddress":"${ADDR.usdt0}"`,
+    });
+    const body = (await r.json()) as any;
+    assert.equal(body.error, "invalid request");
+  });
+
+  test("a non-object JSON body is rejected before payment", async () => {
+    await rejectedBeforePayment("/dossier", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(ADDR.usdt0),
+    });
+  });
+
+  test("an oversized JSON body is rejected before payment", async () => {
+    const r = await app.request("/dossier", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        tokenAddress: ADDR.usdt0,
+        padding: "x".repeat(16 * 1024),
+      }),
+    });
+    assert.equal(r.status, 413);
+    assertNoPaymentResponseHeaders(r);
+    assert.deepEqual(fac.ops(), []);
+  });
+
+  test("a malformed address is rejected before payment", async () => {
+    await rejectedBeforePayment(
+      "/dossier?tokenAddress=not-an-address&chain=xlayer&format=json",
+    );
+  });
+
+  test("a HEAD with invalid business input is not treated as discovery", async () => {
+    await rejectedBeforePayment("/dossier?tokenAddress=not-an-address", {
+      method: "HEAD",
+    });
+  });
+
+  test("an unsupported chain is rejected before payment", async () => {
+    await rejectedBeforePayment("/dossier", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        tokenAddress: ADDR.usdt0,
+        chain: "solana",
+        format: "json",
+      }),
+    });
+  });
+
+  test("an unsupported output format is rejected before payment", async () => {
+    await rejectedBeforePayment(
+      `/dossier?tokenAddress=${ADDR.usdt0}&chain=xlayer&format=pdf`,
+    );
+  });
+
+  test("unknown fields are rejected as the published schema promises", async () => {
+    await rejectedBeforePayment(
+      `/dossier?tokenAddress=${ADDR.usdt0}&chain=xlayer&format=json&chainName=xlayer`,
+    );
+  });
+
+  test("external format=message requests are rejected before payment", async () => {
+    const requests: Array<{ path: string; init?: RequestInit }> = [
+      {
+        path:
+          `/dossier?tokenAddress=${ADDR.usdt0}&chain=xlayer&format=message`,
+      },
+      {
+        path: "/dossier",
+        init: {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            tokenAddress: ADDR.usdt0,
+            chain: "xlayer",
+            format: "message",
+          }),
+        },
+      },
+    ];
+
+    for (const request of requests) {
+      fac.reset();
+      const r = await rejectedBeforePayment(request.path, request.init);
+      const body = (await r.json()) as any;
+      assert.equal(body.error, "format_not_available");
+      assert.equal(body.charged, false);
+    }
   });
 
   test("no report is built for an unpaid call", async () => {
@@ -1263,18 +1442,40 @@ describe("the ways a buyer's client actually calls", () => {
     // Both are read, and a client that carries the parameters twice must not
     // get a report on a token it did not name in the body it signed for.
     const { required } = await challenge();
+    const signature = payment(required);
+    const requestBody = JSON.stringify({ tokenAddress: ADDR.cake, chain: "bsc" });
     const r = await app.request(`/dossier?tokenAddress=${ADDR.uni}&chain=ethereum`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "payment-signature": payment(required),
+        "payment-signature": signature,
       },
-      body: JSON.stringify({ tokenAddress: ADDR.cake, chain: "bsc" }),
+      body: requestBody,
     });
     assert.equal(r.status, 200);
     const html = (await r.text()).toLowerCase();
     assert.ok(html.includes(ADDR.cake), "the body's token is the one reported on");
     assert.equal(html.includes(ADDR.uni), false, "and the query's is not");
+
+    const operations = fac.ops().length;
+    const replayed = await app.request(
+      `/dossier?tokenAddress=${ADDR.nowhere}&chain=ethereum`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "payment-signature": signature,
+        },
+        body: requestBody,
+      },
+    );
+    assert.equal(replayed.status, 200);
+    assert.equal((await replayed.text()).toLowerCase(), html);
+    assert.equal(
+      fac.ops().length,
+      operations,
+      "replay identity and the handler must use the same body-wins parameters",
+    );
   });
 });
 
@@ -1321,11 +1522,20 @@ describe("what must never be charged", () => {
     assert.deepEqual(fac.ops(), ["verify"], "HEAD must never settle");
   });
 
-  test("an invalid request is refused without settling", async () => {
+  test("an invalid signed request is refused before verification", async () => {
     const { required } = await challenge();
-    const r = await paidRequest("/dossier?tokenAddress=not-an-address", payment(required));
-    assert.equal(r.status, 400);
-    assert.deepEqual(fac.ops(), ["verify"]);
+    const signature = payment(required);
+    const missing = await paidRequest("/dossier", signature);
+    assert.equal(missing.status, 400);
+    assertNoPaymentResponseHeaders(missing);
+
+    const malformed = await paidRequest(
+      "/dossier?tokenAddress=not-an-address",
+      signature,
+    );
+    assert.equal(malformed.status, 400);
+    assertNoPaymentResponseHeaders(malformed);
+    assert.deepEqual(fac.ops(), []);
   });
 });
 
@@ -1945,6 +2155,24 @@ describe("the internal fulfilment bypass", () => {
       "a task buyer paid at the task level and must never be quoted an x402 challenge",
     );
     assert.ok(r.headers.get("x-recovery-code"), "and is given a recovery code");
+  });
+
+  test("keeps format=message available to the internal fulfiller", async () => {
+    const jobId = "0x" + "ce".repeat(32);
+    const headers = {
+      "x-internal-key": process.env.INTERNAL_KEY!,
+      "x-job-id": jobId,
+    };
+    const path = `/dossier?tokenAddress=${ADDR.cake}`;
+
+    const report = await app.request(path, { headers });
+    assert.equal(report.status, 200);
+
+    const message = await app.request(`${path}&format=message`, { headers });
+    assert.equal(message.status, 200);
+    assert.match(message.headers.get("content-type") ?? "", /text\/plain/);
+    assert.match(await message.text(), /VERDICT:/);
+    assert.deepEqual(fac.ops(), [], "internal fulfilment must bypass x402");
   });
 
   test("a wrong internal key is just an unpaid caller", async () => {

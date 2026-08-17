@@ -74,7 +74,7 @@ export const DossierRequest = z.object({
   // "message" returns the buyer-facing delivery text, generated here so that
   // whoever sends it pastes rather than paraphrases. See src/dossier/message.ts.
   format: z.enum(["html", "json", "message"]).default("html"),
-});
+}).strict();
 export type DossierRequest = z.infer<typeof DossierRequest>;
 
 export interface Preflight {

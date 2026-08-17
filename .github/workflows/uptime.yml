@@ -37,10 +37,20 @@ jobs:
           set -euo pipefail
           # 402 means the payment layer is genuinely up. 503 is the shape an
           # unreachable or rejecting facilitator takes, and is the failure that
-          # went unnoticed for two hours.
+          # went unnoticed for two hours. Both probes carry valid parameters:
+          # invalid purchases must be rejected with 400 before x402 challenges.
+          token="0x779ded0c9e1022225f8e0630b35a9b54be713736"
           for method in GET POST; do
-            code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 45 -X $method "$BASE/dossier")
-            echo "  $method /dossier -> $code"
+            if [ "$method" = "GET" ]; then
+              code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 45 \
+                "$BASE/dossier?tokenAddress=$token&chain=xlayer&format=json")
+            else
+              code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 45 \
+                -H 'content-type: application/json' \
+                --data "{\"tokenAddress\":\"$token\",\"chain\":\"xlayer\",\"format\":\"json\"}" \
+                "$BASE/dossier")
+            fi
+            echo "  valid $method /dossier -> $code"
             if [ "$code" = "503" ]; then
               echo "::error::$method /dossier returned 503: the payment layer is down, no one can buy"
               exit 1
@@ -110,7 +120,10 @@ jobs:
       - name: The challenge is still valid and priced correctly
         run: |
           set -euo pipefail
-          curl -sS -D - -o /dev/null --max-time 45 -X POST "$BASE/dossier" \
+          curl -sS -D - -o /dev/null --max-time 45 \
+            -H 'content-type: application/json' \
+            --data '{"tokenAddress":"0x779ded0c9e1022225f8e0630b35a9b54be713736","chain":"xlayer","format":"json"}' \
+            "$BASE/dossier" \
             | tr -d '\r' | grep -i '^payment-required:' | sed 's/^[^:]*: *//' > hdr.b64
           [ -s hdr.b64 ] || { echo "::error::no PAYMENT-REQUIRED header on the paid route"; exit 1; }
           base64 -d < hdr.b64 > challenge.json
