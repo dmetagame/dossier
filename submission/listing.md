@@ -31,7 +31,7 @@ and payout wallet `0x51c25782af63381056cd1c3c59c0544628d67697`.
 
 ## Pre-payment validation remediation
 
-On 2026-08-17 OKX rejected the resubmission because missing or invalid service parameters
+On 2026-08-17 OKX returned a review finding because missing or invalid service parameters
 could reach the x402 signature and deduction flow before they were rejected. Commits
 `9c58f83` and `018b10a` move request parsing and validation ahead of every payment, replay,
 archive, and report-generation action, including failures while reading the request stream.
